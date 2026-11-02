@@ -1,0 +1,43 @@
+name: MG Windsor EV 12V-Safe Cloud Charging Logger
+
+on:
+  # 1. Runs automatically in the cloud on schedule
+  schedule:
+    - cron: '*/15 * * * *'
+  # 2. Can be triggered immediately via iPhone CarPlay Disconnect Shortcut or manually
+  workflow_dispatch:
+  repository_dispatch:
+    types: [carplay-disconnected, check-charging]
+
+permissions:
+  contents: write
+
+jobs:
+  poll-charging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Poll 12V-Safe EV Charging Telemetry (messageID=8)
+        env:
+          MG_PHONE: ${{ secrets.MG_PHONE }}
+          MG_PASSWORD: ${{ secrets.MG_PASSWORD }}
+          MG_VIN: ${{ secrets.MG_VIN }}
+        run: npx tsx cloud-logger/poll-charging.ts
+
+      - name: Commit & Push Updated Charging Sessions Log
+        run: |
+          git config user.name "MG Cloud Telemetry Bot"
+          git config user.email "bot@mg-ismart-cloud.local"
+          git add data/cloud_charging_log.json || true
+          git diff --staged --quiet || git commit -m "Auto-update MG Windsor EV charging session log"
+          git push
