@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/sdk/asn1-uper.ts","./src/sdk/bitcodec.ts","./src/sdk/client.ts","./src/sdk/crypto.ts","./src/sdk/index.ts","./src/sdk/models.ts","./src/sdk/simulator.ts","./src/sdk/tap.ts","./src/sdk/__tests__/protocol.test.ts","./server/cors-proxy.ts"],"version":"5.9.3"}
