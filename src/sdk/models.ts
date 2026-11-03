@@ -129,16 +129,50 @@ export interface Snapshot {
 
 export interface TripRecord {
   id: string;
-  date: string;
-  startLocation: string;
-  endLocation: string;
-  distanceKm: number;
-  durationMin: number;
-  energyUsedKwh: number;
-  efficiencyKmPerKwh: number;
-  avgSpeedKmh: number;
+  journeyId: number | null;
+  startTimestampSec: number;
+  endTimestampSec: number;
+  startDateTime: string;
+  endDateTime: string;
+  // 1 & 2: Start & End Battery % (and kWh)
   startSoc: number;
   endSoc: number;
+  startEnergyKwh: number;
+  endEnergyKwh: number;
+  // 3: Time taken for the trip
+  durationSeconds: number;
+  // 4: Distance travelled in that trip
+  distanceKm: number;
+  startOdometerKm: number;
+  endOdometerKm: number;
+  // 5: Energy used for travelling that trip
+  energyUsedKwh: number;
+  efficiencyKmPerKwh: number;
+  // 6: Location data of starting & ending points
+  startLat: number | null;
+  startLng: number | null;
+  endLat: number | null;
+  endLng: number | null;
+  startLocation: string;
+  endLocation: string;
+  // 7: Idling if any, and energy spent & time taken during idle time
+  idleDurationSeconds: number;
+  idleEnergyKwh: number;
+  // 8: Cabin & Ambient temperatures during this trip (Start vs End change)
+  acState: string;
+  startCabinTempC?: number | null;
+  endCabinTempC?: number | null;
+  startExteriorTempC?: number | null;
+  endExteriorTempC?: number | null;
+  cabinTempC: number | null;
+  exteriorTempC: number | null;
+  acTargetTempC: string;
+  acFanSpeed: string;
+  // 9 & 10: Maximum & Average speed recorded in this trip
+  maxSpeedKmh: number;
+  avgSpeedKmh: number;
+  status: 'driving' | 'completed';
+  lastSampleTimeSec?: number;
 }
 
 export interface ChargeLogRecord {

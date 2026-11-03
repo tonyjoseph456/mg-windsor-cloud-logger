@@ -394,6 +394,10 @@ export interface MgClientOptions {
   vin?: string;
   pinHash?: string;
   /**
+   * Callback invoked whenever a new session token is issued (initial login or silent auto-relogin)
+   */
+  onSessionRefreshed?: (session: { uid: string; token: string; phone: string }) => void;
+  /**
    * Optional proxy base URL when running in a browser PWA to avoid CORS restrictions.
    * React Native and Node.js do not enforce CORS and can leave this empty.
    */
@@ -409,6 +413,7 @@ export class MgIndiaClient {
   public uid: string | null = null;
   public token: string | null = null;
   public vehicle: Vehicle | null = null;
+  public onSessionRefreshed?: (session: { uid: string; token: string; phone: string }) => void;
   public capabilities: Capabilities = {
     climate: false,
     door_lock: false,
@@ -427,6 +432,7 @@ export class MgIndiaClient {
     this.vin = options.vin || null;
     this.pinHash = options.pinHash || null;
     this.deviceId = makeDeviceId(this.phone);
+    this.onSessionRefreshed = options.onSessionRefreshed;
     this.proxyBaseUrl = options.proxyBaseUrl || null;
   }
 
@@ -493,6 +499,13 @@ export class MgIndiaClient {
           const [uid, token] = decodeLoginResponse(text);
           this.uid = uid;
           this.token = token;
+          if (this.onSessionRefreshed) {
+            try {
+              this.onSessionRefreshed({ uid, token, phone: this.phone });
+            } catch {
+              // ignore callback error
+            }
+          }
           return;
         } catch (err) {
           if (err instanceof MgIndiaLoginRejected) {
