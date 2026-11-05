@@ -6064,7 +6064,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 6,
     gap: 10,
-    paddingBottom: (Platform.OS === 'web' ? 70 : Platform.OS === 'ios' ? 95 : 75),
+    paddingBottom: (Platform.OS === 'web' ? 70 : 70),
   },
   heroCard: {
     backgroundColor: '#131B2E',
@@ -6215,12 +6215,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: (Platform.OS === 'web' ? 'rgba(255, 255, 255, 0.14)' : '#1E293B') as any,
     boxShadow: (Platform.OS === 'web' ? '0 -8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1)' : undefined) as any,
-    paddingTop: (Platform.OS === 'web' ? 6 : 8),
-    paddingBottom: (Platform.OS === 'web'
-      ? 0
-      : Platform.OS === 'ios'
-      ? 24
-      : 8) as any,
+    paddingTop: 6,
+    paddingBottom: 0,
     justifyContent: 'space-around',
     alignItems: 'center',
   },
@@ -6228,7 +6224,8 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: (Platform.OS === 'web' ? 2 : 2),
+    paddingTop: 2,
+    paddingBottom: 0,
   },
   tabIconWrapper: {
     width: 44,

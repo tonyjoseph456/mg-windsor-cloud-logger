@@ -33,7 +33,7 @@ fs.writeFileSync(
 const tags = `
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="MG iSMART" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0A0E17" />
@@ -46,44 +46,41 @@ const tags = `
         color-scheme: dark;
       }
       html, body {
-        width: 100%;
-        min-height: 100%;
-        height: 100%;
-        min-height: 100dvh;
-        height: 100dvh;
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        margin: 0;
-        padding: 0;
+        width: 100% !important;
+        height: 100% !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
         background-color: #0A0E17 !important;
         background: #0A0E17 !important;
         color-scheme: dark;
         -webkit-tap-highlight-color: transparent;
         overscroll-behavior-y: none;
+        overflow: hidden !important;
       }
       body {
-        overflow: hidden;
+        overflow: hidden !important;
       }
       #root {
-        display: flex;
-        flex-direction: column;
-        width: 100%;
-        min-height: 100%;
-        height: 100%;
-        min-height: 100dvh;
-        height: 100dvh;
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        flex: 1;
+        display: flex !important;
+        flex-direction: column !important;
+        width: 100% !important;
+        height: 100% !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        flex: 1 !important;
         background-color: #0A0E17 !important;
         background: #0A0E17 !important;
-        overflow: hidden;
+        overflow: hidden !important;
       }
       /* Liquid Glass Bottom Navigation Bar for iOS PWA */
       #liquid-glass-tabbar,
@@ -94,6 +91,7 @@ const tags = `
         left: 0px !important;
         right: 0px !important;
         width: 100% !important;
+        padding-top: 6px !important;
         padding-bottom: 0px !important;
         margin-bottom: 0px !important;
         background-color: rgba(10, 15, 29, 0.72) !important;
