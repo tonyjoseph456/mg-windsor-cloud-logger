@@ -87,13 +87,12 @@ const tags = `
       [data-testid="liquid-glass-tabbar"],
       .liquid-glass-tabbar {
         position: fixed !important;
-        bottom: 0px !important;
+        bottom: 8px !important;
         left: 0px !important;
         right: 0px !important;
         width: 100% !important;
-        padding-top: 6px !important;
-        padding-bottom: 0px !important;
-        margin-bottom: 0px !important;
+        padding-top: 7px !important;
+        padding-bottom: 4px !important;
         background-color: rgba(10, 15, 29, 0.72) !important;
         background: rgba(10, 15, 29, 0.72) !important;
         -webkit-backdrop-filter: blur(28px) saturate(210%) !important;

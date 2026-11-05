@@ -4323,7 +4323,7 @@ export default function App() {
               id: 'home' as const,
               label: 'Home',
               renderIcon: (active: boolean) => (
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
                   <Path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z" strokeLinecap="round" strokeLinejoin="round" />
                 </Svg>
               ),
@@ -4332,7 +4332,7 @@ export default function App() {
               id: 'charge' as const,
               label: 'Charge',
               renderIcon: (active: boolean) => (
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill={active ? '#10B981' : 'none'} stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2 : 1.8}>
+                <Svg width={22} height={22} viewBox="0 0 24 24" fill={active ? '#10B981' : 'none'} stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2 : 1.8}>
                   <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
                 </Svg>
               ),
@@ -4341,7 +4341,7 @@ export default function App() {
               id: 'trips' as const,
               label: 'Trips',
               renderIcon: (active: boolean) => (
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
                   <Circle cx="6" cy="19" r="3" />
                   <Circle cx="18" cy="5" r="3" />
                   <Path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H9" strokeLinecap="round" strokeLinejoin="round" />
@@ -4352,7 +4352,7 @@ export default function App() {
               id: 'account' as const,
               label: 'Account',
               renderIcon: (active: boolean) => (
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
                   <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
                   <Circle cx="12" cy="7" r="4" />
                 </Svg>
@@ -6064,7 +6064,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 6,
     gap: 10,
-    paddingBottom: (Platform.OS === 'web' ? 70 : 70),
+    paddingBottom: (Platform.OS === 'web' ? 82 : 85),
   },
   heroCard: {
     backgroundColor: '#131B2E',
@@ -6203,7 +6203,7 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
-    bottom: 0,
+    bottom: (Platform.OS === 'web' ? 8 : Platform.OS === 'ios' ? 10 : 8) as any,
     left: 0,
     right: 0,
     width: '100%' as any,
@@ -6215,8 +6215,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: (Platform.OS === 'web' ? 'rgba(255, 255, 255, 0.14)' : '#1E293B') as any,
     boxShadow: (Platform.OS === 'web' ? '0 -8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1)' : undefined) as any,
-    paddingTop: 6,
-    paddingBottom: 0,
+    paddingTop: 7,
+    paddingBottom: 4,
     justifyContent: 'space-around',
     alignItems: 'center',
   },
@@ -6225,14 +6225,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingTop: 2,
-    paddingBottom: 0,
+    paddingBottom: 2,
   },
   tabIconWrapper: {
-    width: 44,
-    height: 28,
+    width: 48,
+    height: 31,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 14,
+    borderRadius: 15.5,
     marginBottom: 2,
   },
   tabIconWrapperActive: {
@@ -6243,7 +6243,7 @@ const styles = StyleSheet.create({
   },
   tabText: {
     color: '#94A3B8',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
