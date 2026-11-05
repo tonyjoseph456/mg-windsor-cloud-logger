@@ -4333,7 +4333,7 @@ export default function App() {
               id: 'home' as const,
               label: 'Home',
               renderIcon: (active: boolean) => (
-                <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
                   <Path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z" strokeLinecap="round" strokeLinejoin="round" />
                 </Svg>
               ),
@@ -4342,7 +4342,7 @@ export default function App() {
               id: 'charge' as const,
               label: 'Charge',
               renderIcon: (active: boolean) => (
-                <Svg width={22} height={22} viewBox="0 0 24 24" fill={active ? '#10B981' : 'none'} stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2 : 1.8}>
+                <Svg width={26} height={26} viewBox="0 0 24 24" fill={active ? '#34D399' : 'none'} stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.1 : 1.9}>
                   <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
                 </Svg>
               ),
@@ -4351,7 +4351,7 @@ export default function App() {
               id: 'trips' as const,
               label: 'Trips',
               renderIcon: (active: boolean) => (
-                <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
                   <Circle cx="6" cy="19" r="3" />
                   <Circle cx="18" cy="5" r="3" />
                   <Path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H9" strokeLinecap="round" strokeLinejoin="round" />
@@ -4362,7 +4362,7 @@ export default function App() {
               id: 'account' as const,
               label: 'Account',
               renderIcon: (active: boolean) => (
-                <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
                   <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
                   <Circle cx="12" cy="7" r="4" />
                 </Svg>
@@ -4377,11 +4377,13 @@ export default function App() {
               onPress={() => setTab(item.id)}
               style={styles.tabItem}
               activeOpacity={0.7}
+              accessibilityLabel={item.label}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
             >
               <View style={[styles.tabIconWrapper, active && styles.tabIconWrapperActive]}>
                 {item.renderIcon(active)}
               </View>
-              <Text style={[styles.tabText, active && styles.tabActive]}>{item.label}</Text>
             </TouchableOpacity>
           );
         })}
@@ -6216,7 +6218,7 @@ const styles = StyleSheet.create({
     bottom: (Platform.OS === 'web' ? 18 : Platform.OS === 'ios' ? 24 : 18) as any,
     left: 16,
     right: 16,
-    maxWidth: 440,
+    maxWidth: 420,
     alignSelf: 'center',
     marginHorizontal: 'auto',
     borderRadius: 9999,
@@ -6235,9 +6237,8 @@ const styles = StyleSheet.create({
     boxShadow: (Platform.OS === 'web'
       ? '0 24px 48px -6px rgba(0, 0, 0, 0.75), 0 10px 24px -3px rgba(0, 0, 0, 0.5), inset 0 1.5px 1.5px 0 rgba(255, 255, 255, 0.65), inset 0 -1.5px 2px 0 rgba(255, 255, 255, 0.15)'
       : undefined) as any,
-    paddingTop: 8,
-    paddingBottom: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
     justifyContent: 'space-around',
     alignItems: 'center',
   },
@@ -6245,22 +6246,20 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 2,
-    paddingBottom: 2,
+    paddingVertical: 2,
   },
   tabIconWrapper: {
-    width: 50,
-    height: 32,
+    width: 62,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 16,
-    marginBottom: 2,
+    borderRadius: 22,
   },
   tabIconWrapperActive: {
     backgroundColor: 'rgba(16, 185, 129, 0.22)',
     borderWidth: 1,
     borderColor: 'rgba(52, 211, 153, 0.45)',
-    boxShadow: (Platform.OS === 'web' ? '0 0 14px rgba(16, 185, 129, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.3)' : undefined) as any,
+    boxShadow: (Platform.OS === 'web' ? '0 0 16px rgba(16, 185, 129, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.3)' : undefined) as any,
   },
   tabText: {
     color: '#94A3B8',

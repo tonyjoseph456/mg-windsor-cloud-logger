@@ -91,13 +91,13 @@ const tags = `
         left: 16px !important;
         right: 16px !important;
         width: auto !important;
-        max-width: 440px !important;
+        max-width: 420px !important;
         margin-left: auto !important;
         margin-right: auto !important;
-        padding-top: 8px !important;
-        padding-bottom: 6px !important;
-        padding-left: 10px !important;
-        padding-right: 10px !important;
+        padding-top: 7px !important;
+        padding-bottom: 7px !important;
+        padding-left: 8px !important;
+        padding-right: 8px !important;
         border-radius: 9999px !important;
         background: linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0%, rgba(15, 23, 42, 0.72) 35%, rgba(10, 15, 29, 0.82) 100%) !important;
         -webkit-backdrop-filter: blur(32px) saturate(220%) contrast(108%) !important;
