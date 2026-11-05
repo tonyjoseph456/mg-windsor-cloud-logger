@@ -2148,73 +2148,83 @@ export default function App() {
         SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
       }
     } else if (
-      !backendConfigRef.current && // with 24/7 background tracking the cloud has the real trip times
       parkedBaselineRef.current &&
       currentOdo - parkedBaselineRef.current.odometerKm >= 0.5 &&
       !ch?.is_charging
     ) {
-      // 2B: Automatic Start/End Trip Recovery (Car was driven while app was closed!)
       const base = parkedBaselineRef.current;
-      const distKm = Number((currentOdo - base.odometerKm).toFixed(1));
-      const durSec = Math.max(60, nowSec - base.timestampSec);
-      const usedKwh = Math.max(
-        0.1,
-        Number((base.energyKwh - currentEnergyKwh).toFixed(2))
+      // Check if this odometer range is already covered by a trip in tripsRef (e.g. captured by cloud worker)
+      const alreadyLogged = tripsRef.current.some(
+        (t) =>
+          Math.abs(t.endOdometerKm - currentOdo) < 0.25 ||
+          (t.startOdometerKm <= base.odometerKm + 0.25 && t.endOdometerKm >= currentOdo - 0.25)
       );
-      const avgSpd = Number((distKm / (durSec / 3600)).toFixed(1));
-      const startLoc =
-        base.locationName || (await resolveLocationLabel(base.lat, base.lng));
-      const endLoc = await resolveLocationLabel(currentLat, currentLng);
 
-      const autoTrip: TripRecord = {
-        id: `trip-${journeyId || base.timestampSec}`,
-        journeyId,
-        startTimestampSec: base.timestampSec,
-        endTimestampSec: nowSec,
-        startDateTime: formatDateTime(base.timestampSec),
-        endDateTime: formatDateTime(nowSec),
-        startSoc: base.soc,
-        endSoc: currentSoc,
-        startEnergyKwh: base.energyKwh,
-        endEnergyKwh: currentEnergyKwh,
-        durationSeconds: durSec,
-        distanceKm: distKm,
-        startOdometerKm: base.odometerKm,
-        endOdometerKm: currentOdo,
-        energyUsedKwh: usedKwh,
-        efficiencyKmPerKwh: usedKwh > 0 ? Number((distKm / usedKwh).toFixed(2)) : 0,
-        startLat: base.lat,
-        startLng: base.lng,
-        endLat: currentLat,
-        endLng: currentLng,
-        startLocation: startLoc,
-        endLocation: endLoc,
-        idleDurationSeconds: 0,
-        idleEnergyKwh: 0,
-        acState: acStateStr,
-        startCabinTempC: base.interiorTemperature ?? st?.interior_temperature ?? null,
-        endCabinTempC: st?.interior_temperature ?? base.interiorTemperature ?? null,
-        startExteriorTempC: base.exteriorTemperature ?? st?.exterior_temperature ?? null,
-        endExteriorTempC: st?.exterior_temperature ?? base.exteriorTemperature ?? null,
-        cabinTempC: st?.interior_temperature ?? base.interiorTemperature ?? null,
-        exteriorTempC: st?.exterior_temperature ?? base.exteriorTemperature ?? null,
-        acTargetTempC: '',
-        acFanSpeed: '',
-        maxSpeedKmh: Math.max(currentSpeedKmh, Number((avgSpd * 1.35).toFixed(1))),
-        avgSpeedKmh: avgSpd,
-        status: 'completed',
-      };
+      if (!alreadyLogged) {
+        // 2B: Automatic Start/End Trip Recovery (Car was driven while app was closed, and cloud missed it!)
+        const distKm = Number((currentOdo - base.odometerKm).toFixed(1));
+        const durSec = Math.max(60, nowSec - base.timestampSec);
+        const usedKwh = Math.max(
+          0.1,
+          Number((base.energyKwh - currentEnergyKwh).toFixed(2))
+        );
+        const avgSpd = Number((distKm / (durSec / 3600)).toFixed(1));
+        const startLoc =
+          base.locationName || (await resolveLocationLabel(base.lat, base.lng));
+        const endLoc = await resolveLocationLabel(currentLat, currentLng);
 
-      const nextTrips = deduplicateTripList([
-        autoTrip,
-        ...tripsRef.current.filter((t) => t.id !== autoTrip.id),
-      ]);
-      setTrips(nextTrips);
-      tripsRef.current = nextTrips;
-      await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips));
+        const autoTrip: TripRecord = {
+          id: `trip-${journeyId || base.timestampSec}`,
+          journeyId,
+          startTimestampSec: base.timestampSec,
+          endTimestampSec: nowSec,
+          startDateTime: formatDateTime(base.timestampSec),
+          endDateTime: formatDateTime(nowSec),
+          startSoc: base.soc,
+          endSoc: currentSoc,
+          startEnergyKwh: base.energyKwh,
+          endEnergyKwh: currentEnergyKwh,
+          durationSeconds: durSec,
+          distanceKm: distKm,
+          startOdometerKm: base.odometerKm,
+          endOdometerKm: currentOdo,
+          energyUsedKwh: usedKwh,
+          efficiencyKmPerKwh: usedKwh > 0 ? Number((distKm / usedKwh).toFixed(2)) : 0,
+          startLat: base.lat,
+          startLng: base.lng,
+          endLat: currentLat,
+          endLng: currentLng,
+          startLocation: startLoc,
+          endLocation: endLoc,
+          idleDurationSeconds: 0,
+          idleEnergyKwh: 0,
+          acState: acStateStr,
+          startCabinTempC: base.interiorTemperature ?? st?.interior_temperature ?? null,
+          endCabinTempC: st?.interior_temperature ?? base.interiorTemperature ?? null,
+          startExteriorTempC: base.exteriorTemperature ?? st?.exterior_temperature ?? null,
+          endExteriorTempC: st?.exterior_temperature ?? base.exteriorTemperature ?? null,
+          cabinTempC: st?.interior_temperature ?? base.interiorTemperature ?? null,
+          exteriorTempC: st?.exterior_temperature ?? base.exteriorTemperature ?? null,
+          acTargetTempC: '',
+          acFanSpeed: '',
+          maxSpeedKmh: Math.max(currentSpeedKmh, Number((avgSpd * 1.35).toFixed(1))),
+          avgSpeedKmh: avgSpd,
+          status: 'completed',
+        };
 
-      if (googleConfigRef.current?.accessToken && googleConfigRef.current?.spreadsheetId && googleConfigRef.current?.autoSync) {
-        syncTripsToGoogleSheet(googleConfigRef.current.accessToken, googleConfigRef.current.spreadsheetId, [autoTrip]).catch(() => {});
+        const nextTrips = deduplicateTripList([
+          autoTrip,
+          ...tripsRef.current.filter((t) => t.id !== autoTrip.id),
+        ]);
+        setTrips(nextTrips);
+        tripsRef.current = nextTrips;
+        await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips));
+
+        if (backendConfigRef.current) {
+          backendSyncData(backendConfigRef.current, [autoTrip]).catch(() => {});
+        } else if (googleConfigRef.current?.accessToken && googleConfigRef.current?.spreadsheetId && googleConfigRef.current?.autoSync) {
+          syncTripsToGoogleSheet(googleConfigRef.current.accessToken, googleConfigRef.current.spreadsheetId, [autoTrip]).catch(() => {});
+        }
       }
     }
 

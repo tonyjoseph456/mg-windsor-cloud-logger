@@ -1133,6 +1133,61 @@ async function pollUser(env: Env, u: any, nowSec: number, budget: { n: number })
           body: `Started at ${istParts(nowSec).time}. Battery: ${soc}% • Range: ${estRange} km • Odo: ${odo.toLocaleString()} km.`,
           tag: 'windsor-trip-status',
         });
+      } else if (!charging && odo > 0 && u.lastParkedOdo > 0 && odo - u.lastParkedOdo >= 0.3) {
+        // Odometer increased between polls while vehicle was not actively sampled moving
+        const deltaKm = Number((odo - u.lastParkedOdo).toFixed(1));
+        const hasTrip = (u.trips || []).some((t: any) => Math.abs(t.endOdometerKm - odo) < 0.2);
+        if (!hasTrip) {
+          const startSec = u.lastParkedTimeSec || (nowSec - 600);
+          const durSec = Math.max(60, nowSec - startSec);
+          const usedKwh = Math.max(0.1, Number(((u.lastParkedEnergyKwh || energy) - energy).toFixed(2)));
+          const rec = {
+            id: `trip-${journeyId || nowSec}`,
+            journeyId,
+            startTimestampSec: startSec,
+            endTimestampSec: nowSec,
+            durationSeconds: durSec,
+            distanceKm: deltaKm,
+            startOdometerKm: u.lastParkedOdo,
+            endOdometerKm: odo,
+            startSoc: u.lastParkedSoc || soc,
+            endSoc: soc,
+            energyUsedKwh: usedKwh,
+            efficiencyKmPerKwh: usedKwh > 0 ? Number((deltaKm / usedKwh).toFixed(2)) : 0,
+            idleDurationSeconds: 0,
+            idleEnergyKwh: 0,
+            maxSpeedKmh: 0,
+            avgSpeedKmh: Number((deltaKm / (durSec / 3600)).toFixed(1)),
+            endCabinTempC: st?.interior_temperature ?? null,
+            endExteriorTempC: st?.exterior_temperature ?? null,
+            startLat: u.lastParkedLat || lat,
+            startLng: u.lastParkedLng || lng,
+            endLat: lat,
+            endLng: lng,
+          };
+          u.trips = deduplicateTripList([rec, ...(u.trips || [])]);
+          u.trips.length = Math.min(u.trips.length, 100);
+          u.pendingTrips.push(rec);
+          dirty = true;
+          await notifyUser(env, u, {
+            title: `🏁 Trip Completed: ${deltaKm} km`,
+            body: `Distance: ${deltaKm} km • Battery: ${rec.startSoc}% → ${soc}% • Odo: ${odo.toLocaleString()} km.`,
+            tag: 'windsor-trip-status',
+          });
+        }
+        u.lastParkedOdo = odo;
+        u.lastParkedSoc = soc;
+        u.lastParkedEnergyKwh = energy;
+        u.lastParkedTimeSec = nowSec;
+        u.lastParkedLat = lat;
+        u.lastParkedLng = lng;
+      } else if (!charging && odo > 0) {
+        u.lastParkedOdo = odo;
+        u.lastParkedSoc = soc;
+        u.lastParkedEnergyKwh = energy;
+        u.lastParkedTimeSec = nowSec;
+        u.lastParkedLat = lat;
+        u.lastParkedLng = lng;
       }
     } catch (e) {
       const msg = (e as Error).message || '';
