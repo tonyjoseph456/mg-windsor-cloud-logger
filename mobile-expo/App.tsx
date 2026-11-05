@@ -440,21 +440,47 @@ function formatDisplayDateKey(dateKey: string): string {
   return dateKey;
 }
 
-interface TripCalendarProps {
+function getChargeDateKey(session: ChargeLogRecord): string {
+  if (session.startDateTime) {
+    const m = session.startDateTime.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
+    if (m) {
+      const day = m[1].padStart(2, '0');
+      const mon = MONTH_NAMES_MAP[m[2].toLowerCase()];
+      const yr = m[3];
+      if (mon) return `${yr}-${mon}-${day}`;
+    }
+    const iso = session.startDateTime.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+    const dmy = session.startDateTime.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  if (typeof session.startTimestampSec === 'number' && session.startTimestampSec > 0) {
+    const d = new Date(session.startTimestampSec * 1000);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return '';
+}
+
+interface HistoryCalendarProps {
   selectedDateKey: string;
-  tripDateKeys: Set<string>;
+  activeDateKeys: Set<string>;
+  legendLabel?: string;
   onSelectDate: (dateKey: string) => void;
   onShowAll: () => void;
   onClose: () => void;
 }
 
-function TripCalendar({
+function HistoryCalendar({
   selectedDateKey,
-  tripDateKeys,
+  activeDateKeys,
+  legendLabel = 'Dates with activity',
   onSelectDate,
   onShowAll,
   onClose,
-}: TripCalendarProps) {
+}: HistoryCalendarProps) {
   const todayKey = getTodayDateKey();
   const [viewDate, setViewDate] = useState(() => {
     if (selectedDateKey && selectedDateKey !== 'all') {
@@ -573,7 +599,7 @@ function TripCalendar({
 
           const isSelected = cell.dateKey === selectedDateKey;
           const isToday = cell.dateKey === todayKey;
-          const hasTrips = tripDateKeys.has(cell.dateKey);
+          const hasActivity = activeDateKeys.has(cell.dateKey);
 
           return (
             <TouchableOpacity
@@ -591,12 +617,12 @@ function TripCalendar({
                   styles.calendarDayText,
                   isSelected && styles.calendarDayTextSelected,
                   !isSelected && isToday && styles.calendarDayTextToday,
-                  !isSelected && !isToday && hasTrips && styles.calendarDayTextHasTrips,
+                  !isSelected && !isToday && hasActivity && styles.calendarDayTextHasTrips,
                 ]}
               >
                 {cell.day}
               </Text>
-              {hasTrips && (
+              {hasActivity && (
                 <View
                   style={[
                     styles.calendarTripDot,
@@ -613,7 +639,7 @@ function TripCalendar({
       <View style={styles.calendarFooter}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <View style={styles.calendarLegendDot} />
-          <Text style={styles.calendarLegendText}>Dates with trips</Text>
+          <Text style={styles.calendarLegendText}>{legendLabel}</Text>
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
@@ -628,6 +654,29 @@ function TripCalendar({
     </View>
   );
 }
+
+const TripCalendar = ({
+  selectedDateKey,
+  tripDateKeys,
+  onSelectDate,
+  onShowAll,
+  onClose,
+}: {
+  selectedDateKey: string;
+  tripDateKeys: Set<string>;
+  onSelectDate: (dateKey: string) => void;
+  onShowAll: () => void;
+  onClose: () => void;
+}) => (
+  <HistoryCalendar
+    selectedDateKey={selectedDateKey}
+    activeDateKeys={tripDateKeys}
+    legendLabel="Dates with trips"
+    onSelectDate={onSelectDate}
+    onShowAll={onShowAll}
+    onClose={onClose}
+  />
+);
 
 interface PersistedSession {
   phone: string;
@@ -669,10 +718,12 @@ export default function App() {
   const [selectedTripDate, setSelectedTripDate] = useState<string>(() => getTodayDateKey());
   const [showTripCalendar, setShowTripCalendar] = useState<boolean>(false);
 
-  // Revert trip filter to current day whenever user changes tabs
+  // Revert trip and charging filters to current day whenever user changes tabs
   useEffect(() => {
     setSelectedTripDate(getTodayDateKey());
     setShowTripCalendar(false);
+    setSelectedChargeDate(getTodayDateKey());
+    setShowChargeCalendar(false);
   }, [tab]);
 
   const todayKey = getTodayDateKey();
@@ -695,6 +746,26 @@ export default function App() {
 
   const [chargeLogs, setChargeLogs] = useState<ChargeLogRecord[]>([]);
   const [activeCharge, setActiveCharge] = useState<ChargeLogRecord | null>(null);
+
+  // Charging History Date Filter & Calendar State
+  const [selectedChargeDate, setSelectedChargeDate] = useState<string>(() => getTodayDateKey());
+  const [showChargeCalendar, setShowChargeCalendar] = useState<boolean>(false);
+
+  const chargeDateKeysSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of chargeLogs) {
+      const k = getChargeDateKey(c);
+      if (k) set.add(k);
+    }
+    return set;
+  }, [chargeLogs]);
+
+  const displayedCharges = useMemo(() => {
+    if (selectedChargeDate === 'all') {
+      return chargeLogs;
+    }
+    return chargeLogs.filter((c) => getChargeDateKey(c) === selectedChargeDate);
+  }, [chargeLogs, selectedChargeDate]);
   const [preChargeBaseline, setPreChargeBaseline] = useState<PreChargeBaseline | null>(null);
   const [cloudSyncUrl, setCloudSyncUrl] = useState<string>(DEFAULT_CLOUD_SYNC_URL);
   const [cloudApiKey, setCloudApiKey] = useState<string>('');
@@ -3535,10 +3606,35 @@ export default function App() {
             {/* SAVED CHARGING SESSIONS HISTORY (All 11 Telemetry Metrics) */}
             <View style={styles.card}>
               <View style={{ marginBottom: 14 }}>
-                <Text style={styles.cardTitle}>Charging Session History</Text>
-                <Text style={styles.subtitle}>
-                  Automatically saves all 11 metrics on every charge
-                </Text>
+                <View style={styles.tripCardHeaderRow}>
+                  <View style={styles.tripCardHeaderLeft}>
+                    <Text style={styles.cardTitle}>Charging Session History</Text>
+                    <Text style={styles.subtitle}>
+                      Automatically saves all 11 metrics on every charge
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[
+                      styles.tripDateFilterBtn,
+                      showChargeCalendar && styles.tripDateFilterBtnActive,
+                    ]}
+                    onPress={() => setShowChargeCalendar((v) => !v)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.tripDateFilterBtnIcon}>📅</Text>
+                    <Text style={styles.tripDateFilterBtnText}>
+                      {selectedChargeDate === 'all'
+                        ? 'All Dates'
+                        : selectedChargeDate === todayKey
+                        ? `Today (${formatShortDayMonth(selectedChargeDate)})`
+                        : formatDisplayDateKey(selectedChargeDate)}
+                    </Text>
+                    <Text style={styles.tripDateFilterBtnChevron}>
+                      {showChargeCalendar ? '▲' : '▼'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <TouchableOpacity
                     style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
@@ -3609,6 +3705,7 @@ export default function App() {
                     const nextLogs = deduplicateChargeList([manualSession, ...chargeLogs]);
                     setChargeLogs(nextLogs);
                     chargeLogsRef.current = nextLogs;
+                    setSelectedChargeDate(getTodayDateKey());
                     await SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(nextLogs));
                     showBanner('ok', 'Saved current charging session to history');
                     if (backendConfigRef.current) {
@@ -3619,34 +3716,80 @@ export default function App() {
                   <Text style={styles.recordBtnText}>+ Save Session</Text>
                 </TouchableOpacity>
                 </View>
+
+                {/* Interactive Inline Calendar (shown when user taps date button) */}
+                {showChargeCalendar && (
+                  <HistoryCalendar
+                    selectedDateKey={selectedChargeDate}
+                    activeDateKeys={chargeDateKeysSet}
+                    legendLabel="Dates with charges"
+                    onSelectDate={(dateKey) => {
+                      setSelectedChargeDate(dateKey);
+                      setShowChargeCalendar(false);
+                    }}
+                    onShowAll={() => {
+                      setSelectedChargeDate('all');
+                      setShowChargeCalendar(false);
+                    }}
+                    onClose={() => setShowChargeCalendar(false)}
+                  />
+                )}
               </View>
 
-              {chargeLogs.length === 0 ? (
-                <Text style={styles.subtitle}>
-                  No completed charging sessions saved yet. Sessions are recorded automatically when
-                  you charge, or tap &quot;+ Save Session&quot; anytime.
-                </Text>
+              {displayedCharges.length === 0 ? (
+                <View style={styles.tripEmptyContainer}>
+                  <Text style={styles.tripEmptyIcon}>🔌</Text>
+                  <Text style={styles.tripEmptyTitle}>
+                    {selectedChargeDate === todayKey
+                      ? 'No Charging Sessions Today'
+                      : selectedChargeDate === 'all'
+                      ? 'No Completed Charging Sessions Saved Yet'
+                      : `No Charging Sessions on ${formatDisplayDateKey(selectedChargeDate)}`}
+                  </Text>
+                  <Text style={styles.tripEmptySubtitle}>
+                    {selectedChargeDate === todayKey
+                      ? 'Sessions are recorded automatically when your Windsor EV plugs in to charge, or tap "+ Save Session" above.'
+                      : selectedChargeDate === 'all'
+                      ? 'Sessions are recorded automatically when your Windsor EV plugs in to charge, or tap "+ Save Session" above.'
+                      : 'No charging telemetry was recorded for this selected date.'}
+                  </Text>
+                  {selectedChargeDate !== todayKey && (
+                    <TouchableOpacity
+                      style={styles.tripEmptyActionBtn}
+                      onPress={() => {
+                        setSelectedChargeDate(todayKey);
+                        setShowChargeCalendar(false);
+                      }}
+                    >
+                      <Text style={styles.tripEmptyActionBtnText}>📅 Show Today&apos;s Sessions</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               ) : (
-                chargeLogs.map((session, idx) => (
-                  <ChargingSessionCard
-                    key={session.id}
-                    session={session}
-                    allLogs={chargeLogs}
-                    logIndex={idx}
-                    trips={trips}
-                    cycle={drivingCycleAfter(
-                      idx,
-                      chargeLogs,
-                      activeCharge,
-                      charge?.distance_since_last_charge_km ??
-                        preChargeBaseline?.distanceSinceLastChargeKm ??
-                        0,
-                      charge?.power_usage_since_last_charge_kwh ??
-                        preChargeBaseline?.energyUsedSinceLastChargeKwh ??
-                        0
-                    )}
-                  />
-                ))
+                displayedCharges.map((session, idx) => {
+                  const originalIndex = chargeLogs.findIndex((c) => c.id === session.id);
+                  const effectiveIndex = originalIndex >= 0 ? originalIndex : idx;
+                  return (
+                    <ChargingSessionCard
+                      key={session.id}
+                      session={session}
+                      allLogs={chargeLogs}
+                      logIndex={effectiveIndex}
+                      trips={trips}
+                      cycle={drivingCycleAfter(
+                        effectiveIndex,
+                        chargeLogs,
+                        activeCharge,
+                        charge?.distance_since_last_charge_km ??
+                          preChargeBaseline?.distanceSinceLastChargeKm ??
+                          0,
+                        charge?.power_usage_since_last_charge_kwh ??
+                          preChargeBaseline?.energyUsedSinceLastChargeKwh ??
+                          0
+                      )}
+                    />
+                  );
+                })
               )}
             </View>
           </>
