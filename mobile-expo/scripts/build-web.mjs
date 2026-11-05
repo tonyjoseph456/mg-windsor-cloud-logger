@@ -82,24 +82,51 @@ const tags = `
         background: #0A0E17 !important;
         overflow: hidden !important;
       }
-      /* Liquid Glass Bottom Navigation Bar for iOS PWA */
+      /* iOS 26 Liquid Glass Floating Pill Bottom Navigation Bar */
       #liquid-glass-tabbar,
       [data-testid="liquid-glass-tabbar"],
       .liquid-glass-tabbar {
         position: fixed !important;
-        bottom: 8px !important;
-        left: 0px !important;
-        right: 0px !important;
-        width: 100% !important;
-        padding-top: 7px !important;
-        padding-bottom: 4px !important;
-        background-color: rgba(10, 15, 29, 0.72) !important;
-        background: rgba(10, 15, 29, 0.72) !important;
-        -webkit-backdrop-filter: blur(28px) saturate(210%) !important;
-        backdrop-filter: blur(28px) saturate(210%) !important;
-        border-top: 1px solid rgba(255, 255, 255, 0.14) !important;
-        box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+        bottom: calc(18px + env(safe-area-inset-bottom, 0px)) !important;
+        left: 16px !important;
+        right: 16px !important;
+        width: auto !important;
+        max-width: 440px !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        padding-top: 8px !important;
+        padding-bottom: 6px !important;
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+        border-radius: 9999px !important;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0%, rgba(15, 23, 42, 0.72) 35%, rgba(10, 15, 29, 0.82) 100%) !important;
+        -webkit-backdrop-filter: blur(32px) saturate(220%) contrast(108%) !important;
+        backdrop-filter: blur(32px) saturate(220%) contrast(108%) !important;
+        border: 1px solid rgba(255, 255, 255, 0.32) !important;
+        box-shadow: 
+          0 24px 48px -6px rgba(0, 0, 0, 0.75),
+          0 10px 24px -3px rgba(0, 0, 0, 0.5),
+          inset 0 1.5px 1.5px 0 rgba(255, 255, 255, 0.65),
+          inset 0 -1.5px 2px 0 rgba(255, 255, 255, 0.15),
+          0 0 0 1px rgba(255, 255, 255, 0.1) !important;
         z-index: 9999 !important;
+        overflow: hidden !important;
+      }
+      #liquid-glass-tabbar::before,
+      .liquid-glass-tabbar::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        border-radius: 9999px;
+        padding: 1px;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(245, 158, 11, 0.28) 25%, rgba(56, 189, 248, 0.28) 75%, rgba(255, 255, 255, 0.45) 100%);
+        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+        -webkit-mask-composite: xor;
+        mask-composite: exclude;
+        pointer-events: none;
       }
     </style>
     <script>
