@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -370,6 +370,265 @@ function classifyChargerSpeed(maxKw: number): {
   return { category: '3.3 kW AC', lossPct: 11.5 };
 }
 
+const MONTH_NAMES_MAP: Record<string, string> = {
+  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+};
+
+function getTripDateKey(trip: TripRecord): string {
+  if (trip.startDateTime) {
+    const m = trip.startDateTime.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
+    if (m) {
+      const day = m[1].padStart(2, '0');
+      const mon = MONTH_NAMES_MAP[m[2].toLowerCase()];
+      const yr = m[3];
+      if (mon) return `${yr}-${mon}-${day}`;
+    }
+    const iso = trip.startDateTime.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+    const dmy = trip.startDateTime.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  if (typeof trip.startTimestampSec === 'number' && trip.startTimestampSec > 0) {
+    const d = new Date(trip.startTimestampSec * 1000);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return '';
+}
+
+function getTodayDateKey(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatShortDayMonth(dateKey: string): string {
+  if (!dateKey || dateKey === 'all') return '--';
+  const parts = dateKey.split('-');
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    const d = new Date(y, m, day);
+    return d.toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+    });
+  }
+  return dateKey;
+}
+
+function formatDisplayDateKey(dateKey: string): string {
+  if (!dateKey || dateKey === 'all') return '--';
+  const parts = dateKey.split('-');
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    const d = new Date(y, m, day);
+    return d.toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+  }
+  return dateKey;
+}
+
+interface TripCalendarProps {
+  selectedDateKey: string;
+  tripDateKeys: Set<string>;
+  onSelectDate: (dateKey: string) => void;
+  onShowAll: () => void;
+  onClose: () => void;
+}
+
+function TripCalendar({
+  selectedDateKey,
+  tripDateKeys,
+  onSelectDate,
+  onShowAll,
+  onClose,
+}: TripCalendarProps) {
+  const todayKey = getTodayDateKey();
+  const [viewDate, setViewDate] = useState(() => {
+    if (selectedDateKey && selectedDateKey !== 'all') {
+      const parts = selectedDateKey.split('-');
+      if (parts.length === 3) {
+        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+      }
+    }
+    return new Date();
+  });
+
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+
+  const handlePrevMonth = () => {
+    setViewDate(new Date(year, month - 1, 1));
+  };
+
+  const handleNextMonth = () => {
+    setViewDate(new Date(year, month + 1, 1));
+  };
+
+  const handleTodayPress = () => {
+    onSelectDate(todayKey);
+  };
+
+  const monthLabel = viewDate.toLocaleDateString('en-IN', {
+    month: 'long',
+    year: 'numeric',
+  });
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0 = Sunday
+
+  const dayNames = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+  const cells: Array<{ day: number | null; dateKey: string | null }> = [];
+  for (let i = 0; i < firstDayOfWeek; i++) {
+    cells.push({ day: null, dateKey: null });
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const mStr = String(month + 1).padStart(2, '0');
+    const dStr = String(d).padStart(2, '0');
+    cells.push({
+      day: d,
+      dateKey: `${year}-${mStr}-${dStr}`,
+    });
+  }
+
+  return (
+    <View style={styles.calendarContainer}>
+      {/* Header */}
+      <View style={styles.calendarHeader}>
+        <TouchableOpacity
+          style={styles.calendarNavBtn}
+          onPress={handlePrevMonth}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={styles.calendarNavText}>◀</Text>
+        </TouchableOpacity>
+
+        <View style={styles.calendarTitleWrap}>
+          <Text style={styles.calendarMonthText}>{monthLabel}</Text>
+        </View>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <TouchableOpacity
+            style={[
+              styles.calendarTodayBtn,
+              selectedDateKey === todayKey && styles.calendarTodayBtnActive,
+            ]}
+            onPress={handleTodayPress}
+          >
+            <Text
+              style={[
+                styles.calendarTodayBtnText,
+                selectedDateKey === todayKey && styles.calendarTodayBtnTextActive,
+              ]}
+            >
+              Today
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.calendarNavBtn}
+            onPress={handleNextMonth}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.calendarNavText}>▶</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Week Day Labels */}
+      <View style={styles.calendarWeekRow}>
+        {dayNames.map((name, idx) => (
+          <View key={idx} style={styles.calendarWeekHeaderCell}>
+            <Text
+              style={[
+                styles.calendarWeekHeaderText,
+                idx === 0 && { color: '#F87171' },
+              ]}
+            >
+              {name}
+            </Text>
+          </View>
+        ))}
+      </View>
+
+      {/* Calendar Grid */}
+      <View style={styles.calendarGrid}>
+        {cells.map((cell, idx) => {
+          if (!cell.day || !cell.dateKey) {
+            return <View key={`empty-${idx}`} style={styles.calendarDayCell} />;
+          }
+
+          const isSelected = cell.dateKey === selectedDateKey;
+          const isToday = cell.dateKey === todayKey;
+          const hasTrips = tripDateKeys.has(cell.dateKey);
+
+          return (
+            <TouchableOpacity
+              key={cell.dateKey}
+              style={[
+                styles.calendarDayCell,
+                isSelected && styles.calendarDayCellSelected,
+                !isSelected && isToday && styles.calendarDayCellToday,
+              ]}
+              onPress={() => onSelectDate(cell.dateKey!)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.calendarDayText,
+                  isSelected && styles.calendarDayTextSelected,
+                  !isSelected && isToday && styles.calendarDayTextToday,
+                  !isSelected && !isToday && hasTrips && styles.calendarDayTextHasTrips,
+                ]}
+              >
+                {cell.day}
+              </Text>
+              {hasTrips && (
+                <View
+                  style={[
+                    styles.calendarTripDot,
+                    isSelected && styles.calendarTripDotSelected,
+                  ]}
+                />
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* Footer with Legend and Controls */}
+      <View style={styles.calendarFooter}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <View style={styles.calendarLegendDot} />
+          <Text style={styles.calendarLegendText}>Dates with trips</Text>
+        </View>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+          <TouchableOpacity onPress={onShowAll}>
+            <Text style={[styles.calendarCloseText, { color: '#34D399' }]}>Show All Dates</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onClose}>
+            <Text style={styles.calendarCloseText}>Hide ▲</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 interface PersistedSession {
   phone: string;
   password: string;
@@ -405,6 +664,34 @@ export default function App() {
   const [activeTrip, setActiveTrip] = useState<TripRecord | null>(null);
   const [parkedBaseline, setParkedBaseline] = useState<ParkedTripBaseline | null>(null);
   const [liveTripTracking, setLiveTripTracking] = useState<boolean>(false);
+
+  // Trip History Date Filter & Calendar State
+  const [selectedTripDate, setSelectedTripDate] = useState<string>(() => getTodayDateKey());
+  const [showTripCalendar, setShowTripCalendar] = useState<boolean>(false);
+
+  // Revert trip filter to current day whenever user changes tabs
+  useEffect(() => {
+    setSelectedTripDate(getTodayDateKey());
+    setShowTripCalendar(false);
+  }, [tab]);
+
+  const todayKey = getTodayDateKey();
+
+  const tripDateKeysSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of trips) {
+      const k = getTripDateKey(t);
+      if (k) set.add(k);
+    }
+    return set;
+  }, [trips]);
+
+  const displayedTrips = useMemo(() => {
+    if (selectedTripDate === 'all') {
+      return trips;
+    }
+    return trips.filter((t) => getTripDateKey(t) === selectedTripDate);
+  }, [trips, selectedTripDate]);
 
   const [chargeLogs, setChargeLogs] = useState<ChargeLogRecord[]>([]);
   const [activeCharge, setActiveCharge] = useState<ChargeLogRecord | null>(null);
@@ -3465,8 +3752,33 @@ export default function App() {
             {/* Completed Trips History */}
             <View style={styles.card}>
               <View style={{ marginBottom: 14 }}>
-                <Text style={styles.cardTitle}>Saved Trips History</Text>
-                <Text style={styles.subtitle}>All 10 trip & driving metrics per journey</Text>
+                <View style={styles.tripCardHeaderRow}>
+                  <View style={styles.tripCardHeaderLeft}>
+                    <Text style={styles.cardTitle}>Saved Trips History</Text>
+                    <Text style={styles.subtitle}>All 10 trip & driving metrics per journey</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[
+                      styles.tripDateFilterBtn,
+                      showTripCalendar && styles.tripDateFilterBtnActive,
+                    ]}
+                    onPress={() => setShowTripCalendar((v) => !v)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.tripDateFilterBtnIcon}>📅</Text>
+                    <Text style={styles.tripDateFilterBtnText}>
+                      {selectedTripDate === 'all'
+                        ? 'All Dates'
+                        : selectedTripDate === todayKey
+                        ? `Today (${formatShortDayMonth(selectedTripDate)})`
+                        : formatDisplayDateKey(selectedTripDate)}
+                    </Text>
+                    <Text style={styles.tripDateFilterBtnChevron}>
+                      {showTripCalendar ? '▲' : '▼'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
                 <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
                   <TouchableOpacity
                     style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
@@ -3573,6 +3885,7 @@ export default function App() {
                     const nextTrips = deduplicateTripList([manualTrip, ...tripsRef.current]);
                     setTrips(nextTrips);
                     tripsRef.current = nextTrips;
+                    setSelectedTripDate(getTodayDateKey());
                     await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips));
                     showBanner('ok', 'Saved current trip to Trip History');
                     if (backendConfigRef.current) {
@@ -3585,15 +3898,56 @@ export default function App() {
                   <Text style={styles.recordBtnText}>+ Log Trip Now</Text>
                 </TouchableOpacity>
                 </View>
+
+                {/* Interactive Inline Calendar (shown when user taps date button) */}
+                {showTripCalendar && (
+                  <TripCalendar
+                    selectedDateKey={selectedTripDate}
+                    tripDateKeys={tripDateKeysSet}
+                    onSelectDate={(dateKey) => {
+                      setSelectedTripDate(dateKey);
+                      setShowTripCalendar(false);
+                    }}
+                    onShowAll={() => {
+                      setSelectedTripDate('all');
+                      setShowTripCalendar(false);
+                    }}
+                    onClose={() => setShowTripCalendar(false)}
+                  />
+                )}
               </View>
 
-              {trips.length === 0 ? (
-                <Text style={styles.subtitle}>
-                  No completed trips saved yet. Trips are recorded automatically when your car drives
-                  (or via Live Trip Mode / &quot;+ Log Trip Now&quot;).
-                </Text>
+              {displayedTrips.length === 0 ? (
+                <View style={styles.tripEmptyContainer}>
+                  <Text style={styles.tripEmptyIcon}>🗓️</Text>
+                  <Text style={styles.tripEmptyTitle}>
+                    {selectedTripDate === todayKey
+                      ? 'No Trips Recorded Today'
+                      : selectedTripDate === 'all'
+                      ? 'No Completed Trips Saved Yet'
+                      : `No Trips on ${formatDisplayDateKey(selectedTripDate)}`}
+                  </Text>
+                  <Text style={styles.tripEmptySubtitle}>
+                    {selectedTripDate === todayKey
+                      ? 'Trips are recorded automatically when your car drives (or via Live Trip Mode / "+ Log Trip Now").'
+                      : selectedTripDate === 'all'
+                      ? 'Trips are recorded automatically when your car drives (or via Live Trip Mode / "+ Log Trip Now").'
+                      : 'No completed driving records found for this selected date.'}
+                  </Text>
+                  {selectedTripDate !== todayKey && (
+                    <TouchableOpacity
+                      style={styles.tripEmptyActionBtn}
+                      onPress={() => {
+                        setSelectedTripDate(todayKey);
+                        setShowTripCalendar(false);
+                      }}
+                    >
+                      <Text style={styles.tripEmptyActionBtnText}>📅 Show Today&apos;s Trips</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               ) : (
-                trips.map((t) => (
+                displayedTrips.map((t) => (
                   <TripSessionCard key={t.id} trip={t} />
                 ))
               )}
@@ -6065,6 +6419,241 @@ const styles = StyleSheet.create({
     borderColor: '#334155',
   },
   recordBtnText: { color: '#10B981', fontWeight: '700', fontSize: 12 },
+  tripCardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  tripCardHeaderLeft: {
+    flex: 1,
+    minWidth: 150,
+  },
+  tripDateFilterBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0F172A',
+    borderColor: '#334155',
+    borderWidth: 1.5,
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  tripDateFilterBtnActive: {
+    backgroundColor: '#064E3B33',
+    borderColor: '#10B981',
+  },
+  tripDateFilterBtnIcon: {
+    fontSize: 13,
+  },
+  tripDateFilterBtnText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  tripDateFilterBtnChevron: {
+    color: '#94A3B8',
+    fontSize: 9,
+    fontWeight: '800',
+    marginLeft: 2,
+  },
+  calendarContainer: {
+    backgroundColor: '#090E1A',
+    borderColor: '#1E293B',
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 12,
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  calendarHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
+  calendarTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  calendarMonthText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  calendarNavBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#1E293B',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  calendarNavText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  calendarTodayBtn: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    backgroundColor: '#1E293B',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  calendarTodayBtnActive: {
+    backgroundColor: '#064E3B',
+    borderColor: '#10B981',
+  },
+  calendarTodayBtnText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  calendarTodayBtnTextActive: {
+    color: '#34D399',
+  },
+  calendarWeekRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+    paddingBottom: 6,
+  },
+  calendarWeekHeaderCell: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarWeekHeaderText: {
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  calendarDayCell: {
+    width: '14.28%',
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    marginVertical: 1,
+  },
+  calendarDayCellSelected: {
+    backgroundColor: '#059669',
+  },
+  calendarDayCellToday: {
+    borderColor: '#10B981',
+    borderWidth: 1.5,
+  },
+  calendarDayText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  calendarDayTextSelected: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+  calendarDayTextToday: {
+    color: '#34D399',
+    fontWeight: '700',
+  },
+  calendarDayTextHasTrips: {
+    color: '#F1F5F9',
+    fontWeight: '700',
+  },
+  calendarTripDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#10B981',
+    marginTop: 2,
+  },
+  calendarTripDotSelected: {
+    backgroundColor: '#FFFFFF',
+  },
+  calendarFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1E293B',
+    paddingHorizontal: 4,
+  },
+  calendarLegendDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10B981',
+  },
+  calendarLegendText: {
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  calendarCloseText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  tripEmptyContainer: {
+    backgroundColor: '#0F172A',
+    borderColor: '#1E293B',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  tripEmptyIcon: {
+    fontSize: 28,
+    marginBottom: 8,
+  },
+  tripEmptyTitle: {
+    color: '#F1F5F9',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  tripEmptySubtitle: {
+    color: '#64748B',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  tripEmptyActionBtn: {
+    backgroundColor: '#1E293B',
+    borderColor: '#334155',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    marginTop: 4,
+  },
+  tripEmptyActionBtnText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   banner: {
     paddingVertical: 8,
     paddingHorizontal: 16,
