@@ -11,7 +11,11 @@ var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require
   throw Error('Dynamic require of "' + x + '" is not supported');
 });
 var __commonJS = (cb, mod) => function __require2() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -9656,19 +9660,42 @@ async function pollUser(env, u, nowSec, budget) {
       } else if (aux >= 12.5) {
         u.last12vAlertSec = 0;
       }
-      if (soc > 0 && soc <= 15 && !charging) {
-        if (!u.lastTractionAlertSec || nowSec - u.lastTractionAlertSec > 7200) {
-          u.lastTractionAlertSec = nowSec;
+      if (!Array.isArray(u.alertedSocLevels)) {
+        u.alertedSocLevels = [];
+      }
+      if (soc > 35) {
+        if (u.alertedSocLevels.length > 0) {
+          u.alertedSocLevels = [];
           dirty = true;
-          const estRange = ch?.range_km ?? Math.round(soc / 100 * 320);
+        }
+      }
+      if (soc > 0 && !charging) {
+        const estRange = ch?.range_km ?? Math.round(soc / 100 * 320);
+        if (soc <= 10 && !u.alertedSocLevels.includes(10)) {
+          u.alertedSocLevels.push(10, 20, 30);
+          dirty = true;
           await notifyUser(env, u, {
-            title: `\u{1FAAB} Traction Battery Low: ${soc}%`,
-            body: `Main battery is at ${soc}% (~${estRange} km range remaining). Please plug in to an EV charger soon.`,
-            tag: "windsor-soc-low"
+            title: `\u{1F6A8} Critical Battery Alert: ${soc}%`,
+            body: `Main battery is critically low at ${soc}% (~${estRange} km range). Plug in immediately to avoid vehicle shutdown!`,
+            tag: "windsor-soc-10"
+          });
+        } else if (soc <= 20 && !u.alertedSocLevels.includes(20)) {
+          u.alertedSocLevels.push(20, 30);
+          dirty = true;
+          await notifyUser(env, u, {
+            title: `\u{1FAAB} Low Battery Alert: ${soc}%`,
+            body: `Main battery has reached ${soc}% (~${estRange} km range remaining). Please find an EV charger soon.`,
+            tag: "windsor-soc-20"
+          });
+        } else if (soc <= 30 && !u.alertedSocLevels.includes(30)) {
+          u.alertedSocLevels.push(30);
+          dirty = true;
+          await notifyUser(env, u, {
+            title: `\u26A0\uFE0F Battery Notice: ${soc}%`,
+            body: `Main battery is at ${soc}% (~${estRange} km range remaining).`,
+            tag: "windsor-soc-30"
           });
         }
-      } else if (soc > 20) {
-        u.lastTractionAlertSec = 0;
       }
       if (aux < 12.2 && !charging) {
         u.guardUntilSec = nowSec + 4 * 3600;

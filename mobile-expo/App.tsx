@@ -767,6 +767,58 @@ function stopLiveActivityAudio() {
   } catch {}
 }
 
+if (typeof window !== 'undefined') {
+  const primeLiveActivityAudio = () => {
+    try {
+      if (!liveActivityAudioInstance) {
+        const AudioCtor = (window as any).Audio;
+        const url = getOrCreateSilentWavUrl();
+        if (AudioCtor && url) {
+          const a = new AudioCtor(url);
+          a.loop = true;
+          a.volume = 1.0;
+          a.setAttribute('playsinline', '');
+          a.setAttribute('webkit-playsinline', '');
+          liveActivityAudioInstance = a;
+        }
+      }
+    } catch {}
+    window.removeEventListener('click', primeLiveActivityAudio);
+    window.removeEventListener('touchstart', primeLiveActivityAudio);
+  };
+  window.addEventListener('click', primeLiveActivityAudio, { passive: true, once: true });
+  window.addEventListener('touchstart', primeLiveActivityAudio, { passive: true, once: true });
+}
+
+function sendAppNotification(title: string, body: string, tag?: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.ready
+          .then((reg) => {
+            reg.showNotification(title, {
+              body,
+              icon: '/icon.svg',
+              badge: '/icon.svg',
+              tag: tag || 'windsor-alert',
+              renotify: true,
+            } as any);
+          })
+          .catch(() => {
+            try {
+              new Notification(title, { body, tag });
+            } catch {}
+          });
+      } else {
+        new Notification(title, { body, tag });
+      }
+    }
+  } catch (e) {
+    console.warn('sendAppNotification error:', e);
+  }
+}
+
 function generateLiveActivityArtwork(
   soc: number,
   isCharging: boolean,
@@ -972,6 +1024,7 @@ export default function App() {
   const baselineRef = useRef<PreChargeBaseline | null>(null);
   const cloudSyncUrlRef = useRef<string>(DEFAULT_CLOUD_SYNC_URL);
   const cloudApiKeyRef = useRef<string>('');
+  const alertedBatteryLevelsRef = useRef<Set<number>>(new Set());
 
   // Loading & command states
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -1024,9 +1077,9 @@ export default function App() {
 
     const rawVeh = snapshot?.vehicle;
     const dispName = normalizeVehicleDisplayName(rawVeh?.name, rawVeh?.series);
-    const st: Partial<Status> = snapshot?.status || {};
-    const ch = st.charge || null;
-    const b = st.basic_vehicle_status;
+    const st: any = snapshot?.status || {};
+    const ch: any = st.charge || null;
+    const b: any = st.basic_vehicle_status;
     const rawSoc =
       ch?.soc !== undefined && ch?.soc !== null
         ? ch.soc
@@ -1125,6 +1178,40 @@ export default function App() {
       showBanner('ok', 'Lock Screen Live Activity stopped.');
     }
   };
+
+  const checkBatteryThresholds = useCallback((soc: number | null | undefined, isCharging: boolean, rangeKm?: number | null) => {
+    if (soc === null || soc === undefined || soc <= 0 || isCharging) return;
+    if (soc > 35) {
+      alertedBatteryLevelsRef.current.clear();
+      return;
+    }
+    const estRange = rangeKm ?? Math.round((soc / 100) * 320);
+    if (soc <= 10 && !alertedBatteryLevelsRef.current.has(10)) {
+      alertedBatteryLevelsRef.current.add(10);
+      alertedBatteryLevelsRef.current.add(20);
+      alertedBatteryLevelsRef.current.add(30);
+      sendAppNotification(
+        `🚨 Critical Battery Alert: ${Math.round(soc)}%`,
+        `Main battery is critically low at ${Math.round(soc)}% (~${estRange} km range). Plug in immediately to avoid vehicle shutdown!`,
+        'windsor-soc-10'
+      );
+    } else if (soc <= 20 && !alertedBatteryLevelsRef.current.has(20)) {
+      alertedBatteryLevelsRef.current.add(20);
+      alertedBatteryLevelsRef.current.add(30);
+      sendAppNotification(
+        `🪫 Low Battery Alert: ${Math.round(soc)}%`,
+        `Main battery has reached ${Math.round(soc)}% (~${estRange} km range remaining). Please find an EV charger soon.`,
+        'windsor-soc-20'
+      );
+    } else if (soc <= 30 && !alertedBatteryLevelsRef.current.has(30)) {
+      alertedBatteryLevelsRef.current.add(30);
+      sendAppNotification(
+        `⚠️ Battery Notice: ${Math.round(soc)}%`,
+        `Main battery is at ${Math.round(soc)}% (~${estRange} km range remaining).`,
+        'windsor-soc-30'
+      );
+    }
+  }, []);
 
   useEffect(() => {
     if (isLiveActivityActive) {
@@ -1422,7 +1509,8 @@ export default function App() {
       let startEnergyKwh =
         existing && existing.id === sessionId ? existing.startEnergyKwh : currentEnergyKwh;
 
-      if (!existing || existing.id !== sessionId) {
+      const isNewChargeSession = !existing || existing.id !== sessionId;
+      if (isNewChargeSession) {
         if (base && base.soc < currentSoc) {
           startSoc = base.soc;
           startEnergyKwh = base.energyKwh;
@@ -1434,6 +1522,22 @@ export default function App() {
             Number(((startEnergyKwh / usableCap) * 100).toFixed(1))
           );
         }
+
+        // Auto-start Lock Screen Live Activity for charging
+        if (!isLiveActivityActiveRef.current) {
+          const ok = startLiveActivityAudio();
+          if (ok) {
+            setIsLiveActivityActive(true);
+            isLiveActivityActiveRef.current = true;
+            SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
+            setTimeout(() => updateLiveActivityNow(), 100);
+          }
+        }
+        sendAppNotification(
+          `⚡ Charging Started (${Math.round(currentSoc)}%)`,
+          `Plugged in at ${formatDateTime(bmsStartSec)}. Battery: ${Math.round(currentSoc)}% • Range: ${currentRange} km${liveKw > 0 ? ` • ${liveKw.toFixed(1)} kW` : ''}`,
+          'windsor-charge-status'
+        );
       }
 
       const maxKw = Math.max(existing?.maxChargingSpeedKw || 0, liveKw);
@@ -1536,6 +1640,21 @@ export default function App() {
         SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(nextLogs)),
         SecureStore.deleteItemAsync(ACTIVE_CHARGE_KEY),
       ]);
+
+      const isFull = finalSoc >= 99;
+      sendAppNotification(
+        isFull ? '🔋 Charging Complete (100%)' : `🔌 Charging Stopped at ${Math.round(finalSoc)}%`,
+        `${Math.round(prev.startSoc)}% → ${Math.round(finalSoc)}% (+${addedPackKwh} kWh) in ${formatDurationDetailed(totalDur)}. Range: ${completedRecord.distanceToEmptyAfterKm} km`,
+        'windsor-charge-status'
+      );
+
+      // Stop Live Activity if not actively in a trip
+      if (!activeTripRef.current && !liveTripTracking) {
+        stopLiveActivityAudio();
+        setIsLiveActivityActive(false);
+        isLiveActivityActiveRef.current = false;
+        SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
+      }
 
       if (backendConfigRef.current) {
         backendSyncData(backendConfigRef.current, [], [completedRecord]).catch(() => {});
@@ -1655,6 +1774,9 @@ export default function App() {
     setPreChargeBaseline(newBaseline);
     baselineRef.current = newBaseline;
     await SecureStore.setItemAsync(PRE_CHARGE_BASELINE_KEY, JSON.stringify(newBaseline));
+
+    // Check low battery thresholds (30%, 20%, 10%) when not charging
+    checkBatteryThresholds(currentSoc, false, currentRange);
   };
 
   // Automatic & Live Road-Trip Telemetry Processor (All 10 Trip Metrics)
@@ -1739,6 +1861,17 @@ export default function App() {
               SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(remainingTrips)),
               SecureStore.setItemAsync(ACTIVE_TRIP_KEY, JSON.stringify(resumed)),
             ]);
+
+            // Auto-start Lock Screen Live Activity when trip resumes
+            if (!isLiveActivityActiveRef.current) {
+              const ok = startLiveActivityAudio();
+              if (ok) {
+                setIsLiveActivityActive(true);
+                isLiveActivityActiveRef.current = true;
+                SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
+                setTimeout(() => updateLiveActivityNow(), 100);
+              }
+            }
             return;
           }
         }
@@ -1810,6 +1943,23 @@ export default function App() {
         setActiveTrip(newActive);
         activeTripRef.current = newActive;
         await SecureStore.setItemAsync(ACTIVE_TRIP_KEY, JSON.stringify(newActive));
+
+        // Auto-start Lock Screen Live Activity for trip
+        if (!isLiveActivityActiveRef.current) {
+          const ok = startLiveActivityAudio();
+          if (ok) {
+            setIsLiveActivityActive(true);
+            isLiveActivityActiveRef.current = true;
+            SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
+            setTimeout(() => updateLiveActivityNow(), 100);
+          }
+        }
+        const estRange = ch?.range_km ?? Math.round((currentSoc / 100) * 320);
+        sendAppNotification(
+          '🚗 Trip Started',
+          `Started at ${formatDateTime(startSec)}. Battery: ${Math.round(currentSoc)}% • Range: ${estRange} km • Odo: ${currentOdo.toLocaleString()} km`,
+          'windsor-trip-status'
+        );
       } else {
         // Update ongoing active trip
         const dtSec = Math.max(0, nowSec - (existing.lastSampleTimeSec || nowSec));
@@ -1973,6 +2123,12 @@ export default function App() {
         tripsRef.current = nextTrips;
         await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips));
 
+        sendAppNotification(
+          `🏁 Trip Completed: ${completedTrip.distanceKm.toFixed(1)} km`,
+          `Duration: ${formatDurationDetailed(completedTrip.durationSeconds)} • Efficiency: ${completedTrip.efficiencyKmPerKwh} km/kWh • Battery: ${Math.round(completedTrip.startSoc)}% → ${Math.round(completedTrip.endSoc)}% • Odo: ${currentOdo.toLocaleString()} km`,
+          'windsor-trip-status'
+        );
+
         if (backendConfigRef.current) {
           backendSyncData(backendConfigRef.current, [completedTrip]).catch(() => {});
         } else if (googleConfigRef.current?.accessToken && googleConfigRef.current?.spreadsheetId && googleConfigRef.current?.autoSync) {
@@ -1983,6 +2139,14 @@ export default function App() {
       setActiveTrip(null);
       activeTripRef.current = null;
       await SecureStore.deleteItemAsync(ACTIVE_TRIP_KEY);
+
+      // Stop Live Activity if not actively charging
+      if (!activeChargeRef.current && !ch?.is_charging) {
+        stopLiveActivityAudio();
+        setIsLiveActivityActive(false);
+        isLiveActivityActiveRef.current = false;
+        SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
+      }
     } else if (
       !backendConfigRef.current && // with 24/7 background tracking the cloud has the real trip times
       parkedBaselineRef.current &&
@@ -2423,6 +2587,10 @@ export default function App() {
       pushBackendToken().then(() => syncFromBackend());
       await processChargingTelemetry(snap);
       await processTripTelemetry(snap);
+      const liveSoc = snap.status?.charge?.soc ?? snap.status?.fuel_level ?? null;
+      const isLiveCharging = Boolean(snap.status?.charge?.is_charging);
+      const liveRange = snap.status?.charge?.range_km ?? snap.status?.range_km;
+      checkBatteryThresholds(liveSoc, isLiveCharging, liveRange);
       if (backendConfigRef.current && (tripsRef.current.length > 0 || chargeLogsRef.current.length > 0)) {
         backendSyncData(backendConfigRef.current, tripsRef.current, chargeLogsRef.current).catch(() => {});
       }
@@ -2487,14 +2655,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!liveTripTracking || !isAuthenticated) return;
+    const shouldPoll =
+      isAuthenticated &&
+      (liveTripTracking ||
+        isLiveActivityActive ||
+        Boolean(activeTrip) ||
+        Boolean(activeCharge) ||
+        Boolean(snapshot?.status?.charge?.is_charging));
+    if (!shouldPoll) return;
     const interval = setInterval(() => {
       if (!isSyncing) {
         refreshVehicleTelemetry();
       }
     }, 60_000);
     return () => clearInterval(interval);
-  }, [liveTripTracking, isAuthenticated, isSyncing]);
+  }, [
+    liveTripTracking,
+    isLiveActivityActive,
+    activeTrip,
+    activeCharge,
+    snapshot?.status?.charge?.is_charging,
+    isAuthenticated,
+    isSyncing,
+  ]);
 
   const handleLogin = async () => {
     const cleanPhone = phone.replace(/\D/g, '');
@@ -4142,6 +4325,25 @@ export default function App() {
                     const nextVal = !liveTripTracking;
                     setLiveTripTracking(nextVal);
                     if (nextVal) {
+                      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+                        Notification.requestPermission().catch(() => {});
+                      }
+                      if (!isLiveActivityActiveRef.current) {
+                        const ok = startLiveActivityAudio();
+                        if (ok) {
+                          setIsLiveActivityActive(true);
+                          isLiveActivityActiveRef.current = true;
+                          SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
+                          setTimeout(() => updateLiveActivityNow(), 100);
+                        }
+                      }
+                      const socVal = snapshot?.status?.charge?.soc ?? snapshot?.status?.fuel_level ?? 0;
+                      const rangeVal = snapshot?.status?.charge?.range_km ?? Math.round((socVal / 100) * 320);
+                      sendAppNotification(
+                        '🚗 Trip Started',
+                        `Live Road-Trip Mode activated. Battery: ${Math.round(socVal)}% • Range: ${rangeVal} km.`,
+                        'windsor-trip-status'
+                      );
                       refreshVehicleTelemetry();
                       showBanner('ok', 'Live Road-Trip Mode ON (polling every 60s)');
                     } else {
@@ -4178,8 +4380,13 @@ export default function App() {
                   <TouchableOpacity
                     style={styles.recordBtn}
                     onPress={async () => {
+                      const durSec =
+                        activeTrip.durationSeconds > 0
+                          ? activeTrip.durationSeconds
+                          : Math.max(60, Math.floor(Date.now() / 1000) - (activeTrip.startTimestampSec || 0));
                       const finished: TripRecord = {
                         ...activeTrip,
+                        durationSeconds: durSec,
                         endDateTime: formatDateTime(Math.floor(Date.now() / 1000)),
                         status: 'completed',
                       };
@@ -4196,6 +4403,17 @@ export default function App() {
                         SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips)),
                         SecureStore.deleteItemAsync(ACTIVE_TRIP_KEY),
                       ]);
+                      sendAppNotification(
+                        `🏁 Trip Completed: ${activeTrip.distanceKm.toFixed(1)} km`,
+                        `Duration: ${formatDurationDetailed(durSec)} • Battery: ${Math.round(activeTrip.startSoc)}% → ${Math.round(activeTrip.endSoc)}% • Eff: ${activeTrip.efficiencyKmPerKwh} km/kWh`,
+                        'windsor-trip-status'
+                      );
+                      if (!activeChargeRef.current && !snapshot?.status?.charge?.is_charging) {
+                        stopLiveActivityAudio();
+                        setIsLiveActivityActive(false);
+                        isLiveActivityActiveRef.current = false;
+                        SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
+                      }
                       showBanner('ok', 'Trip completed and saved to Trip History');
                     }}
                   >
@@ -4842,12 +5060,12 @@ export default function App() {
                 <View style={styles.liveActivityPreviewCard}>
                   <Text style={styles.liveActivityPreviewMainText}>
                     {charge?.is_charging
-                      ? `⚡ ${Math.round(charge.battery_percentage)}% (${charge.distance_to_empty_km} km) • Charging`
-                      : `🚗 ${displayName || 'Windsor EV'} • ${Math.round(status.basic_vehicle_status?.battery_percentage ?? clampedSoc)}% (${rangeKm || status.basic_vehicle_status?.extended_data2 || Math.round((clampedSoc / 100) * 320)} km)`}
+                      ? `⚡ ${Math.round((charge as any).battery_percentage ?? (charge as any).soc ?? clampedSoc)}% (${(charge as any).distance_to_empty_km ?? (charge as any).range_km ?? rangeKm} km) • Charging`
+                      : `🚗 ${displayName || 'Windsor EV'} • ${Math.round((status as any).basic_vehicle_status?.battery_percentage ?? clampedSoc)}% (${rangeKm || (status as any).basic_vehicle_status?.extended_data2 || Math.round((clampedSoc / 100) * 320)} km)`}
                   </Text>
                   <Text style={styles.liveActivityPreviewSubText}>
                     {charge?.is_charging
-                      ? `${charge.charging_power_kw > 0 ? charge.charging_power_kw.toFixed(1) + ' kW' : '3.3 kW AC'} • Charging in progress`
+                      ? `${(charge as any).charging_power_kw > 0 ? (charge as any).charging_power_kw.toFixed(1) + ' kW' : '3.3 kW AC'} • Charging in progress`
                       : `${status.locked ? '🔒 Locked' : '🔓 Unlocked'} • Cabin: ${status.interior_temperature ? status.interior_temperature + '°C' : '--'} • ${status.odometer_km?.toLocaleString() || ''} km`}
                   </Text>
                   <Text style={styles.liveActivityPreviewAlbumText}>
@@ -7392,7 +7610,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
-  tabBar: {
+  tabBar: ({
     position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
     bottom: (Platform.OS === 'web' ? 18 : Platform.OS === 'ios' ? 24 : 18) as any,
     left: 16,
@@ -7420,7 +7638,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     justifyContent: 'space-around',
     alignItems: 'center',
-  },
+  } as any),
   tabItem: {
     flex: 1,
     alignItems: 'center',
@@ -7446,11 +7664,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.1,
   },
-  tabActive: {
+  tabActive: ({
     color: '#34D399',
     fontWeight: '800',
     textShadow: (Platform.OS === 'web' ? '0 0 8px rgba(52, 211, 153, 0.4)' : undefined) as any,
-  },
+  } as any),
 
   // Webhook copy cards in Account Tab
   copyWebhookCard: {
