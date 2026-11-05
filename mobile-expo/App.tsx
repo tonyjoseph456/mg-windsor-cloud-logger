@@ -3247,23 +3247,14 @@ export default function App() {
 
             {/* SAVED CHARGING SESSIONS HISTORY (All 11 Telemetry Metrics) */}
             <View style={styles.card}>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 12,
-                }}
-              >
-                <View style={{ flex: 1, minWidth: 160 }}>
-                  <Text style={styles.cardTitle}>Charging Session History</Text>
-                  <Text style={styles.subtitle}>
-                    Automatically saves all 11 metrics on every charge
-                  </Text>
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <View style={{ marginBottom: 14 }}>
+                <Text style={styles.cardTitle}>Charging Session History</Text>
+                <Text style={styles.subtitle}>
+                  Automatically saves all 11 metrics on every charge
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669' }]}
+                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
                     onPress={handleCleanAndDeduplicateCharges}
                     disabled={isBackendBusy}
                   >
@@ -3272,7 +3263,7 @@ export default function App() {
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.recordBtn}
+                    style={[styles.recordBtn, { paddingHorizontal: 12, paddingVertical: 8 }]}
                   onPress={async () => {
                     const nowSec = Math.floor(Date.now() / 1000);
                     const startSec =
@@ -3473,21 +3464,12 @@ export default function App() {
 
             {/* Completed Trips History */}
             <View style={styles.card}>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 12,
-                }}
-              >
-                <View style={{ flex: 1, marginRight: 8 }}>
-                  <Text style={styles.cardTitle}>Saved Trips History</Text>
-                  <Text style={styles.subtitle}>All 10 trip & driving metrics per journey</Text>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <View style={{ marginBottom: 14 }}>
+                <Text style={styles.cardTitle}>Saved Trips History</Text>
+                <Text style={styles.subtitle}>All 10 trip & driving metrics per journey</Text>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
                   <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 10 }]}
+                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
                     onPress={handleCleanAndDeduplicateSheets}
                     disabled={isBackendBusy}
                   >
@@ -3496,7 +3478,7 @@ export default function App() {
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#059669', paddingHorizontal: 10 }]}
+                    style={[styles.recordBtn, { backgroundColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
                     onPress={() => handleSyncAllToBackendSheets(false)}
                     disabled={isBackendBusy}
                   >
@@ -3505,7 +3487,7 @@ export default function App() {
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={styles.recordBtn}
+                    style={[styles.recordBtn, { paddingHorizontal: 12, paddingVertical: 8 }]}
                     onPress={async () => {
                     const nowSec = Math.floor(Date.now() / 1000);
                     const base = parkedBaselineRef.current;
