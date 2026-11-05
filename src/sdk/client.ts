@@ -433,7 +433,14 @@ export class MgIndiaClient {
     this.pinHash = options.pinHash || null;
     this.deviceId = makeDeviceId(this.phone);
     this.onSessionRefreshed = options.onSessionRefreshed;
-    this.proxyBaseUrl = options.proxyBaseUrl || null;
+    // Browsers (PWA) are blocked by CORS, so route MG calls through the Cloudflare worker proxy.
+    const isBrowser =
+      typeof document !== 'undefined' &&
+      typeof navigator !== 'undefined' &&
+      (navigator as any).product !== 'ReactNative';
+    this.proxyBaseUrl =
+      options.proxyBaseUrl ||
+      (isBrowser ? 'https://mg-windsor-webhook.tonyjoseph456.workers.dev' : null);
   }
 
   get hasPin(): boolean {
@@ -572,9 +579,17 @@ export class MgIndiaClient {
 
     const decrypted = decryptGatewayBody(text, respHeaders);
     const parsed = JSON.parse(decrypted);
-    if (parsed.code === 7) {
+    const isSessionInvalid =
+      parsed.code === 7 ||
+      parsed.code === 4 ||
+      parsed.code === 2 ||
+      parsed.code === 401 ||
+      (typeof parsed.message === 'string' &&
+        /login|token|session|invalid|expire/i.test(parsed.message));
+
+    if (isSessionInvalid) {
       if (!_sessionRetry) {
-        throw new MgIndiaApiError('Gateway session remains invalid after login');
+        throw new MgIndiaApiError(parsed.message || 'Gateway session remains invalid after login');
       }
       await this.login();
       return this.gatewayGet(path, params, false);
@@ -710,7 +725,18 @@ export class MgIndiaClient {
           throw new MgIndiaApiError('TAP response vehicle does not match request');
         }
         const result = dispatcher.result ?? 0;
-        if (result === STATUS_RESULT_SESSION_INVALID) {
+        let errMsg = '';
+        if (dispatcher.errorMessage instanceof Uint8Array) {
+          try {
+            errMsg = new TextDecoder().decode(dispatcher.errorMessage).trim();
+          } catch (_) {}
+        }
+        const isSessionInvalid =
+          result === STATUS_RESULT_SESSION_INVALID ||
+          result === 3 ||
+          /login|token|session|invalid|expire/i.test(errMsg);
+
+        if (isSessionInvalid) {
           if (loginAttempt === 0) {
             await this.login();
             reLoginNeeded = true;

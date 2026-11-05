@@ -337,9 +337,13 @@ export default {
               voltage: ch?.charging_voltage,
               current: ch?.charging_current,
               odometerKm: currentOdo,
+              // BMS freezes these at plug-in = the driving cycle that just ended
+              cycleDistanceKm: ch?.distance_since_last_charge_km ?? 0,
+              cycleEnergyKwh: ch?.power_usage_since_last_charge_kwh ?? 0,
               status: 'charging'
             };
           } else {
+            activeCharge.notChargingSinceSec = 0;
             activeCharge.endSoc = Math.max(activeCharge.endSoc, currentSoc);
             activeCharge.endEnergyKwh = Math.max(activeCharge.endEnergyKwh, currentEnergyKwh);
             activeCharge.maxKw = Math.max(activeCharge.maxKw || 0, liveKw);
@@ -347,9 +351,16 @@ export default {
             activeCharge.lastSampleSec = nowSec;
           }
           await storagePut(env, 'active_charge_state', JSON.stringify(activeCharge));
-        } else if (activeCharge) {
-          // Charging just finished or was interrupted (power lost / full / unplugged)
-          const durSec = Math.max(60, nowSec - activeCharge.startTimestampSec);
+        } else if (activeCharge && !activeCharge.notChargingSinceSec) {
+          // First poll without charging: remember WHEN it stopped, but wait before closing the
+          // session - the BMS briefly reports "not charging" mid-session, which used to split one
+          // charge into several short sessions.
+          activeCharge.notChargingSinceSec = nowSec;
+          await storagePut(env, 'active_charge_state', JSON.stringify(activeCharge));
+        } else if (activeCharge && nowSec - activeCharge.notChargingSinceSec >= 300) {
+          // Charging really finished or was interrupted (power lost / full / unplugged)
+          const endSec = activeCharge.notChargingSinceSec; // real stop time
+          const durSec = Math.max(60, endSec - activeCharge.startTimestampSec);
           const durStr = `${Math.floor(durSec / 3600)}h ${Math.floor((durSec % 3600) / 60)}m`;
           const finalSoc = Math.max(activeCharge.endSoc, currentSoc);
           const finalEnergy = Math.max(activeCharge.endEnergyKwh, currentEnergyKwh);
@@ -364,12 +375,15 @@ export default {
               ? 'Full (100% Complete)'
               : `Stopped at ${finalSoc.toFixed(0)}% (Power Lost / Unplugged)`;
 
+          let cycleKm = Number(activeCharge.cycleDistanceKm || 0);
+          let cycleKwh = Number(activeCharge.cycleEnergyKwh || 0);
+          const finalRange = ch?.range_km ?? st?.range_km ?? (finalSoc > 0 ? Math.round((finalSoc / 100) * 320) : 320);
           const completedChargeRecord = {
             id: activeCharge.id,
             startTimestampSec: activeCharge.startTimestampSec,
-            endTimestampSec: nowSec,
+            endTimestampSec: endSec,
             startDateTime: activeCharge.startDateTime,
-            endDateTime: new Date(nowSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+            endDateTime: new Date(endSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
             durationSeconds: durSec,
             durationFormatted: durStr,
             startSoc: activeCharge.startSoc,
@@ -381,6 +395,12 @@ export default {
             maxChargingSpeedKw: maxKw,
             completionStatus,
             odometerKm: currentOdo,
+            distanceToEmptyAfterKm: finalRange > 0 ? finalRange : Math.round((finalSoc / 100) * 320),
+            rangeKm: finalRange > 0 ? finalRange : Math.round((finalSoc / 100) * 320),
+            // Driving done BEFORE this charge (since the previous charge)
+            distanceTravelledSinceLastChargeKm: cycleKm,
+            energyUsedSinceLastChargeKwh: cycleKwh,
+            efficiencyKmPerKwh: cycleKm > 0 && cycleKwh > 0 ? Number((cycleKm / cycleKwh).toFixed(2)) : 0,
             status: 'completed'
           };
 
@@ -521,10 +541,12 @@ export default {
             status: 'completed'
           };
 
-          // Save to completed trips history
+          // Save to completed trips history (skip GPS-jitter "trips": engine on, car not moved)
           const historyRaw = await storageGet(env, 'cloud_trips_history');
           const history = historyRaw ? JSON.parse(historyRaw) : [];
-          history.unshift(completedRecord);
+          if (distKm >= 0.2) {
+            history.unshift(completedRecord);
+          }
           // Keep up to 200 trips
           if (history.length > 200) history.length = 200;
           await storagePut(env, 'cloud_trips_history', JSON.stringify(history));

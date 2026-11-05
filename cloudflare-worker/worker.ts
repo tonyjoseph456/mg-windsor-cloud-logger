@@ -9,8 +9,7 @@ const ALLOWED_HOSTS = new Set(['iov-tap.mgindia.co.in', 'iov-gateway.mgindia.co.
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers':
-    'Content-Type, Accept, Accept-Language, APP-SIGNATURE, SIGNATURE, APP-CONTENT-ENCRYPTED, APP-LANGUAGE-TYPE, APP-LOGIN-TOKEN, APP-USER-ID, APP-SEND-DATE, APP-VERIFICATION-STRING, ORIGINAL-CONTENT-TYPE',
+  'Access-Control-Allow-Headers': '*',
   'Access-Control-Expose-Headers':
     'APP-SEND-DATE, ORIGINAL-CONTENT-TYPE, app-send-date, original-content-type, x-mg-send-date',
 };
@@ -30,52 +29,74 @@ export default {
       );
     }
 
-    const targetUrl = new URL(targetUrlStr);
+    let targetUrl: URL;
+    try {
+      targetUrl = new URL(targetUrlStr);
+    } catch {
+      return new Response(JSON.stringify({ error: 'Invalid target URL' }), {
+        status: 400,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      });
+    }
+
     if (!ALLOWED_HOSTS.has(targetUrl.hostname)) {
-      return new Response('Forbidden target host', { status: 403, headers: CORS_HEADERS });
+      return new Response(JSON.stringify({ error: 'Forbidden target host' }), {
+        status: 403,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      });
     }
 
-    const forwardHeaders = new Headers();
-    forwardHeaders.set('User-Agent', USER_AGENT);
+    try {
+      const forwardHeaders = new Headers();
+      forwardHeaders.set('User-Agent', USER_AGENT);
 
-    for (const [k, v] of request.headers.entries()) {
-      const upper = k.toUpperCase();
-      if (
-        upper.startsWith('APP-') ||
-        upper === 'SIGNATURE' ||
-        upper === 'ORIGINAL-CONTENT-TYPE' ||
-        upper === 'CONTENT-TYPE' ||
-        upper === 'ACCEPT' ||
-        upper === 'ACCEPT-LANGUAGE'
-      ) {
-        forwardHeaders.set(upper, v);
+      for (const [k, v] of request.headers.entries()) {
+        const upper = k.toUpperCase();
+        if (
+          upper.startsWith('APP-') ||
+          upper === 'SIGNATURE' ||
+          upper === 'ORIGINAL-CONTENT-TYPE' ||
+          upper === 'CONTENT-TYPE' ||
+          upper === 'ACCEPT' ||
+          upper === 'ACCEPT-LANGUAGE'
+        ) {
+          forwardHeaders.set(upper, v);
+        }
       }
+
+      const upstream = await fetch(targetUrl.toString(), {
+        method: request.method,
+        headers: forwardHeaders,
+        body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined,
+      });
+
+      const outHeaders = new Headers(CORS_HEADERS);
+      outHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'text/plain');
+
+      const sendDate = upstream.headers.get('APP-SEND-DATE') || upstream.headers.get('app-send-date');
+      if (sendDate) {
+        outHeaders.set('APP-SEND-DATE', sendDate);
+        outHeaders.set('x-mg-send-date', sendDate);
+      }
+      const origCt =
+        upstream.headers.get('ORIGINAL-CONTENT-TYPE') ||
+        upstream.headers.get('original-content-type');
+      if (origCt) {
+        outHeaders.set('ORIGINAL-CONTENT-TYPE', origCt);
+      }
+
+      return new Response(await upstream.text(), {
+        status: upstream.status,
+        headers: outHeaders,
+      });
+    } catch (e) {
+      return new Response(
+        JSON.stringify({ error: (e as Error).message || 'Upstream fetch to MG failed' }),
+        {
+          status: 502,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        }
+      );
     }
-
-    const upstream = await fetch(targetUrl.toString(), {
-      method: request.method,
-      headers: forwardHeaders,
-      body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined,
-    });
-
-    const outHeaders = new Headers(CORS_HEADERS);
-    outHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'text/plain');
-
-    const sendDate = upstream.headers.get('APP-SEND-DATE') || upstream.headers.get('app-send-date');
-    if (sendDate) {
-      outHeaders.set('APP-SEND-DATE', sendDate);
-      outHeaders.set('x-mg-send-date', sendDate);
-    }
-    const origCt =
-      upstream.headers.get('ORIGINAL-CONTENT-TYPE') ||
-      upstream.headers.get('original-content-type');
-    if (origCt) {
-      outHeaders.set('ORIGINAL-CONTENT-TYPE', origCt);
-    }
-
-    return new Response(await upstream.text(), {
-      status: upstream.status,
-      headers: outHeaders,
-    });
   },
 };

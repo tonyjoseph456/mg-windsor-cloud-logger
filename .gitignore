@@ -1,6 +1,13 @@
 node_modules/
 dist/
-mobile-expo/
 mg-ismart-india-client/
 .env
 *.log
+*.abc
+
+# mobile-expo build and cache artifacts
+mobile-expo/node_modules/
+mobile-expo/.expo/
+mobile-expo/dist/
+mobile-expo/dist-web/
+mobile-expo/.git_bak/

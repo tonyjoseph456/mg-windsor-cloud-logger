@@ -1,0 +1,43 @@
+{
+    "expo":  {
+                 "name":  "MG iSMART India",
+                 "slug":  "mg-ismart-india",
+                 "scheme":  "mgismart",
+                 "version":  "1.0.0",
+                 "orientation":  "portrait",
+                 "userInterfaceStyle":  "dark",
+                 "ios":  {
+                             "supportsTablet":  true,
+                             "bundleIdentifier":  "com.personal.mgismartindia"
+                         },
+                 "plugins":  [
+                                 "expo-status-bar",
+                                 "expo-secure-store",
+                                 "expo-sharing",
+                                 "expo-web-browser"
+                             ],
+                 "extra":  {
+                               "eas":  {
+                                           "projectId":  "643c0188-7019-4e88-84d8-647462414eaf"
+                                       }
+                           },
+                 "owner":  "teejay456",
+                 "runtimeVersion":  {
+                                        "policy":  "appVersion"
+                                    },
+                 "updates":  {
+                                 "url":  "https://u.expo.dev/643c0188-7019-4e88-84d8-647462414eaf"
+                             },
+                 "android":  {
+                                 "package":  "com.personal.mgismartindia"
+                             },
+                 "web":  {
+                             "bundler":  "metro",
+                             "output":  "single",
+                             "name":  "MG iSMART India",
+                             "shortName":  "MG iSMART",
+                             "backgroundColor":  "#0A0E17",
+                             "themeColor":  "#0A0E17"
+                         }
+             }
+}

@@ -173,6 +173,7 @@ export interface TripRecord {
   avgSpeedKmh: number;
   status: 'driving' | 'completed';
   lastSampleTimeSec?: number;
+  lastMotionSec?: number;
 }
 
 export interface ChargeLogRecord {

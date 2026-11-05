@@ -157,7 +157,7 @@ export function createDemoSnapshot(vehicleIndex = 0): Snapshot {
   };
 }
 
-export const INITIAL_TRIP_HISTORY: TripRecord[] = [
+export const INITIAL_TRIP_HISTORY: any[] = [
   {
     id: 'trip-1',
     startDateTime: 'Today, 09:15 AM',
@@ -212,7 +212,7 @@ export const INITIAL_TRIP_HISTORY: TripRecord[] = [
   },
 ];
 
-export const INITIAL_CHARGE_HISTORY: ChargeLogRecord[] = [
+export const INITIAL_CHARGE_HISTORY: any[] = [
   {
     id: 'chg-1',
     startDateTime: 'Today, 10:15 AM (Active)',

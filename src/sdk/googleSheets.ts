@@ -1,7 +1,15 @@
 /**
- * Google Drive & Google Sheets Integration for Web PWA
+ * Google Drive & Google Sheets Integration for MG Windsor EV Telematics
+ * 
+ * Uses standard Google Drive API v3 and Google Sheets API v4 with zero external SDK bloat.
+ * Scopes used:
+ * - 'https://www.googleapis.com/auth/drive.file' (Grants access ONLY to files/folders created by this app)
+ * - 'https://www.googleapis.com/auth/userinfo.email'
+ * - 'https://www.googleapis.com/auth/userinfo.profile'
  */
-import { TripRecord } from './models';
+import * as WebBrowser from 'expo-web-browser';
+import { Platform } from 'react-native';
+import { ChargeLogRecord, TripRecord } from './models';
 
 export const DEFAULT_GOOGLE_CLIENT_ID =
   '502353296708-qfj0bj8s52mqchbi9dr3dthss9hr8ugb.apps.googleusercontent.com';
@@ -19,12 +27,16 @@ export interface GoogleSyncConfig {
   folderId?: string;
   spreadsheetId?: string;
   spreadsheetUrl?: string;
+  chargingSpreadsheetId?: string;
+  chargingSpreadsheetUrl?: string;
   autoSync: boolean;
   lastSyncedAt?: string;
+  lastChargingSyncedAt?: string;
 }
 
 const FOLDER_NAME = 'MG Windsor EV Telematics';
 const SPREADSHEET_TITLE = 'MG Windsor EV - Trip History';
+const CHARGING_SPREADSHEET_TITLE = 'MG Windsor EV - Charging History';
 
 export const SHEET_HEADERS = [
   'Trip ID',
@@ -49,62 +61,93 @@ export const SHEET_HEADERS = [
   'Average Speed (km/h)'
 ];
 
+export const CHARGING_SHEET_HEADERS = [
+  'Session ID',
+  'Date',
+  'Start Time',
+  'End Time',
+  'Duration',
+  'Start Battery %',
+  'End Battery %',
+  'Energy Added (kWh)',
+  'Wall Energy (kWh)',
+  'Loss (%)',
+  'Charger Speed Category',
+  'Peak Speed (kW)',
+  'Completion Status',
+  'Distance Driven Since Last Charge (km)',
+  'Driving Efficiency (km/kWh)'
+];
+
+/** Unambiguous IST date (YYYY-MM-DD) + 24h time, so Sheets never mis-reads day/month. */
+export function istIso(sec: number): { date: string; time: string } {
+  const iso = new Date(((sec || 0) + 19800) * 1000).toISOString();
+  return { date: iso.slice(0, 10), time: iso.slice(11, 19) };
+}
+
 /**
- * Initiates Google OAuth 2.0 Implicit Flow in Browser
+ * Initiates Google OAuth 2.0 Implicit Flow via WebBrowser
  */
-export function startGoogleOAuthWeb(clientId?: string): Promise<{
+export async function startGoogleOAuth(clientId?: string): Promise<{
   accessToken: string;
   expiresIn?: number;
 }> {
-  return new Promise((resolve, reject) => {
-    const activeClientId = clientId?.trim() || DEFAULT_GOOGLE_CLIENT_ID;
-    const redirectUri = window.location.origin;
-    const scope = [
-      'https://www.googleapis.com/auth/drive.file',
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/userinfo.profile',
-    ].join(' ');
+  const activeClientId = (clientId && clientId.trim().length > 0)
+    ? clientId.trim()
+    : DEFAULT_GOOGLE_CLIENT_ID;
 
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(
-      activeClientId
-    )}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(
-      scope
-    )}&prompt=select_account`;
+  // Clean redirect URI that doesn't depend on deprecated auth.expo.io
+  const redirectUri =
+    Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin
+      ? `${window.location.origin}/oauth-callback`
+      : 'https://mg-windsor-webhook.tonyjoseph456.workers.dev/oauth-callback';
 
-    const popup = window.open(authUrl, 'google_login', 'width=500,height=600');
-    if (!popup) {
-      reject(new Error('Popup blocked! Please allow popups for this site.'));
-      return;
+  const scope = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+  ].join(' ');
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(
+    activeClientId
+  )}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(
+    scope
+  )}&prompt=select_account`;
+
+  const returnUrl =
+    Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin
+      ? `${window.location.origin}/oauth-callback`
+      : 'mgismart://google-auth';
+
+  const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
+
+  if (result.type === 'success' && result.url) {
+    // Extract access_token from URL fragment
+    const hashPart = result.url.split('#')[1] || result.url.split('?')[1] || '';
+    const params = new URLSearchParams(hashPart);
+    const token = params.get('access_token');
+    const expiresIn = params.get('expires_in');
+
+    if (!token) {
+      throw new Error('Failed to retrieve access token from Google authentication callback');
     }
 
-    const timer = setInterval(() => {
-      try {
-        if (!popup || popup.closed) {
-          clearInterval(timer);
-          reject(new Error('Google Sign-In popup closed by user.'));
-          return;
-        }
+    return {
+      accessToken: token,
+      expiresIn: expiresIn ? parseInt(expiresIn, 10) : undefined,
+    };
+  }
 
-        if (popup.location.href.includes('access_token')) {
-          const hash = popup.location.hash || popup.location.search;
-          const params = new URLSearchParams(hash.replace(/^[#?]/, ''));
-          const token = params.get('access_token');
-          const expiresIn = params.get('expires_in');
-          popup.close();
-          clearInterval(timer);
-          if (token) {
-            resolve({ accessToken: token, expiresIn: expiresIn ? parseInt(expiresIn, 10) : undefined });
-          } else {
-            reject(new Error('No access token in response'));
-          }
-        }
-      } catch (_) {
-        // Cross-origin before redirect - wait
-      }
-    }, 500);
-  });
+  if (result.type === 'cancel' || result.type === 'dismiss') {
+    throw new Error('Google Sign-In was cancelled.');
+  }
+
+  throw new Error(`Google Sign-In failed (${result.type})`);
 }
 
+/**
+ * Fetch signed-in Google user profile (Name, Email, Avatar)
+ */
 export async function fetchGoogleProfile(token: string): Promise<GoogleUserProfile> {
   const resp = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     headers: { Authorization: `Bearer ${token}` },
@@ -120,7 +163,11 @@ export async function fetchGoogleProfile(token: string): Promise<GoogleUserProfi
   };
 }
 
+/**
+ * Finds or creates the dedicated 'MG Windsor EV Telematics' folder in Google Drive
+ */
 export async function getOrCreateDriveFolder(token: string): Promise<string> {
+  // 1. Search for existing folder
   const query = encodeURIComponent(
     `name = '${FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
   );
@@ -136,6 +183,7 @@ export async function getOrCreateDriveFolder(token: string): Promise<string> {
     }
   }
 
+  // 2. Not found: create folder
   const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: {
@@ -156,10 +204,14 @@ export async function getOrCreateDriveFolder(token: string): Promise<string> {
   return created.id;
 }
 
+/**
+ * Finds or creates the 'MG Windsor EV - Trip History' spreadsheet inside the dedicated folder
+ */
 export async function getOrCreateTripSpreadsheet(
   token: string,
   folderId: string
 ): Promise<{ spreadsheetId: string; spreadsheetUrl: string }> {
+  // 1. Search for existing spreadsheet in folder
   const query = encodeURIComponent(
     `name = '${SPREADSHEET_TITLE}' and '${folderId}' in parents and trashed = false`
   );
@@ -179,6 +231,7 @@ export async function getOrCreateTripSpreadsheet(
     }
   }
 
+  // 2. Create spreadsheet inside the Drive folder
   const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: {
@@ -200,11 +253,15 @@ export async function getOrCreateTripSpreadsheet(
   const spreadsheetId = file.id;
   const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
 
+  // 3. Write header row
   await appendSheetValues(token, spreadsheetId, [SHEET_HEADERS]);
 
   return { spreadsheetId, spreadsheetUrl };
 }
 
+/**
+ * Appends raw row values to a Google Spreadsheet
+ */
 async function appendSheetValues(
   token: string,
   spreadsheetId: string,
@@ -226,14 +283,165 @@ async function appendSheetValues(
   }
 }
 
+/**
+ * Deduplicates a list of trips, eliminating exact duplicates, zero-distance GPS jitter,
+ * and fragmented trips that were started midway during a drive.
+ * When duplicates or overlapping intervals are found, the longest and most complete trip is kept.
+ */
+export function deduplicateTripList(trips: TripRecord[]): TripRecord[] {
+  if (!trips || !trips.length) return [];
+
+  // Filter out stationary jitter (< 0.2 km and < 120s)
+  const valid = trips.filter(
+    (t) => Number(t?.distanceKm ?? 0) >= 0.2 || (t?.status === 'driving')
+  );
+
+  // Sort descending by start time, and then by distance
+  valid.sort((a, b) => {
+    const timeA = a.startTimestampSec || 0;
+    const timeB = b.startTimestampSec || 0;
+    if (timeA !== timeB) return timeB - timeA;
+    return (b.distanceKm || 0) - (a.distanceKm || 0);
+  });
+
+  const clean: TripRecord[] = [];
+
+  for (const t of valid) {
+    const tId = String(t.id || '');
+    const tJourney = t.journeyId != null ? Number(t.journeyId) : null;
+    const tStartSec = Number(t.startTimestampSec || 0);
+    const tEndSec = Number(t.endTimestampSec || tStartSec);
+    const tStartOdo = Number(t.startOdometerKm || 0);
+    const tEndOdo = Number(t.endOdometerKm || 0);
+    const tDist = Number(t.distanceKm || 0);
+
+    let isDuplicate = false;
+
+    for (let i = 0; i < clean.length; i++) {
+      const c = clean[i];
+      const cId = String(c.id || '');
+      const cJourney = c.journeyId != null ? Number(c.journeyId) : null;
+      const cStartSec = Number(c.startTimestampSec || 0);
+      const cEndSec = Number(c.endTimestampSec || cStartSec);
+      const cStartOdo = Number(c.startOdometerKm || 0);
+      const cEndOdo = Number(c.endOdometerKm || 0);
+      const cDist = Number(c.distanceKm || 0);
+
+      // 1. Exact ID match
+      if (tId && cId && tId === cId) {
+        isDuplicate = true;
+        break;
+      }
+
+      // 2. Same vehicle ECU Journey ID
+      if (tJourney != null && cJourney != null && tJourney === cJourney) {
+        if (tDist > cDist || (tStartSec < cStartSec && tEndSec >= cEndSec)) {
+          clean[i] = t;
+        }
+        isDuplicate = true;
+        break;
+      }
+
+      // 3. Same End Odometer (within 0.25 km) AND Overlapping Time Window
+      const sameEndOdo = tEndOdo > 0 && cEndOdo > 0 && Math.abs(tEndOdo - cEndOdo) <= 0.25;
+      const timeOverlaps =
+        tStartSec <= cEndSec + 90 && tEndSec >= cStartSec - 90;
+
+      if (sameEndOdo && timeOverlaps) {
+        // Keep the longer, more complete trip
+        if (tDist > cDist || (tStartSec < cStartSec && tEndSec >= cEndSec)) {
+          clean[i] = t;
+        }
+        isDuplicate = true;
+        break;
+      }
+
+      // 4. Same Start Odometer AND Start Time (within 120s)
+      const sameStartOdo = tStartOdo > 0 && cStartOdo > 0 && Math.abs(tStartOdo - cStartOdo) <= 0.25;
+      const sameStartTime = Math.abs(tStartSec - cStartSec) <= 120;
+      if (sameStartOdo && sameStartTime) {
+        if (tDist > cDist) {
+          clean[i] = t;
+        }
+        isDuplicate = true;
+        break;
+      }
+    }
+
+    if (!isDuplicate) {
+      clean.push(t);
+    }
+  }
+
+  return clean;
+}
+
+/**
+ * Deduplicates charging records by ID, odometer, and timestamp
+ */
+export function deduplicateChargeList(charges: ChargeLogRecord[]): ChargeLogRecord[] {
+  if (!charges || !charges.length) return [];
+  const valid = charges.filter(
+    (c) => Number(c?.endSoc ?? 0) > 0 || Number(c?.energyAddedToPackKwh ?? 0) > 0
+  );
+
+  valid.sort((a, b) => (b.startTimestampSec || 0) - (a.startTimestampSec || 0));
+  const clean: ChargeLogRecord[] = [];
+
+  for (const c of valid) {
+    const cId = String(c.id || '');
+    const cStartSec = Number(c.startTimestampSec || 0);
+    const cEndSec = Number(c.endTimestampSec || cStartSec);
+    const cOdo = Number(c.odometerKm || 0);
+    const cEndSoc = Number(c.endSoc || 0);
+
+    const isDup = clean.some((x) => {
+      const xId = String(x.id || '');
+      if (cId && xId && cId === xId) return true;
+      const xStartSec = Number(x.startTimestampSec || 0);
+      const xEndSec = Number(x.endTimestampSec || xStartSec);
+      const xOdo = Number(x.odometerKm || 0);
+      const xEndSoc = Number(x.endSoc || 0);
+
+      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.2) {
+        if (Math.abs(cEndSoc - xEndSoc) <= 1 && Math.abs(cEndSec - xEndSec) < 1800) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!isDup) {
+      clean.push(c);
+    }
+  }
+
+  return clean;
+}
+
+/**
+ * Read existing Trip IDs from Google Sheet to avoid duplicate entries (checks Log tab and Sheet1 tab)
+ */
 export async function getExistingSheetTripIds(
   token: string,
   spreadsheetId: string
 ): Promise<Set<string>> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Sheet1!A:A`;
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  let resp = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Log!A:A`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!resp.ok) {
+    resp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Sheet1!A:A`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+  }
+  if (!resp.ok) {
+    resp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:A`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+  }
 
   const ids = new Set<string>();
   if (resp.ok) {
@@ -249,6 +457,9 @@ export async function getExistingSheetTripIds(
   return ids;
 }
 
+/**
+ * Syncs multiple trips to the user's Google Spreadsheet (skips duplicates)
+ */
 export async function syncTripsToGoogleSheet(
   token: string,
   spreadsheetId: string,
@@ -261,6 +472,7 @@ export async function syncTripsToGoogleSheet(
   const existingIds = await getExistingSheetTripIds(token, spreadsheetId);
   const rowsToAppend: (string | number)[][] = [];
 
+  // Sort chronological for clean spreadsheet reading
   const sorted = [...trips].sort(
     (a, b) => (a.startTimestampSec || 0) - (b.startTimestampSec || 0)
   );
@@ -273,17 +485,19 @@ export async function syncTripsToGoogleSheet(
     const idleSec = t.idleDurationSeconds || 0;
     const idleStr = idleSec > 0 ? `${Math.floor(idleSec / 60)} min ${idleSec % 60} sec` : 'None';
 
+    const sIso = istIso(t.startTimestampSec);
+    const eIso = istIso(t.endTimestampSec);
     const row = [
       t.id,
-      t.startDateTime ? t.startDateTime.split(' at ')[0] : 'Today',
-      t.startDateTime ? (t.startDateTime.split(' at ')[1] || t.startDateTime) : '--',
-      t.endDateTime ? (t.endDateTime.split(' at ')[1] || t.endDateTime) : '--',
+      sIso.date,
+      sIso.time,
+      eIso.time,
       durStr,
       t.distanceKm,
       t.startOdometerKm,
       t.endOdometerKm,
-      `${t.startSoc.toFixed(1)}%`,
-      `${t.endSoc.toFixed(1)}%`,
+      Number(t.startSoc.toFixed(1)),
+      Number(t.endSoc.toFixed(1)),
       t.energyUsedKwh,
       t.efficiencyKmPerKwh > 0 ? t.efficiencyKmPerKwh : 0,
       t.startLocation || 'Unknown',
@@ -308,3 +522,243 @@ export async function syncTripsToGoogleSheet(
     alreadyExistingCount: trips.length - rowsToAppend.length,
   };
 }
+
+/**
+ * Finds or creates the 'MG Windsor EV - Charging History' spreadsheet inside the dedicated folder
+ */
+export async function getOrCreateChargingSpreadsheet(
+  token: string,
+  folderId: string
+): Promise<{ spreadsheetId: string; spreadsheetUrl: string }> {
+  // 1. Search for existing spreadsheet in folder
+  const query = encodeURIComponent(
+    `name = '${CHARGING_SPREADSHEET_TITLE}' and '${folderId}' in parents and trashed = false`
+  );
+  const searchResp = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,webViewLink)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  if (searchResp.ok) {
+    const data = await searchResp.json();
+    if (Array.isArray(data.files) && data.files.length > 0) {
+      const file = data.files[0];
+      return {
+        spreadsheetId: file.id,
+        spreadsheetUrl: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}`,
+      };
+    }
+  }
+
+  // 2. Create spreadsheet inside the Drive folder
+  const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: CHARGING_SPREADSHEET_TITLE,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: [folderId],
+    }),
+  });
+
+  if (!createResp.ok) {
+    throw new Error(`Failed to create Charging Spreadsheet: HTTP ${createResp.status}`);
+  }
+
+  const file = await createResp.json();
+  const spreadsheetId = file.id;
+  const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
+
+  // 3. Write header row
+  await appendSheetValues(token, spreadsheetId, [CHARGING_SHEET_HEADERS]);
+
+  return { spreadsheetId, spreadsheetUrl };
+}
+
+/**
+ * Syncs charging sessions to the user's Google Spreadsheet (skips duplicates)
+ */
+export async function syncChargingLogsToGoogleSheet(
+  token: string,
+  spreadsheetId: string,
+  logs: ChargeLogRecord[]
+): Promise<{ syncedCount: number; alreadyExistingCount: number }> {
+  if (!logs || logs.length === 0) {
+    return { syncedCount: 0, alreadyExistingCount: 0 };
+  }
+
+  const existingIds = await getExistingSheetTripIds(token, spreadsheetId);
+  const rowsToAppend: (string | number)[][] = [];
+
+  const sorted = [...logs].sort(
+    (a, b) => (a.startTimestampSec || 0) - (b.startTimestampSec || 0)
+  );
+
+  for (const log of sorted) {
+    if (existingIds.has(log.id)) continue;
+
+    const durSec = log.durationSeconds || 0;
+    const durStr = `${Math.floor(durSec / 3600)}h ${Math.floor((durSec % 3600) / 60)}m`;
+    const statusText =
+      log.endSoc >= 99
+        ? 'Full (100% Complete)'
+        : log.status === 'completed'
+        ? `Stopped at ${log.endSoc.toFixed(0)}% (Unplugged / Power Lost)`
+        : 'In progress';
+
+    const sIso = istIso(log.startTimestampSec);
+    const eIso = log.endTimestampSec ? istIso(log.endTimestampSec) : null;
+    const row = [
+      log.id,
+      sIso.date,
+      sIso.time,
+      eIso ? eIso.time : '--',
+      durStr,
+      Number(log.startSoc.toFixed(1)),
+      Number(log.endSoc.toFixed(1)),
+      log.energyAddedToPackKwh,
+      log.energyConsumedKwh,
+      log.energyLossPercent,
+      log.chargerCategory,
+      log.maxChargingSpeedKw || 0,
+      statusText,
+      log.distanceTravelledSinceLastChargeKm || 0,
+      log.efficiencyKmPerKwh > 0 ? log.efficiencyKmPerKwh : 0,
+    ];
+
+    rowsToAppend.push(row);
+  }
+
+  if (rowsToAppend.length > 0) {
+    await appendSheetValues(token, spreadsheetId, rowsToAppend);
+  }
+
+  return {
+    syncedCount: rowsToAppend.length,
+    alreadyExistingCount: logs.length - rowsToAppend.length,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Multi-user background backend (Cloudflare Worker). Stores TOKENS only.
+// ---------------------------------------------------------------------------
+export const BACKEND_URL = 'https://mg-windsor-webhook.tonyjoseph456.workers.dev';
+
+export interface BackendConfig {
+  userId: string;
+  userKey: string;
+  email: string;
+  name?: string;
+  tripSheetId: string;
+  chargeSheetId: string;
+}
+
+export interface BackendStatus {
+  success: boolean;
+  email: string;
+  mgStatus: 'ok' | 'expired' | 'none';
+  googleStatus: 'ok' | 'revoked';
+  lastPollSec: number | null;
+  lastError: string | null;
+  pendingRows: number;
+  live: { soc: number; odometerKm: number; charging: boolean; updatedSec: number } | null;
+  trips: any[];
+  charges: any[];
+}
+
+/** Google sign-in using the offline auth-code flow; the worker keeps the refresh token. */
+export async function startBackendSignIn(clientId?: string): Promise<BackendConfig> {
+  const cid = clientId && clientId.trim() ? clientId.trim() : DEFAULT_GOOGLE_CLIENT_ID;
+  const scope = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+  ].join(' ');
+  const authUrl =
+    `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(cid)}` +
+    `&redirect_uri=${encodeURIComponent(BACKEND_URL + '/google-callback')}` +
+    `&response_type=code&access_type=offline&prompt=consent%20select_account` +
+    `&scope=${encodeURIComponent(scope)}`;
+
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    // PWA: full-page redirect. The worker sends the user back to this origin with the account key.
+    window.location.href = authUrl + '&state=' + encodeURIComponent(window.location.origin);
+    return new Promise<BackendConfig>(() => {});
+  }
+
+  const result = await WebBrowser.openAuthSessionAsync(authUrl, 'mgismart://google-auth');
+  if (result.type !== 'success' || !result.url) {
+    throw new Error('Google Sign-In was cancelled.');
+  }
+  return parseBackendParams(new URLSearchParams(result.url.split('?')[1] || ''));
+}
+
+/** Parses the account key the worker returns after Google sign-in (native deep link or PWA redirect). */
+export function parseBackendParams(params: URLSearchParams): BackendConfig {
+  const error = params.get('error');
+  if (error) throw new Error(`Google Sign-In failed: ${error}`);
+  const userId = params.get('userId');
+  const userKey = params.get('userKey');
+  if (!userId || !userKey) throw new Error('Backend did not return an account key.');
+  return {
+    userId,
+    userKey,
+    email: params.get('email') || '',
+    name: params.get('name') || undefined,
+    tripSheetId: params.get('tripSheetId') || '',
+    chargeSheetId: params.get('chargeSheetId') || '',
+  };
+}
+
+async function backendCall(path: string, cfg: BackendConfig, body?: Record<string, unknown>) {
+  const resp = await fetch(`${BACKEND_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: cfg.userId, userKey: cfg.userKey, ...(body || {}) }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `Backend error ${resp.status}`);
+  return data;
+}
+
+/** Sends the MG session TOKEN only (never password / PIN) so the cloud can track the car. */
+export const backendRegisterCar = (
+  cfg: BackendConfig,
+  car: { uid: string; token: string; vin?: string; phone?: string }
+) => backendCall('/api/register-car', cfg, car);
+
+export const backendGetStatus = (cfg: BackendConfig): Promise<BackendStatus> =>
+  backendCall('/api/status', cfg);
+
+export const backendDeleteAccount = (cfg: BackendConfig) => backendCall('/api/delete', cfg);
+
+export const sheetUrl = (id: string) => `https://docs.google.com/spreadsheets/d/${id}`;
+
+export const backendRestore = (cfg: BackendConfig): Promise<{ trips: any[]; charges: any[] }> =>
+  backendCall('/api/restore', cfg);
+
+export const backendSyncData = (
+  cfg: BackendConfig,
+  trips: any[],
+  charges?: any[]
+): Promise<{ success: boolean; syncedTrips: number; syncedCharges: number }> =>
+  backendCall('/api/sync', cfg, { trips, charges: charges || [] });
+
+export const backendCleanSheets = (
+  cfg: BackendConfig
+): Promise<{
+  success: boolean;
+  tripsBefore: number;
+  tripsAfter: number;
+  tripsRemoved: number;
+  chargesBefore: number;
+  chargesAfter: number;
+  chargesRemoved: number;
+  error?: string;
+}> => backendCall('/api/clean-sheets', cfg);
+
+
