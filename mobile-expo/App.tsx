@@ -55,7 +55,7 @@ import {
   sheetUrl,
 } from './src/sdk';
 
-type TabId = 'home' | 'charge' | 'trips' | 'controls' | 'gps' | 'account';
+type TabId = 'home' | 'charge' | 'trips' | 'account';
 
 const SESSION_KEY = 'mg_ismart_live_session_v2';
 const SNAPSHOT_KEY = 'mg_ismart_cached_snapshot_v2';
@@ -2880,57 +2880,242 @@ export default function App() {
               );
             })()}
 
-            {/* 4-Wheel TPMS & Closures */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>
-                Tyre Pressures (0.2 PSI Precision) & Closures
-              </Text>
-              <View style={styles.tpmsGrid}>
-                <View style={styles.tpmsBox}>
-                  <Text style={styles.tpmsLabel}>Front Left (Driver)</Text>
-                  <Text style={styles.tpmsVal}>
-                    {status.front_left_tyre_psi ?? '--'} PSI
-                  </Text>
-                  <Text style={styles.tpmsMeta}>
-                    Door: {status.driver_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                    {status.driver_window_open ? 'OPEN' : 'Shut'}
-                  </Text>
-                </View>
+            {/* 1. Tyre Pressures & Closures (Closed by default) */}
+            {(() => {
+              const allShut =
+                !status.driver_door_open &&
+                !status.passenger_door_open &&
+                !status.rear_left_door_open &&
+                !status.rear_right_door_open &&
+                !status.boot_open &&
+                !status.bonnet_open;
+              const tpmsSummary = `FL ${status.front_left_tyre_psi ?? '--'} • FR ${status.front_right_tyre_psi ?? '--'} • RL ${status.rear_left_tyre_psi ?? '--'} • RR ${status.rear_right_tyre_psi ?? '--'} PSI`;
+              return (
+                <CollapsibleSectionCard
+                  title="Tyre Pressures (0.2 PSI Precision) & Closures"
+                  icon="🛞"
+                  badge={allShut ? 'ALL SHUT' : 'DOOR / BOOT OPEN'}
+                  badgeBg={allShut ? '#064E3B' : '#7F1D1D'}
+                  badgeColor={allShut ? '#6EE7B7' : '#FCA5A5'}
+                  preview={tpmsSummary}
+                  tapHint="Tap to expand • 4-wheel pressures, doors & windows"
+                  defaultExpanded={false}
+                >
+                  <View style={styles.tpmsGrid}>
+                    <View style={styles.tpmsBox}>
+                      <Text style={styles.tpmsLabel}>Front Left (Driver)</Text>
+                      <Text style={styles.tpmsVal}>
+                        {status.front_left_tyre_psi ?? '--'} PSI
+                      </Text>
+                      <Text style={styles.tpmsMeta}>
+                        Door: {status.driver_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                        {status.driver_window_open ? 'OPEN' : 'Shut'}
+                      </Text>
+                    </View>
 
-                <View style={styles.tpmsBox}>
-                  <Text style={styles.tpmsLabel}>Front Right (Passenger)</Text>
-                  <Text style={styles.tpmsVal}>
-                    {status.front_right_tyre_psi ?? '--'} PSI
-                  </Text>
-                  <Text style={styles.tpmsMeta}>
-                    Door: {status.passenger_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                    {status.passenger_window_open ? 'OPEN' : 'Shut'}
-                  </Text>
-                </View>
+                    <View style={styles.tpmsBox}>
+                      <Text style={styles.tpmsLabel}>Front Right (Passenger)</Text>
+                      <Text style={styles.tpmsVal}>
+                        {status.front_right_tyre_psi ?? '--'} PSI
+                      </Text>
+                      <Text style={styles.tpmsMeta}>
+                        Door: {status.passenger_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                        {status.passenger_window_open ? 'OPEN' : 'Shut'}
+                      </Text>
+                    </View>
 
-                <View style={styles.tpmsBox}>
-                  <Text style={styles.tpmsLabel}>Rear Left</Text>
-                  <Text style={styles.tpmsVal}>
-                    {status.rear_left_tyre_psi ?? '--'} PSI
-                  </Text>
-                  <Text style={styles.tpmsMeta}>
-                    Door: {status.rear_left_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                    {status.rear_left_window_open ? 'OPEN' : 'Shut'}
-                  </Text>
-                </View>
+                    <View style={styles.tpmsBox}>
+                      <Text style={styles.tpmsLabel}>Rear Left</Text>
+                      <Text style={styles.tpmsVal}>
+                        {status.rear_left_tyre_psi ?? '--'} PSI
+                      </Text>
+                      <Text style={styles.tpmsMeta}>
+                        Door: {status.rear_left_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                        {status.rear_left_window_open ? 'OPEN' : 'Shut'}
+                      </Text>
+                    </View>
 
-                <View style={styles.tpmsBox}>
-                  <Text style={styles.tpmsLabel}>Rear Right</Text>
-                  <Text style={styles.tpmsVal}>
-                    {status.rear_right_tyre_psi ?? '--'} PSI
-                  </Text>
-                  <Text style={styles.tpmsMeta}>
-                    Door: {status.rear_right_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                    {status.rear_right_window_open ? 'OPEN' : 'Shut'}
-                  </Text>
-                </View>
+                    <View style={styles.tpmsBox}>
+                      <Text style={styles.tpmsLabel}>Rear Right</Text>
+                      <Text style={styles.tpmsVal}>
+                        {status.rear_right_tyre_psi ?? '--'} PSI
+                      </Text>
+                      <Text style={styles.tpmsMeta}>
+                        Door: {status.rear_right_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                        {status.rear_right_window_open ? 'OPEN' : 'Shut'}
+                      </Text>
+                    </View>
+                  </View>
+                </CollapsibleSectionCard>
+              );
+            })()}
+
+            {/* 2. Live Vehicle GPS (Moved from Map Tab, Closed by default) */}
+            {(() => {
+              const fix3d = status.gps?.gps_status === GpsStatus.FIX_3D;
+              const hasFix = Boolean(status.gps && (status.gps.latitude || status.gps.longitude));
+              const gpsSummary = hasFix
+                ? `${status.gps?.latitude?.toFixed(4)}°, ${status.gps?.longitude?.toFixed(4)}° • ${status.gps?.speed_kmh ?? 0} km/h`
+                : 'Pull down to refresh GPS fix';
+              return (
+                <CollapsibleSectionCard
+                  title="Live Vehicle GPS & Navigation"
+                  icon="📍"
+                  badge={hasFix ? (fix3d ? '3D FIX' : '2D FIX') : 'NO FIX'}
+                  badgeBg={hasFix ? '#064E3B' : '#78350F'}
+                  badgeColor={hasFix ? '#6EE7B7' : '#FCD34D'}
+                  preview={gpsSummary}
+                  tapHint="Tap to expand • Coordinates, Altitude & Navigation"
+                  defaultExpanded={false}
+                >
+                  {status.gps ? (
+                    <>
+                      <View style={{ gap: 10, marginTop: 4 }}>
+                        <InfoRow
+                          label="GPS Fix Quality"
+                          value={
+                            status.gps.gps_status === GpsStatus.FIX_3D
+                              ? `3D Fix (${status.gps.satellites ?? 0} Satellites)`
+                              : status.gps.gps_status === GpsStatus.FIX_2D
+                              ? `2D Fix (${status.gps.satellites ?? 0} Satellites)`
+                              : 'No Active Fix'
+                          }
+                        />
+                        <InfoRow
+                          label="Coordinates"
+                          value={`${status.gps.latitude?.toFixed(6) ?? '--'}, ${
+                            status.gps.longitude?.toFixed(6) ?? '--'
+                          }`}
+                        />
+                        <InfoRow
+                          label="Speed & Heading"
+                          value={`${status.gps.speed_kmh ?? 0} km/h • ${status.gps.heading_deg ?? 0}°`}
+                        />
+                        <InfoRow label="Altitude" value={`${status.gps.altitude_m ?? 0} m ASL`} />
+                      </View>
+
+                      {status.gps.latitude && status.gps.longitude && (
+                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                          <TouchableOpacity
+                            style={[styles.ctrlBtn, { backgroundColor: '#0284C7' }]}
+                            onPress={() =>
+                              Linking.openURL(
+                                `http://maps.apple.com/?ll=${status.gps?.latitude},${status.gps?.longitude}&q=${encodeURIComponent(
+                                  displayName
+                                )}`
+                              )
+                            }
+                          >
+                            <Text style={styles.ctrlBtnText}>Open in Apple Maps</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.ctrlBtn, { backgroundColor: '#059669' }]}
+                            onPress={() =>
+                              Linking.openURL(
+                                `https://www.google.com/maps/search/?api=1&query=${status.gps?.latitude},${status.gps?.longitude}`
+                              )
+                            }
+                          >
+                            <Text style={styles.ctrlBtnText}>Google Maps</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </>
+                  ) : (
+                    <Text style={styles.subtitle}>Pull down or tap Sync to fetch vehicle GPS coordinates.</Text>
+                  )}
+                </CollapsibleSectionCard>
+              );
+            })()}
+
+            {/* 3. PIN-Protected Remote Commands (Moved from Control Tab, Closed by default) */}
+            <CollapsibleSectionCard
+              title="PIN-Protected Remote Commands"
+              icon="🎛️"
+              badge={status.locked ? 'LOCKED' : 'UNLOCKED'}
+              badgeBg={status.locked ? '#064E3B' : '#7F1D1D'}
+              badgeColor={status.locked ? '#6EE7B7' : '#FCA5A5'}
+              subtitle="Verifies MD5(&quot;PIN00&quot;) on V11 dispatcher before issuing control frames"
+              preview="Lock, Unlock, Climate AC, Windows, Sunroof, Tailgate"
+              tapHint="Tap to expand • Full remote control commands"
+              defaultExpanded={false}
+            >
+              <View style={styles.btnGrid}>
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Lock Doors', (c) => c.controlDoorLock(true))}
+                >
+                  <Text style={styles.ctrlBtnText}>Lock Doors</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Unlock Doors', (c) => c.controlDoorLock(false))}
+                >
+                  <Text style={styles.ctrlBtnText}>Unlock Doors</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Start Climate AC', (c) => c.controlClimate(true))}
+                >
+                  <Text style={styles.ctrlBtnText}>Start Climate AC</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Stop Climate AC', (c) => c.controlClimate(false))}
+                >
+                  <Text style={styles.ctrlBtnText}>Stop Climate AC</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() =>
+                    triggerCommand('Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))
+                  }
+                >
+                  <Text style={styles.ctrlBtnText}>Open Windows</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() =>
+                    triggerCommand('Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))
+                  }
+                >
+                  <Text style={styles.ctrlBtnText}>Close Windows</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Open Sunroof', (c) => c.controlSunroof(true))}
+                >
+                  <Text style={styles.ctrlBtnText}>Open Sunroof</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Close Sunroof', (c) => c.controlSunroof(false))}
+                >
+                  <Text style={styles.ctrlBtnText}>Close Sunroof</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
+                >
+                  <Text style={styles.ctrlBtnText}>Find My Car</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.ctrlBtn}
+                  onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
+                >
+                  <Text style={styles.ctrlBtnText}>Release Tailgate</Text>
+                </TouchableOpacity>
               </View>
-            </View>
+            </CollapsibleSectionCard>
           </>
         )}
 
@@ -3168,157 +3353,6 @@ export default function App() {
               )}
             </View>
           </>
-        )}
-
-        {/* TAB 3: REMOTE CONTROLS */}
-        {tab === 'controls' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>
-              PIN-Protected Remote Commands (App-ID 510 & 313)
-            </Text>
-            <Text style={[styles.subtitle, { marginBottom: 14 }]}>
-              Verifies MD5(&quot;PIN00&quot;) on V11 dispatcher before issuing control frames
-            </Text>
-
-            <View style={styles.btnGrid}>
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Lock Doors', (c) => c.controlDoorLock(true))}
-              >
-                <Text style={styles.ctrlBtnText}>Lock Doors</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Unlock Doors', (c) => c.controlDoorLock(false))}
-              >
-                <Text style={styles.ctrlBtnText}>Unlock Doors</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Start Climate AC', (c) => c.controlClimate(true))}
-              >
-                <Text style={styles.ctrlBtnText}>Start Climate AC</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Stop Climate AC', (c) => c.controlClimate(false))}
-              >
-                <Text style={styles.ctrlBtnText}>Stop Climate AC</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() =>
-                  triggerCommand('Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))
-                }
-              >
-                <Text style={styles.ctrlBtnText}>Open Windows</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() =>
-                  triggerCommand('Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))
-                }
-              >
-                <Text style={styles.ctrlBtnText}>Close Windows</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Open Sunroof', (c) => c.controlSunroof(true))}
-              >
-                <Text style={styles.ctrlBtnText}>Open Sunroof</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Close Sunroof', (c) => c.controlSunroof(false))}
-              >
-                <Text style={styles.ctrlBtnText}>Close Sunroof</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
-              >
-                <Text style={styles.ctrlBtnText}>Find My Car</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.ctrlBtn}
-                onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
-              >
-                <Text style={styles.ctrlBtnText}>Release Tailgate</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* TAB 4: GPS LOCATION */}
-        {tab === 'gps' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Live Vehicle GPS (RvsPosition)</Text>
-            {status.gps ? (
-              <>
-                <View style={{ gap: 10, marginTop: 8 }}>
-                  <InfoRow
-                    label="GPS Fix Quality"
-                    value={
-                      status.gps.gps_status === GpsStatus.FIX_3D
-                        ? `3D Fix (${status.gps.satellites ?? 0} Satellites)`
-                        : status.gps.gps_status === GpsStatus.FIX_2D
-                        ? `2D Fix (${status.gps.satellites ?? 0} Satellites)`
-                        : 'No Active Fix'
-                    }
-                  />
-                  <InfoRow
-                    label="Coordinates"
-                    value={`${status.gps.latitude?.toFixed(6) ?? '--'}, ${
-                      status.gps.longitude?.toFixed(6) ?? '--'
-                    }`}
-                  />
-                  <InfoRow
-                    label="Speed & Heading"
-                    value={`${status.gps.speed_kmh ?? 0} km/h • ${status.gps.heading_deg ?? 0}°`}
-                  />
-                  <InfoRow label="Altitude" value={`${status.gps.altitude_m ?? 0} m ASL`} />
-                </View>
-
-                {status.gps.latitude && status.gps.longitude && (
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-                    <TouchableOpacity
-                      style={[styles.ctrlBtn, { backgroundColor: '#0284C7' }]}
-                      onPress={() =>
-                        Linking.openURL(
-                          `http://maps.apple.com/?ll=${status.gps?.latitude},${status.gps?.longitude}&q=${encodeURIComponent(
-                            displayName
-                          )}`
-                        )
-                      }
-                    >
-                      <Text style={styles.ctrlBtnText}>Open in Apple Maps</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.ctrlBtn, { backgroundColor: '#059669' }]}
-                      onPress={() =>
-                        Linking.openURL(
-                          `https://www.google.com/maps/search/?api=1&query=${status.gps?.latitude},${status.gps?.longitude}`
-                        )
-                      }
-                    >
-                      <Text style={styles.ctrlBtnText}>Google Maps</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </>
-            ) : (
-              <Text style={styles.subtitle}>Pull down to fetch vehicle GPS coordinates.</Text>
-            )}
-          </View>
         )}
 
         {/* TAB 3: TRIPS (10-Point Automatic + Live Road-Trip Logger) */}
@@ -4307,25 +4341,6 @@ export default function App() {
                   <Circle cx="6" cy="19" r="3" />
                   <Circle cx="18" cy="5" r="3" />
                   <Path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H9" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-              ),
-            },
-            {
-              id: 'controls' as const,
-              label: 'Control',
-              renderIcon: (active: boolean) => (
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
-                  <Path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-              ),
-            },
-            {
-              id: 'gps' as const,
-              label: 'Map',
-              renderIcon: (active: boolean) => (
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
-                  <Path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" strokeLinecap="round" strokeLinejoin="round" />
-                  <Circle cx="12" cy="10" r="3" />
                 </Svg>
               ),
             },
@@ -5791,7 +5806,7 @@ function TripSessionCard({ trip }: { trip: TripRecord }) {
   );
 }
 
-function AccountSectionCard({
+function CollapsibleSectionCard({
   title,
   icon,
   badge,
@@ -5799,6 +5814,7 @@ function AccountSectionCard({
   badgeColor = '#38BDF8',
   subtitle,
   preview,
+  tapHint = 'Tap to expand • View & manage',
   defaultExpanded = false,
   children,
 }: {
@@ -5809,6 +5825,7 @@ function AccountSectionCard({
   badgeColor?: string;
   subtitle?: string;
   preview?: string;
+  tapHint?: string;
   defaultExpanded?: boolean;
   children: React.ReactNode;
 }) {
@@ -5845,7 +5862,7 @@ function AccountSectionCard({
               </Text>
             ) : null}
             <Text style={{ color: '#64748B', fontSize: 10, fontWeight: '600' }}>
-              Tap to expand • View &amp; manage
+              {tapHint}
             </Text>
           </View>
         )}
@@ -5870,6 +5887,8 @@ function AccountSectionCard({
     </View>
   );
 }
+
+const AccountSectionCard = CollapsibleSectionCard;
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
