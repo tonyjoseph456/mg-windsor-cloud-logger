@@ -9182,6 +9182,58 @@ async function notifyUser(env, u, payload) {
     );
   }
 }
+async function sendPushWardActivity(apiKey, state, content) {
+  if (!apiKey || !apiKey.trim()) return false;
+  const slug = "ev-live-telemetry";
+  const cleanKey = apiKey.trim();
+  try {
+    const patchRes = await fetch(`https://api.pushward.app/activities/${slug}`, {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Bearer ${cleanKey}`,
+        "Content-Type": "application/merge-patch+json"
+      },
+      body: JSON.stringify({
+        state,
+        content: {
+          template: "generic",
+          ...content
+        }
+      })
+    });
+    if (patchRes.status === 404) {
+      await fetch("https://api.pushward.app/activities", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${cleanKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          slug,
+          name: "MG Windsor EV"
+        })
+      });
+      await fetch(`https://api.pushward.app/activities/${slug}`, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${cleanKey}`,
+          "Content-Type": "application/merge-patch+json"
+        },
+        body: JSON.stringify({
+          state,
+          content: {
+            template: "generic",
+            ...content
+          }
+        })
+      });
+    }
+    return true;
+  } catch (err) {
+    console.warn("PushWard update error:", err);
+    return false;
+  }
+}
 async function exchangeCode(env, code, redirectUri) {
   const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -9723,11 +9775,32 @@ async function pollUser(env, u, nowSec, budget) {
             body: `Plugged in at ${istParts(nowSec).time}. Battery: ${soc}%${liveKw > 0 ? ` \u2022 Charging at ${liveKw} kW` : ""}.`,
             tag: "windsor-charge-status"
           });
+          if (u.pushwardKey) {
+            const curRange = ch?.range_km ?? Math.round(soc / 100 * 320);
+            sendPushWardActivity(u.pushwardKey, "ongoing", {
+              progress: Math.max(0.01, Math.min(1, soc / 100)),
+              title: `\u26A1 ${soc}% \u2022 ${curRange} km`,
+              state: liveKw > 0 ? `${liveKw.toFixed(1)} kW AC \u2022 Charging` : "Charging in progress",
+              icon: "bolt.fill",
+              accent_color: "green"
+            });
+          }
         } else {
           u.activeCharge.notChargingSinceSec = 0;
           u.activeCharge.endSoc = Math.max(u.activeCharge.endSoc, soc);
           u.activeCharge.endEnergyKwh = Math.max(u.activeCharge.endEnergyKwh, energy);
           u.activeCharge.maxKw = Math.max(u.activeCharge.maxKw || 0, liveKw);
+          if (u.pushwardKey) {
+            const curRange = ch?.range_km ?? Math.round(soc / 100 * 320);
+            const timeLeft = ch?.remaining_charge_time_min ? `${Math.floor(ch.remaining_charge_time_min / 60)}h ${ch.remaining_charge_time_min % 60}m left` : "Charging in progress";
+            sendPushWardActivity(u.pushwardKey, "ongoing", {
+              progress: Math.max(0.01, Math.min(1, soc / 100)),
+              title: `\u26A1 ${soc}% \u2022 ${curRange} km`,
+              state: `${liveKw > 0 ? `${liveKw.toFixed(1)} kW \u2022 ` : ""}${timeLeft}`,
+              icon: "bolt.fill",
+              accent_color: "green"
+            });
+          }
           if (nowSec - (u.lastSaveSec || 0) > 600) dirty = true;
         }
       } else if (u.activeCharge && !u.activeCharge.notChargingSinceSec) {
@@ -9785,6 +9858,15 @@ async function pollUser(env, u, nowSec, budget) {
           body: `${a.startSoc}% \u2192 ${finalSoc.toFixed(0)}% (+${added} kWh) in ${rec.durationFormatted}. Estimated DTE: ${rec.rangeKm} km.`,
           tag: "windsor-charge-status"
         });
+        if (u.pushwardKey) {
+          sendPushWardActivity(u.pushwardKey, "ended", {
+            progress: 1,
+            title: isFull ? "\u{1F50B} Charging Complete (100%)" : `\u{1F50C} Charging Stopped at ${finalSoc.toFixed(0)}%`,
+            state: `+${added} kWh in ${rec.durationFormatted} \u2022 ${rec.rangeKm} km Range`,
+            icon: "battery.100.bolt",
+            accent_color: isFull ? "green" : "orange"
+          });
+        }
       }
       const journeyId = typeof raw.currentJourneyID === "number" && raw.currentJourneyID > 0 ? raw.currentJourneyID : null;
       const driving = !charging && (speed > 0.5 || st?.engine_status_raw === 1 || (st?.power_mode_raw ?? 0) > 0);
@@ -9813,6 +9895,17 @@ async function pollUser(env, u, nowSec, budget) {
           t.endCabinTempC = st?.interior_temperature ?? t.endCabinTempC;
           t.endExteriorTempC = st?.exterior_temperature ?? t.endExteriorTempC;
           t.lastSampleTimeSec = nowSec;
+          if (u.pushwardKey) {
+            const dist = Number((odo - t.startOdometerKm).toFixed(1));
+            const curRange = ch?.range_km ?? Math.round(soc / 100 * 320);
+            sendPushWardActivity(u.pushwardKey, "ongoing", {
+              progress: Math.max(0.01, Math.min(1, soc / 100)),
+              title: `\u{1F697} ${dist} km \u2022 ${soc}%`,
+              state: speed > 0 ? `${Math.round(speed)} km/h \u2022 ${curRange} km range` : `Parked / Idle \u2022 ${curRange} km`,
+              icon: "car.fill",
+              accent_color: soc <= 20 ? "red" : "cyan"
+            });
+          }
           if (nowSec - (u.lastSaveSec || 0) > 600) dirty = true;
         } else {
           const dist = Number((odo - t.startOdometerKm).toFixed(1));
@@ -9851,6 +9944,15 @@ async function pollUser(env, u, nowSec, budget) {
               body: `Duration: ${fmtDur(durSec)} \u2022 Efficiency: ${rec.efficiencyKmPerKwh} km/kWh \u2022 Battery: ${t.startSoc}% \u2192 ${soc}% \u2022 Odo: ${odo.toLocaleString()} km.`,
               tag: "windsor-trip-status"
             });
+            if (u.pushwardKey) {
+              sendPushWardActivity(u.pushwardKey, "ended", {
+                progress: 1,
+                title: `\u{1F3C1} Trip Completed: ${dist} km`,
+                state: `Efficiency: ${rec.efficiencyKmPerKwh} km/kWh \u2022 Battery: ${t.startSoc}% \u2192 ${soc}%`,
+                icon: "flag.checkered",
+                accent_color: "blue"
+              });
+            }
           }
           u.activeTrip = null;
           u.lastParkedOdo = odo;
@@ -9909,6 +10011,15 @@ async function pollUser(env, u, nowSec, budget) {
           body: `Started at ${istParts(nowSec).time}. Battery: ${soc}% \u2022 Range: ${estRange} km \u2022 Odo: ${odo.toLocaleString()} km.`,
           tag: "windsor-trip-status"
         });
+        if (u.pushwardKey) {
+          sendPushWardActivity(u.pushwardKey, "ongoing", {
+            progress: Math.max(0.01, Math.min(1, soc / 100)),
+            title: `\u{1F697} ${soc}% \u2022 ${estRange} km`,
+            state: speed > 0 ? `${Math.round(speed)} km/h \u2022 Trip in progress` : "Driving \u2022 Windsor EV",
+            icon: "car.fill",
+            accent_color: soc <= 20 ? "red" : "cyan"
+          });
+        }
       } else if (!charging && odo > 0 && u.lastParkedOdo > 0 && odo - u.lastParkedOdo >= 0.3) {
         const deltaKm = Number((odo - u.lastParkedOdo).toFixed(1));
         const hasTrip = (u.trips || []).some((t) => Math.abs(t.endOdometerKm - odo) < 0.2);
@@ -9949,6 +10060,15 @@ async function pollUser(env, u, nowSec, budget) {
             body: `Distance: ${deltaKm} km \u2022 Battery: ${rec.startSoc}% \u2192 ${soc}% \u2022 Odo: ${odo.toLocaleString()} km.`,
             tag: "windsor-trip-status"
           });
+          if (u.pushwardKey) {
+            sendPushWardActivity(u.pushwardKey, "ended", {
+              progress: 1,
+              title: `\u{1F3C1} Trip Completed: ${deltaKm} km`,
+              state: `Distance: ${deltaKm} km \u2022 Battery: ${rec.startSoc}% \u2192 ${soc}%`,
+              icon: "flag.checkered",
+              accent_color: "blue"
+            });
+          }
         }
         u.lastParkedOdo = odo;
         u.lastParkedSoc = soc;
@@ -10120,6 +10240,56 @@ async function handleApi(env, request, url) {
     await saveUser(env, u);
     return json({ success: true });
   }
+  if (path === "/api/pushward-save" || path === "/api/pushward-key") {
+    u.pushwardKey = (body.key ?? url.searchParams.get("key") ?? "").trim();
+    await saveUser(env, u);
+    return json({ success: true, key: u.pushwardKey });
+  }
+  if (path === "/api/pushward-test") {
+    const key = (body.key || u.pushwardKey || url.searchParams.get("key") || "").trim();
+    if (!key) return json({ error: "PushWard API key required" }, 400);
+    const soc = u.live?.soc ?? 82;
+    const range = u.live?.rangeKm ?? 265;
+    const isCharging = Boolean(u.activeCharge || u.live?.charging);
+    const powerKw = u.activeCharge?.maxKw || 3.3;
+    const ok = await sendPushWardActivity(key, "ongoing", {
+      progress: Math.max(0.01, Math.min(1, soc / 100)),
+      title: isCharging ? `\u26A1 ${soc}% \u2022 ${range} km` : `\u{1F697} ${soc}% \u2022 ${range} km`,
+      state: isCharging ? `${powerKw} kW AC \u2022 Charging` : "CarPlay Live Activity Connected",
+      icon: isCharging ? "bolt.fill" : "car.fill",
+      accent_color: isCharging ? "green" : "cyan"
+    });
+    return json({ success: ok });
+  }
+  if (path === "/api/pushward-end") {
+    const key = (body.key || u.pushwardKey || url.searchParams.get("key") || "").trim();
+    if (key) {
+      await sendPushWardActivity(key, "ended", {
+        progress: 1,
+        title: "MG Windsor EV",
+        state: "Parked \u2022 Ready",
+        icon: "car.fill",
+        accent_color: "blue"
+      });
+    }
+    return json({ success: true });
+  }
+  if (path === "/api/widget") {
+    const soc = u.live?.soc ?? 0;
+    const range = u.live?.rangeKm ?? Math.round(soc / 100 * 320);
+    const isCharging = Boolean(u.activeCharge || u.live?.charging);
+    const powerKw = u.activeCharge?.maxKw || 0;
+    const temp = u.trips?.[0]?.endCabinTempC ?? 24;
+    return json({
+      soc,
+      range,
+      charging: isCharging,
+      powerKw,
+      temp,
+      odometer: u.live?.odometerKm || 0,
+      offline: false
+    });
+  }
   if (path === "/api/status" || path === "/api/data") {
     return json({
       success: true,
@@ -10132,6 +10302,7 @@ async function handleApi(env, request, url) {
       tripSheetId: u.tripSheetId,
       chargeSheetId: u.chargeSheetId,
       pushSubscriptionsCount: (u.pushSubscriptions || []).length,
+      pushwardKey: u.pushwardKey || "",
       pendingRows: u.pendingTrips.length + u.pendingCharges.length,
       activeTrip: u.activeTrip,
       activeCharge: u.activeCharge,

@@ -722,6 +722,7 @@ export interface BackendStatus {
   lastError: string | null;
   pendingRows: number;
   live: { soc: number; odometerKm: number; charging: boolean; updatedSec: number } | null;
+  pushwardKey?: string;
   trips: any[];
   charges: any[];
 }

@@ -679,6 +679,72 @@ const TripCalendar = ({
 );
 
 const LIVE_ACTIVITY_KEY = 'mg_live_activity_enabled';
+const PUSHWARD_KEY = 'mg_pushward_key';
+
+async function sendPushWardActivityClient(
+  apiKey: string,
+  state: 'ongoing' | 'ended',
+  content: {
+    progress: number;
+    title: string;
+    state: string;
+    icon?: string;
+    accent_color?: string;
+  }
+): Promise<boolean> {
+  if (!apiKey || !apiKey.trim()) return false;
+  const slug = 'ev-live-telemetry';
+  const cleanKey = apiKey.trim();
+  try {
+    const patchRes = await fetch(`https://api.pushward.app/activities/${slug}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${cleanKey}`,
+        'Content-Type': 'application/merge-patch+json',
+      },
+      body: JSON.stringify({
+        state,
+        content: {
+          template: 'generic',
+          ...content,
+        },
+      }),
+    });
+
+    if (patchRes.status === 404) {
+      await fetch('https://api.pushward.app/activities', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cleanKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          slug,
+          name: 'MG Windsor EV',
+        }),
+      });
+
+      await fetch(`https://api.pushward.app/activities/${slug}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${cleanKey}`,
+          'Content-Type': 'application/merge-patch+json',
+        },
+        body: JSON.stringify({
+          state,
+          content: {
+            template: 'generic',
+            ...content,
+          },
+        }),
+      });
+    }
+    return true;
+  } catch (err) {
+    console.warn('PushWard client error:', err);
+    return false;
+  }
+}
 
 let liveActivityAudioInstance: any = null;
 let silentWavBlobUrl: string | null = null;
@@ -1016,6 +1082,12 @@ export default function App() {
   const isLiveActivityActiveRef = useRef<boolean>(false);
   const refreshVehicleTelemetryRef = useRef<(() => Promise<any>) | null>(null);
 
+  // Apple CarPlay & Live Activity (PushWard - Method 2)
+  const [pushwardKey, setPushwardKey] = useState<string>('');
+  const pushwardKeyRef = useRef<string>('');
+  const [pushwardInputKey, setPushwardInputKey] = useState<string>('');
+  const [isPushwardBusy, setIsPushwardBusy] = useState<boolean>(false);
+
   const tripsRef = useRef<TripRecord[]>([]);
   const activeTripRef = useRef<TripRecord | null>(null);
   const parkedBaselineRef = useRef<ParkedTripBaseline | null>(null);
@@ -1153,6 +1225,54 @@ export default function App() {
     }
   }, [snapshot, activeTrip, activeCharge]);
 
+  const updatePushWardNow = useCallback(
+    async (overrideState?: 'ongoing' | 'ended', customTitle?: string, customSub?: string) => {
+      const key = pushwardKeyRef.current;
+      if (!key) return;
+
+      const st: any = snapshot?.status || {};
+      const ch: any = st.charge || {};
+      const b: any = st.basic_vehicle_status || {};
+      const isCharging = Boolean(ch.is_charging || activeChargeRef.current);
+      const rawSoc = Number(ch.battery_percentage ?? ch.soc ?? b.battery_percentage ?? st.soc ?? 0);
+      const soc = rawSoc > 0 ? Math.min(100, Math.max(0, rawSoc)) : 82;
+      const curRange = Number(ch.distance_to_empty_km ?? ch.range_km ?? b.extended_data2 ?? Math.round((soc / 100) * 320));
+      const liveKw = Number(ch.charging_power_kw ?? 0);
+      const speedKmh = Number(st.speed ?? 0);
+
+      const targetState = overrideState || (isCharging || activeTripRef.current ? 'ongoing' : 'ongoing');
+      const title = customTitle || (isCharging ? `⚡ ${Math.round(soc)}% • ${curRange} km` : `🚗 ${Math.round(soc)}% • ${curRange} km`);
+      let stateDesc = customSub || '';
+
+      if (!stateDesc) {
+        if (isCharging) {
+          const timeRemainingMin = ch?.remaining_charge_time_min ?? null;
+          const timeLeft =
+            timeRemainingMin && timeRemainingMin > 0
+              ? `${Math.floor(timeRemainingMin / 60)}h ${timeRemainingMin % 60}m left`
+              : 'Charging in progress';
+          stateDesc = `${liveKw > 0 ? liveKw.toFixed(1) + ' kW • ' : ''}${timeLeft}`;
+        } else if (activeTripRef.current) {
+          stateDesc = `${Math.round(speedKmh)} km/h • Trip in progress`;
+        } else {
+          stateDesc = 'CarPlay Telemetry Connected';
+        }
+      }
+
+      const icon = isCharging ? 'bolt.fill' : 'car.fill';
+      const accent = isCharging ? 'green' : soc <= 20 ? 'red' : 'cyan';
+
+      await sendPushWardActivityClient(key, targetState, {
+        progress: Math.max(0.01, Math.min(1.0, soc / 100)),
+        title,
+        state: stateDesc,
+        icon,
+        accent_color: accent,
+      });
+    },
+    [snapshot]
+  );
+
   const handleToggleLiveActivity = () => {
     if (!isLiveActivityActive) {
       const ok = startLiveActivityAudio();
@@ -1249,6 +1369,7 @@ export default function App() {
           rawCloudKey,
           rawGoogleSync,
           rawGoogleClientId,
+          rawPushwardKey,
         ] = await Promise.all([
           SecureStore.getItemAsync(SESSION_KEY),
           SecureStore.getItemAsync(SNAPSHOT_KEY),
@@ -1262,7 +1383,14 @@ export default function App() {
           SecureStore.getItemAsync(CLOUD_API_KEY_KEY),
           SecureStore.getItemAsync(GOOGLE_SYNC_KEY),
           SecureStore.getItemAsync(GOOGLE_CLIENT_ID_KEY),
+          SecureStore.getItemAsync(PUSHWARD_KEY),
         ]);
+
+        if (rawPushwardKey) {
+          setPushwardKey(rawPushwardKey);
+          setPushwardInputKey(rawPushwardKey);
+          pushwardKeyRef.current = rawPushwardKey;
+        }
 
         if (rawGoogleClientId) {
           setGoogleClientId(rawGoogleClientId);
@@ -2300,6 +2428,12 @@ export default function App() {
     try {
       const status = await backendGetStatus(c);
       setBackendStatus(status);
+      if (status.pushwardKey && !pushwardKeyRef.current) {
+        setPushwardKey(status.pushwardKey);
+        setPushwardInputKey(status.pushwardKey);
+        pushwardKeyRef.current = status.pushwardKey;
+        await SecureStore.setItemAsync(PUSHWARD_KEY, status.pushwardKey);
+      }
       let trips = status.trips || [];
       let charges = status.charges || [];
       if (fullRestore) {
@@ -3074,6 +3208,118 @@ export default function App() {
       Alert.alert('Test Failed', (e as Error).message);
     } finally {
       setIsPushBusy(false);
+    }
+  };
+
+  const handleSavePushwardKey = async () => {
+    const key = (pushwardInputKey || '').trim();
+    if (!key) {
+      Alert.alert('PushWard Key Required', 'Please enter your PushWard API key or generate one inside the PushWard app.');
+      return;
+    }
+    try {
+      setIsPushwardBusy(true);
+      setPushwardKey(key);
+      pushwardKeyRef.current = key;
+      await SecureStore.setItemAsync(PUSHWARD_KEY, key);
+
+      // Sync key to 24/7 backend worker if connected
+      const cfg = backendConfigRef.current;
+      if (cfg) {
+        try {
+          await fetch(`${BACKEND_URL}/api/pushward-save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: cfg.userId,
+              userKey: cfg.userKey,
+              key,
+            }),
+          });
+        } catch (e) {
+          console.warn('Failed to sync pushward key to backend:', e);
+        }
+      }
+
+      // Compute telemetry metrics for immediate test push to CarPlay
+      const st: any = snapshot?.status || {};
+      const ch: any = st.charge || {};
+      const b: any = st.basic_vehicle_status || {};
+      const isCharging = Boolean(ch.is_charging || activeChargeRef.current);
+      const rawSoc = Number(ch.battery_percentage ?? ch.soc ?? b.battery_percentage ?? st.soc ?? 0);
+      const soc = rawSoc > 0 ? Math.min(100, Math.max(0, rawSoc)) : 82;
+      const curRange = Number(ch.distance_to_empty_km ?? ch.range_km ?? b.extended_data2 ?? Math.round((soc / 100) * 320));
+      const liveKw = Number(ch.charging_power_kw ?? 0);
+
+      const title = isCharging ? `⚡ ${Math.round(soc)}% • ${curRange} km` : `🚗 ${Math.round(soc)}% • ${curRange} km`;
+      const stateStr = isCharging
+        ? `${liveKw > 0 ? liveKw.toFixed(1) + ' kW • ' : ''}Charging • CarPlay Connected`
+        : 'CarPlay Dashboard Connected • Windsor EV';
+
+      // Send to PushWard directly
+      await sendPushWardActivityClient(key, 'ongoing', {
+        progress: Math.max(0.01, Math.min(1.0, soc / 100)),
+        title,
+        state: stateStr,
+        icon: isCharging ? 'bolt.fill' : 'car.fill',
+        accent_color: isCharging ? 'green' : 'cyan',
+      });
+
+      if (cfg) {
+        await fetch(`${BACKEND_URL}/api/pushward-test`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: cfg.userId,
+            userKey: cfg.userKey,
+            key,
+          }),
+        }).catch(() => {});
+      }
+
+      showBanner('ok', '🚘 CarPlay Live Activity connected! Check your CarPlay Dashboard & Lock Screen.');
+      Alert.alert(
+        'Connected to Apple CarPlay! 🚘',
+        'Your live vehicle telemetry card is now active.\n\n• On CarPlay: Appears directly in the main Split-Screen Dashboard (under Spotify)\n• On iPhone: Appears in the Dynamic Island and Lock Screen\n• Zero audio interruptions: Your Spotify/Apple Music continues uninterrupted!'
+      );
+    } catch (err: any) {
+      showBanner('err', `PushWard Error: ${err?.message || 'Failed to update'}`);
+    } finally {
+      setIsPushwardBusy(false);
+    }
+  };
+
+  const handleEndPushward = async () => {
+    const key = pushwardKeyRef.current || (pushwardInputKey || '').trim();
+    if (!key) return;
+    try {
+      setIsPushwardBusy(true);
+      await sendPushWardActivityClient(key, 'ended', {
+        progress: 1.0,
+        title: 'MG Windsor EV',
+        state: 'Parked • Ready',
+        icon: 'car.fill',
+        accent_color: 'blue',
+      });
+
+      const cfg = backendConfigRef.current;
+      if (cfg) {
+        await fetch(`${BACKEND_URL}/api/pushward-end`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: cfg.userId,
+            userKey: cfg.userKey,
+            key,
+          }),
+        }).catch(() => {});
+      }
+
+      showBanner('ok', 'CarPlay Live Activity dismissed.');
+    } catch (err: any) {
+      showBanner('err', `Could not dismiss activity: ${err?.message}`);
+    } finally {
+      setIsPushwardBusy(false);
     }
   };
 
@@ -5110,6 +5356,158 @@ export default function App() {
                     }}
                   >
                     <Text style={[styles.shareImageBtnText, { color: '#38BDF8' }]}>📋 Copy API URL</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </AccountSectionCard>
+
+            {/* CARD 3B: APPLE CARPLAY & DYNAMIC ISLAND LIVE ACTIVITY (PUSHWARD - METHOD 2) */}
+            <AccountSectionCard
+              title="Apple CarPlay & Live Activity (PushWard)"
+              icon="🚘"
+              badge={pushwardKey ? '🟢 Active (No Audio Conflict)' : '⚪ Setup Needed'}
+              badgeBg={pushwardKey ? '#064E3B' : '#1E293B'}
+              badgeColor={pushwardKey ? '#34D399' : '#94A3B8'}
+              preview={
+                pushwardKey
+                  ? 'Live telemetry mirrored to CarPlay Split-Screen Dashboard'
+                  : 'Zero-audio-conflict telemetry on Apple CarPlay & Lock Screen'
+              }
+              subtitle="Mirror real-time vehicle battery %, range, charging speed, and trip stats directly to the Apple CarPlay Split-Screen Dashboard, iPhone Dynamic Island, and Lock Screen with ZERO audio conflicts (Spotify & Apple Music play completely uninterrupted!)."
+            >
+              {/* PushWard API Key Input Field */}
+              <View style={{ gap: 6, marginBottom: 12 }}>
+                <Text style={{ color: '#94A3B8', fontSize: 11, fontWeight: '700', textTransform: 'uppercase' }}>
+                  PushWard API Key
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={pushwardInputKey}
+                  onChangeText={setPushwardInputKey}
+                  placeholder="Paste your PushWard API Key here..."
+                  placeholderTextColor="#64748B"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+
+              {/* Action Buttons: Save & Test, Dismiss, and App Store Link */}
+              <View style={{ gap: 8, marginBottom: 14 }}>
+                <TouchableOpacity
+                  style={[
+                    styles.loginBtn,
+                    { backgroundColor: '#059669', paddingVertical: 13 },
+                    isPushwardBusy && { opacity: 0.7 },
+                  ]}
+                  onPress={handleSavePushwardKey}
+                  disabled={isPushwardBusy}
+                >
+                  {isPushwardBusy ? (
+                    <ActivityIndicator size="small" color="#FFF" />
+                  ) : (
+                    <Text style={styles.loginBtnText}>
+                      🚘 Save &amp; Push Live Activity to CarPlay
+                    </Text>
+                  )}
+                </TouchableOpacity>
+
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity
+                    style={[styles.shareImageBtn, { flex: 1, backgroundColor: '#1E293B', marginTop: 0 }]}
+                    onPress={handleEndPushward}
+                    disabled={isPushwardBusy}
+                  >
+                    <Text style={[styles.shareImageBtnText, { color: '#EF4444' }]}>
+                      ⏹️ Dismiss Activity
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.shareImageBtn, { flex: 1, backgroundColor: '#0284C7', marginTop: 0 }]}
+                    onPress={() => Linking.openURL('https://apps.apple.com/app/pushward/id6478988648')}
+                  >
+                    <Text style={[styles.shareImageBtnText, { color: '#FFF' }]}>
+                      📲 Get PushWard App
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* CarPlay Live Preview Box */}
+              <View style={styles.liveActivityPreviewBox}>
+                <View style={styles.liveActivityPreviewHeader}>
+                  <Text style={[styles.liveActivityPreviewTitle, { color: '#34D399' }]}>
+                    Apple CarPlay Split-Screen Preview
+                  </Text>
+                  <View
+                    style={[
+                      styles.liveActivityPreviewLiveBadge,
+                      !pushwardKey && { backgroundColor: '#1E293B', borderColor: '#334155' },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.liveActivityPreviewLiveBadgeText,
+                        !pushwardKey && { color: '#64748B' },
+                      ]}
+                    >
+                      {pushwardKey ? '● MIRRORING TO CARPLAY' : 'NOT CONNECTED'}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.liveActivityPreviewCard}>
+                  <Text style={styles.liveActivityPreviewMainText}>
+                    {charge?.is_charging
+                      ? `⚡ ${Math.round((charge as any).battery_percentage ?? (charge as any).soc ?? clampedSoc)}% • ${(charge as any).distance_to_empty_km ?? (charge as any).range_km ?? rangeKm} km`
+                      : `🚗 ${Math.round((status as any).basic_vehicle_status?.battery_percentage ?? clampedSoc)}% • ${rangeKm || (status as any).basic_vehicle_status?.extended_data2 || Math.round((clampedSoc / 100) * 320)} km`}
+                  </Text>
+                  <Text style={styles.liveActivityPreviewSubText}>
+                    {charge?.is_charging
+                      ? `${(charge as any).charging_power_kw > 0 ? (charge as any).charging_power_kw.toFixed(1) + ' kW • ' : '3.3 kW • '}Charging in progress`
+                      : `${status.locked ? '🔒 Locked' : '🔓 Unlocked'} • Cabin: ${status.interior_temperature ? status.interior_temperature + '°C' : '--'} • ${displayName || 'Windsor EV'}`}
+                  </Text>
+                  <Text style={[styles.liveActivityPreviewAlbumText, { color: '#38BDF8' }]}>
+                    ✨ Native ActivityKit • No Audio Conflicts with Spotify or Apple Music
+                  </Text>
+                </View>
+              </View>
+
+              {/* Step-by-Step Setup Guide */}
+              <View style={{ backgroundColor: '#0B132B', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#1E293B', marginTop: 12 }}>
+                <Text style={{ color: '#F8FAFC', fontWeight: '700', fontSize: 12, marginBottom: 6 }}>
+                  📖 How to Set Up in 60 Seconds:
+                </Text>
+                <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 17 }}>
+                  1. Install the free <Text style={{ color: '#38BDF8', fontWeight: '700' }}>PushWard</Text> app from the iOS App Store.{'\n'}
+                  2. Open PushWard, tap Settings / API Keys, generate a key, and copy it.{'\n'}
+                  3. Paste the key above and tap <Text style={{ color: '#34D399', fontWeight: '700' }}>&quot;Save &amp; Push Live Activity to CarPlay&quot;</Text>.{'\n'}
+                  4. Plug your iPhone into your car or connect wirelessly to Apple CarPlay. Your vehicle card appears right under Spotify on your dashboard!{'\n'}
+                  5. <Text style={{ color: '#FBBF24', fontWeight: '700' }}>24/7 Background Support:</Text> When 24/7 cloud tracking is enabled, your vehicle telemetry updates automatically every minute while driving or charging, even if this app is closed!
+                </Text>
+              </View>
+
+              {/* Optional Scriptable Fallback Endpoint (Method 1) */}
+              {backendConfig && (
+                <View style={{ backgroundColor: '#070C18', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#1E293B', marginTop: 10 }}>
+                  <Text style={{ color: '#64748B', fontSize: 10, fontWeight: '700', textTransform: 'uppercase', marginBottom: 4 }}>
+                    Optional: Scriptable CarPlay Widget Endpoint (Method 1)
+                  </Text>
+                  <Text
+                    style={{ color: '#34D399', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}
+                    numberOfLines={2}
+                  >
+                    {`${BACKEND_URL}/api/widget?userId=${backendConfig.userId}&userKey=${backendConfig.userKey}`}
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.shareImageBtn, { backgroundColor: '#1E293B', marginTop: 8 }]}
+                    onPress={() => {
+                      const url = `${BACKEND_URL}/api/widget?userId=${backendConfig.userId}&userKey=${backendConfig.userKey}`;
+                      Clipboard.setStringAsync(url);
+                      showBanner('ok', 'Copied Scriptable Widget API URL to clipboard');
+                    }}
+                  >
+                    <Text style={[styles.shareImageBtnText, { color: '#38BDF8' }]}>📋 Copy Widget URL</Text>
                   </TouchableOpacity>
                 </View>
               )}
