@@ -11,11 +11,7 @@ var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require
   throw Error('Dynamic require of "' + x + '" is not supported');
 });
 var __commonJS = (cb, mod) => function __require2() {
-  try {
-    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-  } catch (e) {
-    throw mod = 0, e;
-  }
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -33,6 +29,12 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+
+// (disabled):crypto
+var require_crypto = __commonJS({
+  "(disabled):crypto"() {
+  }
+});
 
 // node_modules/crypto-js/core.js
 var require_core = __commonJS({
@@ -65,7 +67,7 @@ var require_core = __commonJS({
         }
         if (!crypto2 && typeof __require === "function") {
           try {
-            crypto2 = __require("crypto");
+            crypto2 = require_crypto();
           } catch (err) {
           }
         }
@@ -7870,7 +7872,8 @@ var MgIndiaClient = class {
     this.pinHash = options.pinHash || null;
     this.deviceId = makeDeviceId(this.phone);
     this.onSessionRefreshed = options.onSessionRefreshed;
-    this.proxyBaseUrl = options.proxyBaseUrl || null;
+    const isBrowser = typeof document !== "undefined" && typeof navigator !== "undefined" && navigator.product !== "ReactNative";
+    this.proxyBaseUrl = options.proxyBaseUrl || (isBrowser ? "https://mg-windsor-webhook.tonyjoseph456.workers.dev" : null);
   }
   get hasPin() {
     return Boolean(this.pinHash);
@@ -8435,7 +8438,7 @@ var silent_webhook_default = {
           window.location.replace(targetUrl);
         }, 100);
       })();
-    </script>
+    <\/script>
   </body>
 </html>`;
       return new Response(html, {
@@ -9400,10 +9403,38 @@ function deduplicateTripList(trips) {
   }
   return clean;
 }
+function isValidChargeRecord(c) {
+  if (!c || typeof c !== "object") return false;
+  const id = String(c.id || "");
+  if (id === "chg-1793725580" && (!c.startTimestampSec || Number(c.energyAddedToPackKwh || 0) <= 0)) {
+    return false;
+  }
+  const startSec = Number(c.startTimestampSec || 0);
+  const startSoc = Number(c.startSoc || 0);
+  const endSoc = Number(c.endSoc || 0);
+  const energyAdded = Number(c.energyAddedToPackKwh || 0);
+  const durSec = Number(c.durationSeconds || 0);
+  if (!startSec || startSec < 1704067200) {
+    if (!c.startDateTime || c.startDateTime === "--") return false;
+  }
+  if (endSoc <= 1 && startSoc > 5) return false;
+  if (energyAdded <= 0 && endSoc - startSoc <= 0.5 && durSec <= 60) {
+    if (c.status !== "charging") return false;
+  }
+  if (c.endDateTime === "Charging in progress..." && c.status === "completed" && energyAdded <= 0) {
+    return false;
+  }
+  return true;
+}
 function deduplicateChargeList(charges) {
   if (!charges || !charges.length) return [];
-  const valid = charges.filter((c) => Number(c?.endSoc ?? 0) > 0 || Number(c?.energyAddedToPackKwh ?? 0) > 0);
-  valid.sort((a, b) => (b.startTimestampSec || 0) - (a.startTimestampSec || 0));
+  const valid = charges.filter(isValidChargeRecord);
+  valid.sort((a, b) => {
+    const timeA = Number(a.startTimestampSec || 0);
+    const timeB = Number(b.startTimestampSec || 0);
+    if (timeA !== timeB) return timeB - timeA;
+    return Number(b.energyAddedToPackKwh || 0) - Number(a.energyAddedToPackKwh || 0);
+  });
   const clean = [];
   for (const c of valid) {
     const cId = String(c.id || "");
@@ -9411,20 +9442,36 @@ function deduplicateChargeList(charges) {
     const cEndSec = Number(c.endTimestampSec || cStartSec);
     const cOdo = Number(c.odometerKm || 0);
     const cEndSoc = Number(c.endSoc || 0);
-    const isDup = clean.some((x) => {
+    const cEnergy = Number(c.energyAddedToPackKwh || 0);
+    let isDup = false;
+    for (let i = 0; i < clean.length; i++) {
+      const x = clean[i];
       const xId = String(x.id || "");
-      if (cId && xId && cId === xId) return true;
       const xStartSec = Number(x.startTimestampSec || 0);
       const xEndSec = Number(x.endTimestampSec || xStartSec);
       const xOdo = Number(x.odometerKm || 0);
       const xEndSoc = Number(x.endSoc || 0);
-      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.2) {
-        if (Math.abs(cEndSoc - xEndSoc) <= 1 && Math.abs(cEndSec - xEndSec) < 1800) {
-          return true;
+      const xEnergy = Number(x.energyAddedToPackKwh || 0);
+      if (cId && xId && cId === xId) {
+        if (cEnergy > xEnergy) clean[i] = c;
+        isDup = true;
+        break;
+      }
+      if (cStartSec > 0 && xStartSec > 0 && Math.abs(cStartSec - xStartSec) < 900) {
+        if (cEnergy > xEnergy) clean[i] = c;
+        isDup = true;
+        break;
+      }
+      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.5) {
+        const timeOverlaps = cStartSec <= xEndSec + 1800 && cEndSec >= xStartSec - 1800;
+        const socSimilar = Math.abs(cEndSoc - xEndSoc) <= 2;
+        if (timeOverlaps || socSimilar) {
+          if (cEnergy > xEnergy) clean[i] = c;
+          isDup = true;
+          break;
         }
       }
-      return false;
-    });
+    }
     if (!isDup) {
       clean.push(c);
     }
@@ -9504,18 +9551,37 @@ async function readSheetRecords(token, sheetId) {
     if (parsed) {
       out.push(parsed);
     } else if (row && row[0]) {
-      out.push({
-        id: String(row[0]),
-        distanceKm: Number(row[5]) || 0,
-        startOdometerKm: Number(row[6]) || 0,
-        endOdometerKm: Number(row[7]) || 0,
-        startSoc: Number(row[8]) || 0,
-        endSoc: Number(row[9]) || 0,
-        energyUsedKwh: Number(row[10]) || 0,
-        efficiencyKmPerKwh: Number(row[11]) || 0,
-        startLocation: row[12] || "",
-        endLocation: row[13] || ""
-      });
+      const isCharge = String(row[0]).startsWith("chg-");
+      if (isCharge) {
+        out.push({
+          id: String(row[0]),
+          startSoc: Number(row[5]) || 0,
+          endSoc: Number(row[6]) || 0,
+          energyAddedToPackKwh: Number(row[7]) || 0,
+          energyConsumedKwh: Number(row[8]) || 0,
+          energyLossPercent: Number(row[9]) || 0,
+          chargerCategory: String(row[10] || "3.3 kW AC"),
+          maxChargingSpeedKw: Number(row[11]) || 0,
+          status: String(row[12] || "completed"),
+          odometerKm: Number(row[13]) || 0,
+          distanceTravelledSinceLastChargeKm: Number(row[14]) || 0,
+          energyUsedSinceLastChargeKwh: Number(row[15]) || 0,
+          efficiencyKmPerKwh: Number(row[16]) || 0
+        });
+      } else {
+        out.push({
+          id: String(row[0]),
+          distanceKm: Number(row[5]) || 0,
+          startOdometerKm: Number(row[6]) || 0,
+          endOdometerKm: Number(row[7]) || 0,
+          startSoc: Number(row[8]) || 0,
+          endSoc: Number(row[9]) || 0,
+          energyUsedKwh: Number(row[10]) || 0,
+          efficiencyKmPerKwh: Number(row[11]) || 0,
+          startLocation: row[12] || "",
+          endLocation: row[13] || ""
+        });
+      }
     }
   }
   return out.sort((a, b) => (b.startTimestampSec || 0) - (a.startTimestampSec || 0));
@@ -9848,7 +9914,7 @@ function redirectPage(target, title) {
 .b{background:#1C2541;padding:28px;border-radius:16px;border:1px solid #3A506B;max-width:320px}h2{color:#10B981;margin:0 0 10px}
 a{display:inline-block;padding:12px 24px;background:#10B981;color:#fff;border-radius:10px;text-decoration:none;font-weight:bold}</style></head>
 <body><div class="b"><h2>${title}</h2><p>Returning you to the app...</p><a href="${target}">Open MG Windsor EV App</a></div>
-<script>setTimeout(function(){window.location.replace(${JSON.stringify(target)})},50);</script></body></html>`;
+<script>setTimeout(function(){window.location.replace(${JSON.stringify(target)})},50);<\/script></body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 function finishSignIn(env, url, query, title) {
@@ -9876,7 +9942,7 @@ Allowed list currently: ${allowed.join(", ") || "(none)"}`,
 .b{background:#1C2541;padding:28px;border-radius:16px;border:1px solid #3A506B;max-width:320px}h2{color:#10B981;margin:0 0 10px}
 a{display:inline-block;padding:12px 24px;background:#10B981;color:#fff;border-radius:10px;text-decoration:none;font-weight:bold}</style></head>
 <body><div class="b"><h2>\u2705 Connected to Google!</h2><p>Returning you to the MG Windsor EV app...</p><a href="${targetUrl}">Open MG Windsor EV App</a></div>
-<script>window.location.replace(${JSON.stringify(targetUrl)});</script></body></html>`;
+<script>window.location.replace(${JSON.stringify(targetUrl)});<\/script></body></html>`;
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
   return redirectPage(`mgismart://google-auth?${query}`, title);

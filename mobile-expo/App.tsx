@@ -51,6 +51,7 @@ import {
   backendCleanSheets,
   deduplicateTripList,
   deduplicateChargeList,
+  isValidChargeRecord,
   BACKEND_URL,
   sheetUrl,
 } from './src/sdk';
@@ -604,8 +605,12 @@ export default function App() {
         if (rawActive) {
           try {
             const parsedActive: ChargeLogRecord = JSON.parse(rawActive);
-            setActiveCharge(parsedActive);
-            activeChargeRef.current = parsedActive;
+            if (isValidChargeRecord(parsedActive)) {
+              setActiveCharge(parsedActive);
+              activeChargeRef.current = parsedActive;
+            } else {
+              await SecureStore.deleteItemAsync(ACTIVE_CHARGE_KEY);
+            }
           } catch {
             // ignore
           }
@@ -1430,7 +1435,7 @@ export default function App() {
   // whenever the app was opened late).
   const applyCloudHistory = async (remoteTripsRaw: any[], remoteChargesRaw: any[]) => {
     if (remoteChargesRaw.length > 0) {
-      const remote = mergeChargeFragments(remoteChargesRaw.map(normalizeCloudCharge));
+      const remote = mergeChargeFragments(remoteChargesRaw.map(normalizeCloudCharge).filter(isValidChargeRecord));
       const locals = chargeLogsRef.current.filter(
         (l) => l.status !== 'charging' && !remote.some((r) => sameCharge(r, l))
       );
@@ -1580,28 +1585,10 @@ export default function App() {
   };
 
   const handleCleanAndDeduplicateSheets = async () => {
-    const c = backendConfigRef.current;
-    if (!c) {
-      // Direct local deduplication
-      const cleanedTrips = deduplicateTripList(tripsRef.current);
-      setTrips(cleanedTrips);
-      tripsRef.current = cleanedTrips;
-      await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(cleanedTrips));
-
-      const cleanedCharges = deduplicateChargeList(chargeLogsRef.current);
-      setChargeLogs(cleanedCharges);
-      chargeLogsRef.current = cleanedCharges;
-      await SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(cleanedCharges));
-
-      Alert.alert('Cleaned Local Data', 'Local trips and charges deduplicated.');
-      return;
-    }
-
     try {
       setIsBackendBusy(true);
-      const res = await backendCleanSheets(c);
 
-      // Clean local records too
+      // 1. Immediately clean and deduplicate local trips & charges
       const cleanedTrips = deduplicateTripList(tripsRef.current);
       setTrips(cleanedTrips);
       tripsRef.current = cleanedTrips;
@@ -1611,16 +1598,35 @@ export default function App() {
       setChargeLogs(cleanedCharges);
       chargeLogsRef.current = cleanedCharges;
       await SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(cleanedCharges));
+
+      if (activeChargeRef.current && !isValidChargeRecord(activeChargeRef.current)) {
+        setActiveCharge(null);
+        activeChargeRef.current = null;
+        await SecureStore.deleteItemAsync(ACTIVE_CHARGE_KEY);
+      }
+
+      const c = backendConfigRef.current;
+      if (!c) {
+        Alert.alert(
+          'Local History Cleaned ✨',
+          'Local history cleaned and deduplicated successfully!\n\n⚡ Charges: ' + cleanedCharges.length + ' valid sessions kept\n🚗 Trips: ' + cleanedTrips.length + ' valid trips kept'
+        );
+        showBanner('ok', 'Local trips and charges deduplicated');
+        return;
+      }
+
+      // 2. Invoke cloud backend to clean & rewrite user\'s Google Sheets
+      const res = await backendCleanSheets(c);
 
       await syncFromBackend(c, false);
 
       Alert.alert(
         'Sheets Cleaned & Deduplicated ✨',
-        `Google Sheets cleaned successfully!\n\n🚗 Trips:\n• Kept: ${res.tripsAfter} clean trips\n• Removed: ${res.tripsRemoved} duplicate rows\n\n⚡ Charges:\n• Kept: ${res.chargesAfter} clean charges\n• Removed: ${res.chargesRemoved} duplicate rows`
+        'Google Sheets cleaned successfully!\n\n⚡ Charging Sessions:\n• Kept: ' + res.chargesAfter + ' clean sessions\n• Removed: ' + res.chargesRemoved + ' corrupt/duplicate rows\n\n🚗 Trips:\n• Kept: ' + res.tripsAfter + ' clean trips\n• Removed: ' + res.tripsRemoved + ' duplicate rows'
       );
       showBanner(
         'ok',
-        `Deduplicated sheets: removed ${res.tripsRemoved} duplicate trips & ${res.chargesRemoved} duplicate charges`
+        'Deduplicated sheets: removed ' + res.tripsRemoved + ' duplicate trips & ' + res.chargesRemoved + ' duplicate charges'
       );
     } catch (err) {
       Alert.alert('Sheets Cleanup Failed', (err as Error).message);
@@ -1628,6 +1634,8 @@ export default function App() {
       setIsBackendBusy(false);
     }
   };
+
+  const handleCleanAndDeduplicateCharges = handleCleanAndDeduplicateSheets;
 
   // Part 2: Sync Offline Cloud-Logged Charging Sessions (from GitHub Actions / Cloud JSON feed)
   const syncCloudChargingLogs = async (
@@ -3247,14 +3255,24 @@ export default function App() {
                   marginBottom: 12,
                 }}
               >
-                <View>
+                <View style={{ flex: 1, minWidth: 160 }}>
                   <Text style={styles.cardTitle}>Charging Session History</Text>
                   <Text style={styles.subtitle}>
                     Automatically saves all 11 metrics on every charge
                   </Text>
                 </View>
-                <TouchableOpacity
-                  style={styles.recordBtn}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669' }]}
+                    onPress={handleCleanAndDeduplicateCharges}
+                    disabled={isBackendBusy}
+                  >
+                    <Text style={[styles.recordBtnText, { color: '#34D399' }]}>
+                      {isBackendBusy ? 'Cleaning...' : '🧹 Clean Sheets'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.recordBtn}
                   onPress={async () => {
                     const nowSec = Math.floor(Date.now() / 1000);
                     const startSec =
@@ -3322,6 +3340,7 @@ export default function App() {
                 >
                   <Text style={styles.recordBtnText}>+ Save Session</Text>
                 </TouchableOpacity>
+                </View>
               </View>
 
               {chargeLogs.length === 0 ? (
@@ -3466,7 +3485,16 @@ export default function App() {
                   <Text style={styles.cardTitle}>Saved Trips History</Text>
                   <Text style={styles.subtitle}>All 10 trip & driving metrics per journey</Text>
                 </View>
-                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 10 }]}
+                    onPress={handleCleanAndDeduplicateSheets}
+                    disabled={isBackendBusy}
+                  >
+                    <Text style={[styles.recordBtnText, { color: '#34D399' }]}>
+                      {isBackendBusy ? 'Cleaning...' : '🧹 Clean Sheets'}
+                    </Text>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.recordBtn, { backgroundColor: '#059669', paddingHorizontal: 10 }]}
                     onPress={() => handleSyncAllToBackendSheets(false)}

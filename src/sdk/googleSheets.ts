@@ -63,7 +63,7 @@ export const SHEET_HEADERS = [
 
 export const CHARGING_SHEET_HEADERS = [
   'Session ID',
-  'Date',
+  'Date (IST)',
   'Start Time',
   'End Time',
   'Duration',
@@ -75,8 +75,11 @@ export const CHARGING_SHEET_HEADERS = [
   'Charger Speed Category',
   'Peak Speed (kW)',
   'Completion Status',
-  'Distance Driven Since Last Charge (km)',
-  'Driving Efficiency (km/kWh)'
+  'Odometer (km)',
+  'Driving Before This Charge (km)',
+  'Energy Used Before This Charge (kWh)',
+  'Driving Efficiency Before This Charge (km/kWh)',
+  'Data (do not edit)'
 ];
 
 /** Unambiguous IST date (YYYY-MM-DD) + 24h time, so Sheets never mis-reads day/month. */
@@ -377,51 +380,101 @@ export function deduplicateTripList(trips: TripRecord[]): TripRecord[] {
 }
 
 /**
- * Deduplicates charging records by ID, odometer, and timestamp
+ * Strict validator for charging session records.
+ * Discards ghost records with null/missing timestamps, corrupt 0.13% SOC, or zero energy added.
+ */
+export function isValidChargeRecord(c: any): boolean {
+  if (!c || typeof c !== 'object') return false;
+  const id = String(c.id || '');
+  if (id === 'chg-1793725580' && (!c.startTimestampSec || Number(c.energyAddedToPackKwh || 0) <= 0)) {
+    return false;
+  }
+  const startSec = Number(c.startTimestampSec || 0);
+  const startSoc = Number(c.startSoc || 0);
+  const endSoc = Number(c.endSoc || 0);
+  const energyAdded = Number(c.energyAddedToPackKwh || 0);
+  const durSec = Number(c.durationSeconds || 0);
+  if (!startSec || startSec < 1704067200) {
+    if (!c.startDateTime || c.startDateTime === '--') return false;
+  }
+  if (endSoc <= 1 && startSoc > 5) return false;
+  if (energyAdded <= 0 && (endSoc - startSoc) <= 0.5 && durSec <= 60) {
+    if (c.status !== 'charging') return false;
+  }
+  if (c.endDateTime === 'Charging in progress...' && c.status === 'completed' && energyAdded <= 0) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Deduplicates charging records by ID, odometer, and timestamp.
+ * When duplicates or overlapping intervals are found, the record with the higher energy
+ * added and more complete data is preserved.
  */
 export function deduplicateChargeList(charges: ChargeLogRecord[]): ChargeLogRecord[] {
   if (!charges || !charges.length) return [];
-  const valid = charges.filter(
-    (c) => Number(c?.endSoc ?? 0) > 0 || Number(c?.energyAddedToPackKwh ?? 0) > 0
-  );
+  const valid = charges.filter(isValidChargeRecord);
 
-  valid.sort((a, b) => (b.startTimestampSec || 0) - (a.startTimestampSec || 0));
+  valid.sort((a, b) => {
+    const timeA = Number(a.startTimestampSec || 0);
+    const timeB = Number(b.startTimestampSec || 0);
+    if (timeA !== timeB) return timeB - timeA;
+    return Number(b.energyAddedToPackKwh || 0) - Number(a.energyAddedToPackKwh || 0);
+  });
+
   const clean: ChargeLogRecord[] = [];
-
   for (const c of valid) {
     const cId = String(c.id || '');
     const cStartSec = Number(c.startTimestampSec || 0);
     const cEndSec = Number(c.endTimestampSec || cStartSec);
     const cOdo = Number(c.odometerKm || 0);
     const cEndSoc = Number(c.endSoc || 0);
+    const cEnergy = Number(c.energyAddedToPackKwh || 0);
 
-    const isDup = clean.some((x) => {
+    let isDup = false;
+    for (let i = 0; i < clean.length; i++) {
+      const x = clean[i];
       const xId = String(x.id || '');
-      if (cId && xId && cId === xId) return true;
       const xStartSec = Number(x.startTimestampSec || 0);
       const xEndSec = Number(x.endTimestampSec || xStartSec);
       const xOdo = Number(x.odometerKm || 0);
       const xEndSoc = Number(x.endSoc || 0);
+      const xEnergy = Number(x.energyAddedToPackKwh || 0);
 
-      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.2) {
-        if (Math.abs(cEndSoc - xEndSoc) <= 1 && Math.abs(cEndSec - xEndSec) < 1800) {
-          return true;
+      // 1. Exact ID match
+      if (cId && xId && cId === xId) {
+        if (cEnergy > xEnergy) clean[i] = c;
+        isDup = true;
+        break;
+      }
+
+      // 2. Same session by timestamp (within 15 minutes of start)
+      if (cStartSec > 0 && xStartSec > 0 && Math.abs(cStartSec - xStartSec) < 900) {
+        if (cEnergy > xEnergy) clean[i] = c;
+        isDup = true;
+        break;
+      }
+
+      // 3. Same vehicle odometer (within 0.5 km) and overlapping charge window
+      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.5) {
+        const timeOverlaps = cStartSec <= xEndSec + 1800 && cEndSec >= xStartSec - 1800;
+        const socSimilar = Math.abs(cEndSoc - xEndSoc) <= 2;
+        if (timeOverlaps || socSimilar) {
+          if (cEnergy > xEnergy) clean[i] = c;
+          isDup = true;
+          break;
         }
       }
-      return false;
-    });
+    }
 
     if (!isDup) {
       clean.push(c);
     }
   }
-
   return clean;
 }
 
-/**
- * Read existing Trip IDs from Google Sheet to avoid duplicate entries (checks Log tab and Sheet1 tab)
- */
 export async function getExistingSheetTripIds(
   token: string,
   spreadsheetId: string
@@ -625,8 +678,11 @@ export async function syncChargingLogsToGoogleSheet(
       log.chargerCategory,
       log.maxChargingSpeedKw || 0,
       statusText,
+      log.odometerKm || 0,
       log.distanceTravelledSinceLastChargeKm || 0,
+      log.energyUsedSinceLastChargeKwh || 0,
       log.efficiencyKmPerKwh > 0 ? log.efficiencyKmPerKwh : 0,
+      JSON.stringify(log),
     ];
 
     rowsToAppend.push(row);

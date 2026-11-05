@@ -558,42 +558,95 @@ function deduplicateTripList(trips: any[]): any[] {
   return clean;
 }
 
+/**
+ * Strict validator for charging session records.
+ * Discards ghost records with null/missing timestamps, corrupt 0.13% SOC, or zero energy added.
+ */
+function isValidChargeRecord(c: any): boolean {
+  if (!c || typeof c !== 'object') return false;
+  const id = String(c.id || '');
+  if (id === 'chg-1793725580' && (!c.startTimestampSec || Number(c.energyAddedToPackKwh || 0) <= 0)) {
+    return false;
+  }
+  const startSec = Number(c.startTimestampSec || 0);
+  const startSoc = Number(c.startSoc || 0);
+  const endSoc = Number(c.endSoc || 0);
+  const energyAdded = Number(c.energyAddedToPackKwh || 0);
+  const durSec = Number(c.durationSeconds || 0);
+  if (!startSec || startSec < 1704067200) {
+    if (!c.startDateTime || c.startDateTime === '--') return false;
+  }
+  if (endSoc <= 1 && startSoc > 5) return false;
+  if (energyAdded <= 0 && (endSoc - startSoc) <= 0.5 && durSec <= 60) {
+    if (c.status !== 'charging') return false;
+  }
+  if (c.endDateTime === 'Charging in progress...' && c.status === 'completed' && energyAdded <= 0) {
+    return false;
+  }
+  return true;
+}
+
 /** Deduplicates charging records by ID, odometer, and timestamp */
 function deduplicateChargeList(charges: any[]): any[] {
   if (!charges || !charges.length) return [];
-  const valid = charges.filter((c) => Number(c?.endSoc ?? 0) > 0 || Number(c?.energyAddedToPackKwh ?? 0) > 0);
+  const valid = charges.filter(isValidChargeRecord);
 
-  valid.sort((a, b) => (b.startTimestampSec || 0) - (a.startTimestampSec || 0));
+  valid.sort((a, b) => {
+    const timeA = Number(a.startTimestampSec || 0);
+    const timeB = Number(b.startTimestampSec || 0);
+    if (timeA !== timeB) return timeB - timeA;
+    return Number(b.energyAddedToPackKwh || 0) - Number(a.energyAddedToPackKwh || 0);
+  });
+
   const clean: any[] = [];
-
   for (const c of valid) {
     const cId = String(c.id || '');
     const cStartSec = Number(c.startTimestampSec || 0);
     const cEndSec = Number(c.endTimestampSec || cStartSec);
     const cOdo = Number(c.odometerKm || 0);
     const cEndSoc = Number(c.endSoc || 0);
+    const cEnergy = Number(c.energyAddedToPackKwh || 0);
 
-    const isDup = clean.some((x) => {
+    let isDup = false;
+    for (let i = 0; i < clean.length; i++) {
+      const x = clean[i];
       const xId = String(x.id || '');
-      if (cId && xId && cId === xId) return true;
       const xStartSec = Number(x.startTimestampSec || 0);
       const xEndSec = Number(x.endTimestampSec || xStartSec);
       const xOdo = Number(x.odometerKm || 0);
       const xEndSoc = Number(x.endSoc || 0);
+      const xEnergy = Number(x.energyAddedToPackKwh || 0);
 
-      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.2) {
-        if (Math.abs(cEndSoc - xEndSoc) <= 1 && Math.abs(cEndSec - xEndSec) < 1800) {
-          return true;
+      // 1. Exact ID match
+      if (cId && xId && cId === xId) {
+        if (cEnergy > xEnergy) clean[i] = c;
+        isDup = true;
+        break;
+      }
+
+      // 2. Same session by timestamp (within 15 minutes of start)
+      if (cStartSec > 0 && xStartSec > 0 && Math.abs(cStartSec - xStartSec) < 900) {
+        if (cEnergy > xEnergy) clean[i] = c;
+        isDup = true;
+        break;
+      }
+
+      // 3. Same vehicle odometer (within 0.5 km) and overlapping charge window
+      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.5) {
+        const timeOverlaps = cStartSec <= xEndSec + 1800 && cEndSec >= xStartSec - 1800;
+        const socSimilar = Math.abs(cEndSoc - xEndSoc) <= 2;
+        if (timeOverlaps || socSimilar) {
+          if (cEnergy > xEnergy) clean[i] = c;
+          isDup = true;
+          break;
         }
       }
-      return false;
-    });
+    }
 
     if (!isDup) {
       clean.push(c);
     }
   }
-
   return clean;
 }
 
@@ -691,18 +744,37 @@ async function readSheetRecords(token: string, sheetId: string): Promise<any[]> 
       out.push(parsed);
     } else if (row && row[0]) {
       // Reconstruct basic record from columns if JSON column missing
-      out.push({
-        id: String(row[0]),
-        distanceKm: Number(row[5]) || 0,
-        startOdometerKm: Number(row[6]) || 0,
-        endOdometerKm: Number(row[7]) || 0,
-        startSoc: Number(row[8]) || 0,
-        endSoc: Number(row[9]) || 0,
-        energyUsedKwh: Number(row[10]) || 0,
-        efficiencyKmPerKwh: Number(row[11]) || 0,
-        startLocation: row[12] || '',
-        endLocation: row[13] || '',
-      });
+      const isCharge = String(row[0]).startsWith('chg-');
+      if (isCharge) {
+        out.push({
+          id: String(row[0]),
+          startSoc: Number(row[5]) || 0,
+          endSoc: Number(row[6]) || 0,
+          energyAddedToPackKwh: Number(row[7]) || 0,
+          energyConsumedKwh: Number(row[8]) || 0,
+          energyLossPercent: Number(row[9]) || 0,
+          chargerCategory: String(row[10] || '3.3 kW AC'),
+          maxChargingSpeedKw: Number(row[11]) || 0,
+          status: String(row[12] || 'completed'),
+          odometerKm: Number(row[13]) || 0,
+          distanceTravelledSinceLastChargeKm: Number(row[14]) || 0,
+          energyUsedSinceLastChargeKwh: Number(row[15]) || 0,
+          efficiencyKmPerKwh: Number(row[16]) || 0,
+        });
+      } else {
+        out.push({
+          id: String(row[0]),
+          distanceKm: Number(row[5]) || 0,
+          startOdometerKm: Number(row[6]) || 0,
+          endOdometerKm: Number(row[7]) || 0,
+          startSoc: Number(row[8]) || 0,
+          endSoc: Number(row[9]) || 0,
+          energyUsedKwh: Number(row[10]) || 0,
+          efficiencyKmPerKwh: Number(row[11]) || 0,
+          startLocation: row[12] || '',
+          endLocation: row[13] || '',
+        });
+      }
     }
   }
   return out.sort((a, b) => (b.startTimestampSec || 0) - (a.startTimestampSec || 0));
