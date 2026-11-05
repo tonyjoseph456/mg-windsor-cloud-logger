@@ -102,53 +102,6 @@ const tags = `
         box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
         z-index: 9999 !important;
       }
-      /* Liquid Range Sliders for Account Preferences */
-      .liquid-slider {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 100%;
-        height: 8px;
-        border-radius: 4px;
-        background: #1E293B;
-        outline: none;
-        margin: 6px 0;
-        cursor: pointer;
-      }
-      .liquid-slider:focus {
-        outline: none;
-      }
-      .liquid-slider::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 24px;
-        height: 24px;
-        border-radius: 50%;
-        background: #FFFFFF;
-        border: 3px solid #10B981;
-        box-shadow: 0 0 10px rgba(16, 185, 129, 0.6), 0 2px 4px rgba(0, 0, 0, 0.4);
-        cursor: pointer;
-        transition: transform 0.1s;
-      }
-      .liquid-slider::-webkit-slider-thumb:active {
-        transform: scale(1.15);
-      }
-      .liquid-slider-blue::-webkit-slider-thumb {
-        border-color: #38BDF8 !important;
-        box-shadow: 0 0 10px rgba(56, 189, 248, 0.6), 0 2px 4px rgba(0, 0, 0, 0.4) !important;
-      }
-      .liquid-slider::-moz-range-thumb {
-        width: 24px;
-        height: 24px;
-        border-radius: 50%;
-        background: #FFFFFF;
-        border: 3px solid #10B981;
-        box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
-        cursor: pointer;
-      }
-      .liquid-slider-blue::-moz-range-thumb {
-        border-color: #38BDF8 !important;
-        box-shadow: 0 0 10px rgba(56, 189, 248, 0.6) !important;
-      }
     </style>
     <script>
       if ('serviceWorker' in navigator) {

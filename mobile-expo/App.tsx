@@ -1,11 +1,9 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Linking,
-  GestureResponderEvent,
   Modal,
-  PanResponder,
   Platform,
   RefreshControl,
   SafeAreaView,
@@ -59,8 +57,6 @@ import {
 
 type TabId = 'home' | 'charge' | 'trips' | 'account';
 
-const TAB_BAR_SCALE_KEY = 'mg_ismart_tabbar_scale_v1';
-const FONT_SCALE_KEY = 'mg_ismart_font_scale_v1';
 const SESSION_KEY = 'mg_ismart_live_session_v2';
 const SNAPSHOT_KEY = 'mg_ismart_cached_snapshot_v2';
 const TRIPS_KEY = 'mg_ismart_saved_trips_v3';
@@ -515,8 +511,6 @@ export default function App() {
           rawCloudKey,
           rawGoogleSync,
           rawGoogleClientId,
-          rawTabBarScale,
-          rawFontScale,
         ] = await Promise.all([
           SecureStore.getItemAsync(SESSION_KEY),
           SecureStore.getItemAsync(SNAPSHOT_KEY),
@@ -530,21 +524,10 @@ export default function App() {
           SecureStore.getItemAsync(CLOUD_API_KEY_KEY),
           SecureStore.getItemAsync(GOOGLE_SYNC_KEY),
           SecureStore.getItemAsync(GOOGLE_CLIENT_ID_KEY),
-          SecureStore.getItemAsync(TAB_BAR_SCALE_KEY),
-          SecureStore.getItemAsync(FONT_SCALE_KEY),
         ]);
 
         if (rawGoogleClientId) {
           setGoogleClientId(rawGoogleClientId);
-        }
-
-        if (rawTabBarScale) {
-          const val = parseFloat(rawTabBarScale);
-          if (!isNaN(val) && val >= 0.7 && val <= 1.6) setTabBarScale(val);
-        }
-        if (rawFontScale) {
-          const val = parseFloat(rawFontScale);
-          if (!isNaN(val) && val >= 0.7 && val <= 1.5) setFontScale(val);
         }
 
         if (rawGoogleSync) {
@@ -2469,7 +2452,6 @@ export default function App() {
   // 2. First-Time Login Screen (Shown until logged in; stays logged in until manual Logout)
   if (!isAuthenticated) {
     return (
-      <StylesContext.Provider value={styles}>
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" />
         <ScrollView contentContainerStyle={styles.loginContainer}>
@@ -2551,7 +2533,6 @@ export default function App() {
           </View>
         </ScrollView>
       </SafeAreaView>
-      </StylesContext.Provider>
     );
   }
 
@@ -2606,7 +2587,6 @@ export default function App() {
       : 100.0;
 
   return (
-    <StylesContext.Provider value={styles}>
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
       <View style={styles.topHeaderWrap}>
@@ -3659,221 +3639,7 @@ export default function App() {
               </TouchableOpacity>
             </AccountSectionCard>
 
-                        {/* CARD 2: Display & Navigation Bar Sizing Controllers */}
-            <AccountSectionCard
-              title="Display & Navigation Bar Sizing"
-              icon="📐"
-              badge={`${Math.round(tabBarScale * 100)}% Bar • ${Math.round(fontScale * 100)}% Text`}
-              badgeBg="#1E293B"
-              badgeColor="#34D399"
-              subtitle="Customize icon and text sizes on the bottom navigation bar, and scale font sizes across all screens."
-              preview={`Bottom Bar: ${Math.round(tabBarScale * 100)}% • Screen Fonts: ${Math.round(fontScale * 100)}%`}
-              tapHint="Tap to expand • Adjust draggable sliders"
-              defaultExpanded={false}
-            >
-              {/* Controller 1: Bottom Navigation Bar Size */}
-              <DraggableSlider
-                label="Bottom Navigation Bar Size"
-                icon="📱"
-                value={tabBarScale}
-                min={0.75}
-                max={1.40}
-                step={0.05}
-                accentColor="#10B981"
-                description="Adjusts icon dimensions, tap pill wrapper, and label font size in the bottom bar"
-                onChange={handleUpdateTabBarScale}
-                onReset={() => handleUpdateTabBarScale(1.0)}
-                presets={[
-                  { label: '80% Compact', value: 0.8 },
-                  { label: '100% Default', value: 1.0 },
-                  { label: '120% Large', value: 1.2 },
-                  { label: '135% Max', value: 1.35 },
-                ]}
-                previewNode={
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', width: '100%', paddingVertical: 4 }}>
-                    {/* Sample Home Tab */}
-                    <View style={{ alignItems: 'center' }}>
-                      <View
-                        style={{
-                          width: Math.max(32, Math.round(44 * tabBarScale)),
-                          height: Math.max(22, Math.round(28 * tabBarScale)),
-                          borderRadius: Math.max(11, Math.round(14 * tabBarScale)),
-                          backgroundColor: 'rgba(16, 185, 129, 0.20)',
-                          borderWidth: 1,
-                          borderColor: 'rgba(52, 211, 153, 0.35)',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          marginBottom: 2,
-                        }}
-                      >
-                        <Svg
-                          width={Math.max(14, Math.round(20 * tabBarScale))}
-                          height={Math.max(14, Math.round(20 * tabBarScale))}
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="#10B981"
-                          strokeWidth={2.4}
-                        >
-                          <Path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z" strokeLinecap="round" strokeLinejoin="round" />
-                        </Svg>
-                      </View>
-                      <Text
-                        style={{
-                          color: '#34D399',
-                          fontSize: Math.max(7, Math.round(10 * tabBarScale)),
-                          fontWeight: '800',
-                        }}
-                      >
-                        Home
-                      </Text>
-                    </View>
-
-                    {/* Sample Charge Tab */}
-                    <View style={{ alignItems: 'center' }}>
-                      <View
-                        style={{
-                          width: Math.max(32, Math.round(44 * tabBarScale)),
-                          height: Math.max(22, Math.round(28 * tabBarScale)),
-                          borderRadius: Math.max(11, Math.round(14 * tabBarScale)),
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          marginBottom: 2,
-                        }}
-                      >
-                        <Svg
-                          width={Math.max(14, Math.round(20 * tabBarScale))}
-                          height={Math.max(14, Math.round(20 * tabBarScale))}
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="#64748B"
-                          strokeWidth={1.8}
-                        >
-                          <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
-                        </Svg>
-                      </View>
-                      <Text
-                        style={{
-                          color: '#94A3B8',
-                          fontSize: Math.max(7, Math.round(10 * tabBarScale)),
-                          fontWeight: '600',
-                        }}
-                      >
-                        Charge
-                      </Text>
-                    </View>
-
-                    {/* Sample Trips Tab */}
-                    <View style={{ alignItems: 'center' }}>
-                      <View
-                        style={{
-                          width: Math.max(32, Math.round(44 * tabBarScale)),
-                          height: Math.max(22, Math.round(28 * tabBarScale)),
-                          borderRadius: Math.max(11, Math.round(14 * tabBarScale)),
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          marginBottom: 2,
-                        }}
-                      >
-                        <Svg
-                          width={Math.max(14, Math.round(20 * tabBarScale))}
-                          height={Math.max(14, Math.round(20 * tabBarScale))}
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="#64748B"
-                          strokeWidth={1.8}
-                        >
-                          <Circle cx="6" cy="19" r="3" />
-                          <Circle cx="18" cy="5" r="3" />
-                          <Path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H9" strokeLinecap="round" strokeLinejoin="round" />
-                        </Svg>
-                      </View>
-                      <Text
-                        style={{
-                          color: '#94A3B8',
-                          fontSize: Math.max(7, Math.round(10 * tabBarScale)),
-                          fontWeight: '600',
-                        }}
-                      >
-                        Trips
-                      </Text>
-                    </View>
-
-                    {/* Sample Account Tab */}
-                    <View style={{ alignItems: 'center' }}>
-                      <View
-                        style={{
-                          width: Math.max(32, Math.round(44 * tabBarScale)),
-                          height: Math.max(22, Math.round(28 * tabBarScale)),
-                          borderRadius: Math.max(11, Math.round(14 * tabBarScale)),
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          marginBottom: 2,
-                        }}
-                      >
-                        <Svg
-                          width={Math.max(14, Math.round(20 * tabBarScale))}
-                          height={Math.max(14, Math.round(20 * tabBarScale))}
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="#64748B"
-                          strokeWidth={1.8}
-                        >
-                          <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
-                          <Circle cx="12" cy="7" r="4" />
-                        </Svg>
-                      </View>
-                      <Text
-                        style={{
-                          color: '#94A3B8',
-                          fontSize: Math.max(7, Math.round(10 * tabBarScale)),
-                          fontWeight: '600',
-                        }}
-                      >
-                        Account
-                      </Text>
-                    </View>
-                  </View>
-                }
-              />
-
-              <View style={{ height: 1, backgroundColor: '#1E293B', marginVertical: 14 }} />
-
-              {/* Controller 2: Screen Text & Font Size Scale */}
-              <DraggableSlider
-                label="Screen Text & Font Size"
-                icon="🔤"
-                value={fontScale}
-                min={0.80}
-                max={1.30}
-                step={0.05}
-                accentColor="#38BDF8"
-                description="Scales font sizes of telemetry, cards, metrics, and labels across all screens"
-                onChange={handleUpdateFontScale}
-                onReset={() => handleUpdateFontScale(1.0)}
-                presets={[
-                  { label: '85% Compact', value: 0.85 },
-                  { label: '100% Default', value: 1.0 },
-                  { label: '115% Large', value: 1.15 },
-                  { label: '130% Extra', value: 1.30 },
-                ]}
-                previewNode={
-                  <View style={{ width: '100%', gap: 4 }}>
-                    <Text style={{ color: '#F1F5F9', fontSize: Math.max(8, Math.round(16 * fontScale)), fontWeight: '800' }}>
-                      Windsor EV • 291 km Range
-                    </Text>
-                    <Text style={{ color: '#10B981', fontSize: Math.max(7, Math.round(13 * fontScale)), fontWeight: '700' }}>
-                      91% SOC • Locked & Secure • 38,443 km
-                    </Text>
-                    <Text style={{ color: '#94A3B8', fontSize: Math.max(6, Math.round(11 * fontScale)) }}>
-                      Live telemetry text scaling preview
-                    </Text>
-                  </View>
-                }
-              />
-            </AccountSectionCard>
-
-
-            {/* CARD 3: 24/7 BACKGROUND TRACKING -> GOOGLE SHEETS */}
+            {/* CARD 2: 24/7 BACKGROUND TRACKING -> GOOGLE SHEETS */}
             <AccountSectionCard
               title="24/7 Background Tracking"
               icon="☁️"
@@ -4545,10 +4311,7 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* Dynamic Tab Bar Icon Size */}
-      {(() => {
-        const tabIconSize = Math.max(14, Math.round(20 * tabBarScale));
-        return (
+      {/* Redesigned Bottom Navigation Tab Bar with Crisp Vector Icons */}
       <View
         nativeID="liquid-glass-tabbar"
         testID="liquid-glass-tabbar"
@@ -4560,7 +4323,7 @@ export default function App() {
               id: 'home' as const,
               label: 'Home',
               renderIcon: (active: boolean) => (
-                <Svg width={tabIconSize} height={tabIconSize} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
                   <Path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z" strokeLinecap="round" strokeLinejoin="round" />
                 </Svg>
               ),
@@ -4569,7 +4332,7 @@ export default function App() {
               id: 'charge' as const,
               label: 'Charge',
               renderIcon: (active: boolean) => (
-                <Svg width={tabIconSize} height={tabIconSize} viewBox="0 0 24 24" fill={active ? '#10B981' : 'none'} stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2 : 1.8}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill={active ? '#10B981' : 'none'} stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2 : 1.8}>
                   <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
                 </Svg>
               ),
@@ -4578,7 +4341,7 @@ export default function App() {
               id: 'trips' as const,
               label: 'Trips',
               renderIcon: (active: boolean) => (
-                <Svg width={tabIconSize} height={tabIconSize} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
                   <Circle cx="6" cy="19" r="3" />
                   <Circle cx="18" cy="5" r="3" />
                   <Path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H9" strokeLinecap="round" strokeLinejoin="round" />
@@ -4589,7 +4352,7 @@ export default function App() {
               id: 'account' as const,
               label: 'Account',
               renderIcon: (active: boolean) => (
-                <Svg width={tabIconSize} height={tabIconSize} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={active ? '#10B981' : '#64748B'} strokeWidth={active ? 2.4 : 1.8}>
                   <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
                   <Circle cx="12" cy="7" r="4" />
                 </Svg>
@@ -4613,9 +4376,7 @@ export default function App() {
           );
         })}
       </View>
-      ); })()}
     </View>
-    </StylesContext.Provider>
   );
 }
 
@@ -4623,290 +4384,6 @@ export default function App() {
  * Proportional Circular Progress Ring using react-native-svg
  * Fills the stroke arc accurately according to `percent` (0..100).
  */
-/**
- * DraggableSlider: Interactive slider with stepper buttons and preset chips
- * Uses native range input on web and PanResponder on native.
- */
-function DraggableSlider({
-  label,
-  icon,
-  value,
-  min,
-  max,
-  step = 0.05,
-  accentColor = '#10B981',
-  formatValue = (v: number) => `${Math.round(v * 100)}%`,
-  onChange,
-  onReset,
-  presets,
-  description,
-  previewNode,
-}: {
-  label: string;
-  icon?: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  accentColor?: string;
-  formatValue?: (v: number) => string;
-  onChange: (v: number) => void;
-  onReset?: () => void;
-  presets?: { label: string; value: number }[];
-  description?: string;
-  previewNode?: React.ReactNode;
-}) {
-  const [trackWidth, setTrackWidth] = useState(240);
-  const trackRef = useRef<View>(null);
-
-  const clamp = (v: number) => Math.max(min, Math.min(max, Number(v.toFixed(2))));
-  const roundStep = (v: number) => {
-    const s = Math.round(v / step) * step;
-    return clamp(Number(s.toFixed(2)));
-  };
-
-  const handleStep = (delta: number) => {
-    onChange(clamp(value + delta));
-  };
-
-  const updateFromPosition = (x: number) => {
-    if (trackWidth <= 0) return;
-    const ratio = Math.max(0, Math.min(1, x / trackWidth));
-    const nextVal = min + ratio * (max - min);
-    onChange(roundStep(nextVal));
-  };
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: (e) => {
-          updateFromPosition(e.nativeEvent.locationX);
-        },
-        onPanResponderMove: (e) => {
-          updateFromPosition(e.nativeEvent.locationX);
-        },
-        onPanResponderRelease: (e) => {
-          updateFromPosition(e.nativeEvent.locationX);
-        },
-      }),
-    [trackWidth, min, max, step]
-  );
-
-  const progressPercent = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
-
-  return (
-    <View style={{ marginBottom: 16 }}>
-      {/* Header Row: Label, Icon, Value Badge */}
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-          {icon ? <Text style={{ fontSize: 16 }}>{icon}</Text> : null}
-          <Text style={{ color: '#F1F5F9', fontSize: 13, fontWeight: '700' }}>{label}</Text>
-        </View>
-        <View
-          style={{
-            backgroundColor: 'rgba(255, 255, 255, 0.08)',
-            paddingHorizontal: 9,
-            paddingVertical: 3,
-            borderRadius: 8,
-            borderWidth: 1,
-            borderColor: accentColor,
-          }}
-        >
-          <Text style={{ color: accentColor, fontSize: 12, fontWeight: '800' }}>
-            {formatValue(value)}
-          </Text>
-        </View>
-      </View>
-
-      {description ? (
-        <Text style={{ color: '#94A3B8', fontSize: 11, marginBottom: 8, lineHeight: 15 }}>
-          {description}
-        </Text>
-      ) : null}
-
-      {/* Live Sample Preview Box */}
-      {previewNode ? (
-        <View
-          style={{
-            backgroundColor: '#0F172A',
-            borderRadius: 10,
-            borderWidth: 1,
-            borderColor: '#1E293B',
-            padding: 10,
-            marginBottom: 10,
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {previewNode}
-        </View>
-      ) : null}
-
-      {/* Draggable Slider Control with [-] and [+] Stepper Buttons */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-        {/* Decrement Button */}
-        <TouchableOpacity
-          onPress={() => handleStep(-step)}
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 16,
-            backgroundColor: '#1E293B',
-            borderWidth: 1,
-            borderColor: '#334155',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-          activeOpacity={0.7}
-        >
-          <Text style={{ color: '#F1F5F9', fontSize: 16, fontWeight: '700', marginTop: -2 }}>−</Text>
-        </TouchableOpacity>
-
-        {/* Draggable Track Container */}
-        <View style={{ flex: 1, justifyContent: 'center' }}>
-          {Platform.OS === 'web' ? (
-            React.createElement('input', {
-              type: 'range',
-              min,
-              max,
-              step,
-              value,
-              onChange: (e: any) => onChange(roundStep(parseFloat(e.target.value))),
-              className: accentColor === '#38BDF8' ? 'liquid-slider liquid-slider-blue' : 'liquid-slider',
-              style: {
-                width: '100%',
-                height: 28,
-                accentColor,
-                cursor: 'pointer',
-              },
-            })
-          ) : (
-            <View
-              ref={trackRef}
-              onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}
-              {...panResponder.panHandlers}
-              style={{
-                height: 32,
-                justifyContent: 'center',
-              }}
-            >
-              <View
-                style={{
-                  height: 8,
-                  backgroundColor: '#1E293B',
-                  borderRadius: 4,
-                  overflow: 'hidden',
-                  width: '100%',
-                }}
-              >
-                <View
-                  style={{
-                    height: '100%',
-                    width: `${progressPercent}%`,
-                    backgroundColor: accentColor,
-                  }}
-                />
-              </View>
-
-              <View
-                style={{
-                  position: 'absolute',
-                  left: `${progressPercent}%`,
-                  marginLeft: -13,
-                  width: 26,
-                  height: 26,
-                  borderRadius: 13,
-                  backgroundColor: '#FFFFFF',
-                  borderWidth: 3,
-                  borderColor: accentColor,
-                  shadowColor: accentColor,
-                  shadowOffset: { width: 0, height: 0 },
-                  shadowOpacity: 0.6,
-                  shadowRadius: 6,
-                  elevation: 5,
-                }}
-              />
-            </View>
-          )}
-        </View>
-
-        {/* Increment Button */}
-        <TouchableOpacity
-          onPress={() => handleStep(step)}
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 16,
-            backgroundColor: '#1E293B',
-            borderWidth: 1,
-            borderColor: '#334155',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-          activeOpacity={0.7}
-        >
-          <Text style={{ color: '#F1F5F9', fontSize: 16, fontWeight: '700', marginTop: -2 }}>+</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Quick Preset Buttons */}
-      {presets && presets.length > 0 ? (
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-          {presets.map((p) => {
-            const isActive = Math.abs(value - p.value) < 0.01;
-            return (
-              <TouchableOpacity
-                key={p.label}
-                onPress={() => onChange(p.value)}
-                style={{
-                  paddingHorizontal: 8,
-                  paddingVertical: 4,
-                  borderRadius: 8,
-                  backgroundColor: isActive ? accentColor : '#1E293B',
-                  borderWidth: 1,
-                  borderColor: isActive ? accentColor : '#334155',
-                }}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={{
-                    color: isActive ? '#0A0F1D' : '#94A3B8',
-                    fontSize: 10,
-                    fontWeight: isActive ? '800' : '600',
-                  }}
-                >
-                  {p.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-
-          {onReset ? (
-            <TouchableOpacity
-              onPress={onReset}
-              style={{
-                paddingHorizontal: 8,
-                paddingVertical: 4,
-                borderRadius: 8,
-                backgroundColor: 'rgba(239, 68, 68, 0.12)',
-                borderWidth: 1,
-                borderColor: 'rgba(239, 68, 68, 0.3)',
-                marginLeft: 'auto',
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={{ color: '#FCA5A5', fontSize: 10, fontWeight: '700' }}>↺ Reset</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-
 function BatteryProgressRing({
   percent,
   label,
@@ -5476,7 +4953,6 @@ function ChargingSessionCard({
   logIndex?: number;
   trips?: TripRecord[];
 }) {
-  const styles = useStyles();
   const [expanded, setExpanded] = useState(defaultExpanded ?? (session.status === 'charging'));
   const [isSharing, setIsSharing] = useState(false);
   const cardRef = useRef<any>(null);
@@ -5947,7 +5423,6 @@ function cleanLocationSummary(loc: string | null | undefined): string {
 }
 
 function TripSessionCard({ trip }: { trip: TripRecord }) {
-  const styles = useStyles();
   const [expanded, setExpanded] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const cardRef = useRef<any>(null);
@@ -6358,7 +5833,6 @@ function CollapsibleSectionCard({
   defaultExpanded?: boolean;
   children: React.ReactNode;
 }) {
-  const styles = useStyles();
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
@@ -6421,7 +5895,6 @@ function CollapsibleSectionCard({
 const AccountSectionCard = CollapsibleSectionCard;
 
 function InfoRow({ label, value }: { label: string; value: string }) {
-  const styles = useStyles();
   return (
     <View
       style={{
@@ -6450,10 +5923,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0) {
-  const fs = (size: number) => Math.max(6, Math.round(size * fontScale));
-  const ts = (size: number) => Math.max(6, Math.round(size * tabBarScale));
-  return StyleSheet.create({
+const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0A0E17',
@@ -6482,12 +5952,12 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     justifyContent: 'center',
     marginBottom: 12,
   },
-  mgLogoLargeText: { color: '#FFF', fontWeight: '900', fontSize: fs(28) },
-  loginTitle: { color: '#FFF', fontSize: fs(24), fontWeight: '900' },
-  loginSub: { color: '#94A3B8', fontSize: fs(12), marginTop: 4, textAlign: 'center' },
+  mgLogoLargeText: { color: '#FFF', fontWeight: '900', fontSize: 28 },
+  loginTitle: { color: '#FFF', fontSize: 24, fontWeight: '900' },
+  loginSub: { color: '#94A3B8', fontSize: 12, marginTop: 4, textAlign: 'center' },
   inputLabel: {
     color: '#CBD5E1',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '700',
     marginBottom: 6,
     marginTop: 4,
@@ -6499,7 +5969,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     alignItems: 'center',
     marginTop: 12,
   },
-  loginBtnText: { color: '#FFF', fontWeight: '800', fontSize: fs(14) },
+  loginBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
   logoutBtn: {
     backgroundColor: '#7F1D1D',
     borderWidth: 1,
@@ -6509,7 +5979,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     alignItems: 'center',
     marginTop: 12,
   },
-  logoutBtnText: { color: '#FCA5A5', fontWeight: '800', fontSize: fs(13) },
+  logoutBtnText: { color: '#FCA5A5', fontWeight: '800', fontSize: 13 },
   topHeaderWrap: {
     backgroundColor: '#0A0E17',
     paddingTop: (Platform.OS === 'web'
@@ -6542,7 +6012,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   headerRefreshText: {
     color: '#10B981',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '800',
   },
   mgLogo: {
@@ -6553,9 +6023,9 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     alignItems: 'center',
     justifyContent: 'center',
   },
-  mgLogoText: { color: '#FFF', fontWeight: '900', fontSize: fs(15) },
-  title: { color: '#FFF', fontSize: fs(16), fontWeight: '800' },
-  subtitle: { color: '#94A3B8', fontSize: fs(11), marginTop: 2 },
+  mgLogoText: { color: '#FFF', fontWeight: '900', fontSize: 15 },
+  title: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  subtitle: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
   modePill: {
     paddingHorizontal: 8,
     paddingVertical: 2,
@@ -6563,7 +6033,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderWidth: 1,
   },
   modePillLive: { backgroundColor: '#064E3B', borderColor: '#059669' },
-  modePillText: { fontSize: fs(9), fontWeight: '800' },
+  modePillText: { fontSize: 9, fontWeight: '800' },
   pullHint: {
     backgroundColor: '#0F172A',
     borderRadius: 12,
@@ -6573,7 +6043,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderColor: '#1E293B',
     alignItems: 'center',
   },
-  pullHintText: { color: '#64748B', fontSize: fs(11), fontWeight: '600' },
+  pullHintText: { color: '#64748B', fontSize: 11, fontWeight: '600' },
   recordBtn: {
     backgroundColor: '#1E293B',
     paddingHorizontal: 14,
@@ -6582,19 +6052,19 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderWidth: 1,
     borderColor: '#334155',
   },
-  recordBtnText: { color: '#10B981', fontWeight: '700', fontSize: fs(12) },
+  recordBtnText: { color: '#10B981', fontWeight: '700', fontSize: 12 },
   banner: {
     paddingVertical: 8,
     paddingHorizontal: 16,
   },
   bannerOk: { backgroundColor: '#064E3B' },
   bannerErr: { backgroundColor: '#7F1D1D' },
-  bannerText: { color: '#F8FAFC', fontSize: fs(12), fontWeight: '600', textAlign: 'center' },
+  bannerText: { color: '#F8FAFC', fontSize: 12, fontWeight: '600', textAlign: 'center' },
   scroll: {
     paddingHorizontal: 16,
     paddingTop: 6,
     gap: 10,
-    paddingBottom: Math.round(55 + 25 * tabBarScale),
+    paddingBottom: (Platform.OS === 'web' ? 70 : 70),
   },
   heroCard: {
     backgroundColor: '#131B2E',
@@ -6611,7 +6081,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tagLocked: { backgroundColor: '#064E3B', borderColor: '#059669' },
   tagUnlocked: { backgroundColor: '#450A0A', borderColor: '#DC2626' },
-  statusTagText: { fontSize: fs(10), fontWeight: '800' },
+  statusTagText: { fontSize: 10, fontWeight: '800' },
   tagCharging: {
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -6620,17 +6090,17 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderWidth: 1,
     borderColor: '#06B6D4',
   },
-  tagChargingText: { color: '#67E8F9', fontSize: fs(10), fontWeight: '800' },
+  tagChargingText: { color: '#67E8F9', fontSize: 10, fontWeight: '800' },
   heroRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginVertical: 16,
   },
-  rangeValue: { color: '#FFF', fontSize: fs(40), fontWeight: '900' },
-  rangeLabel: { color: '#94A3B8', fontSize: fs(11), marginTop: 4 },
-  socValue: { color: '#FFF', fontSize: fs(19), fontWeight: '900' },
-  socSub: { color: '#94A3B8', fontSize: fs(10) },
+  rangeValue: { color: '#FFF', fontSize: 40, fontWeight: '900' },
+  rangeLabel: { color: '#94A3B8', fontSize: 11, marginTop: 4 },
+  socValue: { color: '#FFF', fontSize: 19, fontWeight: '900' },
+  socSub: { color: '#94A3B8', fontSize: 10 },
   statsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -6638,8 +6108,8 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderTopColor: '#1E293B',
     paddingTop: 12,
   },
-  statLabel: { color: '#64748B', fontSize: fs(10) },
-  statItem: { color: '#F1F5F9', fontSize: fs(12), fontWeight: '700', marginTop: 2 },
+  statLabel: { color: '#64748B', fontSize: 10 },
+  statItem: { color: '#F1F5F9', fontSize: 12, fontWeight: '700', marginTop: 2 },
   sohBadge: {
     backgroundColor: '#064E3B',
     borderWidth: 1,
@@ -6648,7 +6118,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     paddingVertical: 6,
     borderRadius: 12,
   },
-  sohBadgeText: { color: '#6EE7B7', fontSize: fs(15), fontWeight: '900' },
+  sohBadgeText: { color: '#6EE7B7', fontSize: 15, fontWeight: '900' },
   quickRow: { flexDirection: 'row', gap: 8 },
   quickBtn: {
     flex: 1,
@@ -6659,8 +6129,8 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderWidth: 1,
     borderColor: '#1E293B',
   },
-  quickBtnTitle: { color: '#FFF', fontSize: fs(12), fontWeight: '800' },
-  quickBtnSub: { color: '#64748B', fontSize: fs(10), marginTop: 2 },
+  quickBtnTitle: { color: '#FFF', fontSize: 12, fontWeight: '800' },
+  quickBtnSub: { color: '#64748B', fontSize: 10, marginTop: 2 },
   card: {
     backgroundColor: '#131B2E',
     borderRadius: 24,
@@ -6668,7 +6138,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderWidth: 1,
     borderColor: '#1E293B',
   },
-  cardTitle: { color: '#FFF', fontSize: fs(16), fontWeight: '800', marginBottom: 4 },
+  cardTitle: { color: '#FFF', fontSize: 16, fontWeight: '800', marginBottom: 4 },
   tpmsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 },
   tpmsBox: {
     width: '48%',
@@ -6678,10 +6148,10 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderWidth: 1,
     borderColor: '#1E293B',
   },
-  tpmsLabel: { color: '#94A3B8', fontSize: fs(11) },
-  tpmsVal: { color: '#10B981', fontSize: fs(17), fontWeight: '900', marginTop: 4 },
-  tpmsMeta: { color: '#64748B', fontSize: fs(10), marginTop: 4 },
-  bigCyan: { color: '#06B6D4', fontSize: fs(28), fontWeight: '900', marginTop: 4 },
+  tpmsLabel: { color: '#94A3B8', fontSize: 11 },
+  tpmsVal: { color: '#10B981', fontSize: 17, fontWeight: '900', marginTop: 4 },
+  tpmsMeta: { color: '#64748B', fontSize: 10, marginTop: 4 },
+  bigCyan: { color: '#06B6D4', fontSize: 28, fontWeight: '900', marginTop: 4 },
   btnGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   ctrlBtn: {
     flex: 1,
@@ -6694,7 +6164,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderColor: '#334155',
   },
   activeBtn: { backgroundColor: '#059669', borderColor: '#10B981' },
-  ctrlBtnText: { color: '#FFF', fontWeight: '700', fontSize: fs(12) },
+  ctrlBtnText: { color: '#FFF', fontWeight: '700', fontSize: 12 },
   logItem: {
     backgroundColor: '#0F172A',
     padding: 12,
@@ -6745,7 +6215,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     borderTopWidth: 1,
     borderTopColor: (Platform.OS === 'web' ? 'rgba(255, 255, 255, 0.14)' : '#1E293B') as any,
     boxShadow: (Platform.OS === 'web' ? '0 -8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1)' : undefined) as any,
-    paddingTop: Math.max(3, ts(6)),
+    paddingTop: 6,
     paddingBottom: 0,
     justifyContent: 'space-around',
     alignItems: 'center',
@@ -6758,11 +6228,11 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     paddingBottom: 0,
   },
   tabIconWrapper: {
-    width: Math.max(32, ts(44)),
-    height: Math.max(22, ts(28)),
+    width: 44,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: Math.max(11, ts(14)),
+    borderRadius: 14,
     marginBottom: 2,
   },
   tabIconWrapperActive: {
@@ -6773,7 +6243,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tabText: {
     color: '#94A3B8',
-    fontSize: Math.max(7, ts(10)),
+    fontSize: 10,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
@@ -6800,7 +6270,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   copyWebhookTitle: {
     color: '#E2E8F0',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '700',
   },
   copyPillBtn: {
@@ -6811,7 +6281,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   copyPillBtnText: {
     color: '#FFF',
-    fontSize: fs(11),
+    fontSize: 11,
     fontWeight: '700',
   },
   copyUrlTapArea: {
@@ -6823,13 +6293,13 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   copyUrlMonoText: {
     color: '#38BDF8',
-    fontSize: fs(10),
+    fontSize: 10,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     lineHeight: 14,
   },
   copyUrlTapHint: {
     color: '#64748B',
-    fontSize: fs(9),
+    fontSize: 9,
     marginTop: 4,
     textAlign: 'right',
   },
@@ -6854,13 +6324,13 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tripDateTitle: {
     color: '#34D399',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '800',
     flex: 1,
   },
   tripOdoBadge: {
     color: '#94A3B8',
-    fontSize: fs(11),
+    fontSize: 11,
     fontWeight: '700',
   },
   tripChevronBadge: {
@@ -6876,7 +6346,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tripChevronText: {
     color: '#FFF',
-    fontSize: fs(10),
+    fontSize: 10,
     fontWeight: '900',
   },
   tripPillsRow: {
@@ -6894,14 +6364,14 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tripPillLabel: {
     color: '#64748B',
-    fontSize: fs(8),
+    fontSize: 8,
     fontWeight: '800',
     letterSpacing: 0.5,
     marginBottom: 2,
   },
   tripPillValue: {
     color: '#F8FAFC',
-    fontSize: fs(11),
+    fontSize: 11,
     fontWeight: '700',
     textAlign: 'center',
   },
@@ -6916,13 +6386,13 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tripRouteText: {
     color: '#94A3B8',
-    fontSize: fs(10),
+    fontSize: 10,
     flex: 1,
     marginRight: 6,
   },
   tripTapExpandHint: {
     color: '#38BDF8',
-    fontSize: fs(10),
+    fontSize: 10,
     fontWeight: '600',
   },
   tripExpandedBody: {
@@ -6935,7 +6405,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tripDetailsHeading: {
     color: '#64748B',
-    fontSize: fs(10),
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.8,
     marginBottom: 8,
@@ -6952,21 +6422,21 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   metricRowLabel: {
     color: '#94A3B8',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '600',
     flex: 1,
     paddingRight: 8,
   },
   metricRowValue: {
     color: '#F8FAFC',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '700',
     textAlign: 'right',
     flexShrink: 1,
   },
   metricSubNote: {
     color: '#94A3B8',
-    fontSize: fs(10),
+    fontSize: 10,
     fontWeight: '500',
     textAlign: 'right',
     marginTop: 2,
@@ -6979,13 +6449,13 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   metricBlockLabel: {
     color: '#94A3B8',
-    fontSize: fs(11),
+    fontSize: 11,
     fontWeight: '700',
     marginBottom: 4,
   },
   metricBlockValue: {
     color: '#F8FAFC',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '600',
     lineHeight: 18,
   },
@@ -6999,18 +6469,18 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     marginBottom: 8,
   },
   tripTimeWindowIcon: {
-    fontSize: fs(13),
+    fontSize: 13,
     marginRight: 6,
   },
   tripTimeWindowText: {
     color: '#34D399',
-    fontSize: fs(13),
+    fontSize: 13,
     fontWeight: '800',
     flex: 1,
   },
   tripDurationInlineBadge: {
     color: '#94A3B8',
-    fontSize: fs(11),
+    fontSize: 11,
     fontWeight: '600',
     marginLeft: 6,
   },
@@ -7024,7 +6494,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   expandedTimeHeroTitle: {
     color: '#38BDF8',
-    fontSize: fs(10),
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.8,
     marginBottom: 6,
@@ -7037,19 +6507,19 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   timePointLabel: {
     color: '#64748B',
-    fontSize: fs(10),
+    fontSize: 10,
     fontWeight: '700',
     textTransform: 'uppercase',
   },
   timePointValue: {
     color: '#F8FAFC',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '700',
     marginTop: 2,
   },
   timePointArrow: {
     color: '#38BDF8',
-    fontSize: fs(16),
+    fontSize: 16,
     fontWeight: '900',
     marginHorizontal: 8,
   },
@@ -7064,7 +6534,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   journeyDurationPillText: {
     color: '#10B981',
-    fontSize: fs(12),
+    fontSize: 12,
     fontWeight: '800',
   },
   shareImageBtn: {
@@ -7076,12 +6546,12 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   shareImageBtnText: {
     color: '#FFF',
-    fontSize: fs(13),
+    fontSize: 13,
     fontWeight: '800',
   },
   longPressHint: {
     color: '#64748B',
-    fontSize: fs(10),
+    fontSize: 10,
     textAlign: 'center',
     marginTop: 4,
     marginBottom: 6,
@@ -7095,7 +6565,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   tripCollapseBarText: {
     color: '#38BDF8',
-    fontSize: fs(11),
+    fontSize: 11,
     fontWeight: '700',
   },
   imageBrandWatermark: {
@@ -7108,7 +6578,7 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
   },
   imageBrandWatermarkText: {
     color: '#64748B',
-    fontSize: fs(9),
+    fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.8,
   },
@@ -7117,11 +6587,3 @@ export function createStyles(fontScale: number = 1.0, tabBarScale: number = 1.0)
     marginBottom: 4,
   },
 });
-
-}
-
-export const defaultStyles = createStyles(1.0, 1.0);
-export const StylesContext = React.createContext(defaultStyles);
-export function useStyles() {
-  return useContext(StylesContext) || defaultStyles;
-}
