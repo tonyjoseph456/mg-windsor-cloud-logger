@@ -1015,6 +1015,123 @@ export default function App() {
     }, 4500);
   };
 
+  const updateLiveActivityNow = useCallback(() => {
+    if (!isLiveActivityActiveRef.current) return;
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (!nav || !nav.mediaSession) return;
+    const MediaMetadataCtor: any = typeof window !== 'undefined' ? (window as any).MediaMetadata : null;
+    if (!MediaMetadataCtor) return;
+
+    const rawVeh = snapshot?.vehicle;
+    const dispName = normalizeVehicleDisplayName(rawVeh?.name, rawVeh?.series);
+    const st: Partial<Status> = snapshot?.status || {};
+    const ch = st.charge || null;
+    const b = st.basic_vehicle_status;
+    const rawSoc =
+      ch?.soc !== undefined && ch?.soc !== null
+        ? ch.soc
+        : st.fuel_level !== undefined && st.fuel_level !== null
+        ? st.fuel_level
+        : null;
+    const cSoc = rawSoc !== null ? Math.min(100, Math.max(0, rawSoc)) : 0;
+    const rKm = Number(ch?.range_km ?? st.range_km ?? Math.round((cSoc / 100) * 320));
+    const chKw =
+      ch && ch.is_charging && ch.charging_current
+        ? Number(((ch.charging_voltage * ch.charging_current) / 1000).toFixed(2))
+        : 0;
+
+    const soc = Number(ch?.battery_percentage ?? b?.battery_percentage ?? cSoc);
+    const estRange = Number(rKm || ch?.distance_to_empty_km || b?.extended_data2 || Math.round((soc / 100) * 320));
+    const isCharging = Boolean(ch?.is_charging || b?.is_charging || activeCharge);
+    const speedKmh = Number(st.gps?.speed_kmh ?? 0);
+    const odoKm = Number(ch?.odometer_km ?? st.odometer_km ?? 0);
+    const isLocked = Boolean(st.locked ?? b?.is_locked);
+    const interiorTemp = st.interior_temperature ?? b?.interior_temperature ?? null;
+
+    let title = `🚗 ${dispName || 'Windsor EV'} • ${Math.round(soc)}% (${estRange} km)`;
+    let artist = `${isLocked ? '🔒 Locked' : '🔓 Unlocked'} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'} • ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''}`;
+    let headline = `${estRange} KM RANGE • ${isLocked ? 'LOCKED' : 'UNLOCKED'}`;
+    let subline = `Odo: ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'}`;
+
+    if (isCharging) {
+      const timeRemainingMin = ch?.remaining_charge_time_min ?? null;
+      const timeRemainingStr =
+        timeRemainingMin && timeRemainingMin > 0
+          ? ` • ${Math.floor(timeRemainingMin / 60)}h ${timeRemainingMin % 60}m left`
+          : '';
+      const cat = ch?.charging_gun_status ? '7.4 kW AC' : '3.3 kW AC';
+      title = `⚡ ${Math.round(soc)}% (${estRange} km) • Charging`;
+      artist = `${cat} (${chKw > 0 ? chKw.toFixed(1) + ' kW' : 'In Progress'})${timeRemainingStr}`;
+      headline = `⚡ CHARGING ${chKw > 0 ? chKw.toFixed(1) + ' kW' : ''}`;
+      subline = `${cat}${timeRemainingStr} • ${estRange} km Range`;
+    } else if (activeTrip && activeTrip.distanceKm > 0) {
+      title = `🟢 Live Trip • ${activeTrip.distanceKm.toFixed(1)} km (${Math.round(speedKmh)} km/h)`;
+      artist = `Avg: ${activeTrip.avgSpeedKmh} km/h • Efficiency: ${activeTrip.efficiencyKmPerKwh} km/kWh`;
+      headline = `🟢 ROAD TRIP • ${activeTrip.distanceKm.toFixed(1)} KM`;
+      subline = `Speed: ${Math.round(speedKmh)} km/h • Eff: ${activeTrip.efficiencyKmPerKwh} km/kWh`;
+    }
+
+    const album = 'MG Windsor EV • Lock Screen Live Activity (Tap ⏭️ to Sync)';
+    const artworkUrl = generateLiveActivityArtwork(soc, isCharging, headline, subline);
+
+    try {
+      nav.mediaSession.metadata = new MediaMetadataCtor({
+        title,
+        artist,
+        album,
+        artwork: artworkUrl ? [{ src: artworkUrl, sizes: '512x512', type: 'image/png' }] : [],
+      });
+      nav.mediaSession.playbackState = 'playing';
+
+      nav.mediaSession.setActionHandler('nexttrack', () => {
+        refreshVehicleTelemetryRef.current?.();
+      });
+      nav.mediaSession.setActionHandler('previoustrack', () => {
+        refreshVehicleTelemetryRef.current?.();
+      });
+      nav.mediaSession.setActionHandler('play', () => {
+        startLiveActivityAudio();
+      });
+      nav.mediaSession.setActionHandler('pause', () => {
+        stopLiveActivityAudio();
+      });
+    } catch (err) {
+      console.warn('Error setting mediaSession:', err);
+    }
+  }, [snapshot, activeTrip, activeCharge]);
+
+  const handleToggleLiveActivity = () => {
+    if (!isLiveActivityActive) {
+      const ok = startLiveActivityAudio();
+      if (ok) {
+        setIsLiveActivityActive(true);
+        isLiveActivityActiveRef.current = true;
+        SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
+        setTimeout(() => {
+          updateLiveActivityNow();
+        }, 100);
+        showBanner('ok', '📱 Lock Screen & Dynamic Island Live Activity started! Lock your iPhone to view.');
+      } else {
+        Alert.alert(
+          'Live Activity',
+          'Media Session background audio is available in the iOS PWA / Web browser.'
+        );
+      }
+    } else {
+      stopLiveActivityAudio();
+      setIsLiveActivityActive(false);
+      isLiveActivityActiveRef.current = false;
+      SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
+      showBanner('ok', 'Lock Screen Live Activity stopped.');
+    }
+  };
+
+  useEffect(() => {
+    if (isLiveActivityActive) {
+      updateLiveActivityNow();
+    }
+  }, [isLiveActivityActive, updateLiveActivityNow]);
+
   const copyToClipboard = async (text: string, label: string) => {
     try {
       await Clipboard.setStringAsync(text);
@@ -3127,107 +3244,6 @@ export default function App() {
     derivedFullCapacityKwh !== null
       ? Math.min(100, Math.max(70, Number(((derivedFullCapacityKwh / nominalCapacityKwh) * 100).toFixed(1))))
       : 100.0;
-
-  const updateLiveActivityNow = useCallback(() => {
-    if (!isLiveActivityActiveRef.current) return;
-    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
-    if (!nav || !nav.mediaSession) return;
-    const MediaMetadataCtor: any = typeof window !== 'undefined' ? (window as any).MediaMetadata : null;
-    if (!MediaMetadataCtor) return;
-
-    const b = status.basic_vehicle_status;
-    const ch = charge;
-    const soc = Number(ch?.battery_percentage ?? b?.battery_percentage ?? clampedSoc);
-    const estRange = Number(rangeKm || ch?.distance_to_empty_km || b?.extended_data2 || Math.round((soc / 100) * 320));
-    const isCharging = Boolean(ch?.is_charging || b?.is_charging || activeCharge);
-    const speedKmh = Number(status.gps?.speed_kmh ?? 0);
-    const odoKm = Number(charge?.odometer_km ?? status.odometer_km ?? 0);
-    const isLocked = Boolean(status.locked ?? b?.is_locked);
-    const interiorTemp = status.interior_temperature ?? b?.interior_temperature ?? null;
-
-    let title = `🚗 ${displayName || 'Windsor EV'} • ${Math.round(soc)}% (${estRange} km)`;
-    let artist = `${isLocked ? '🔒 Locked' : '🔓 Unlocked'} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'} • ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''}`;
-    let headline = `${estRange} KM RANGE • ${isLocked ? 'LOCKED' : 'UNLOCKED'}`;
-    let subline = `Odo: ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'}`;
-
-    if (isCharging) {
-      const timeRemainingMin = ch?.remaining_charge_time_min ?? null;
-      const timeRemainingStr =
-        timeRemainingMin && timeRemainingMin > 0
-          ? ` • ${Math.floor(timeRemainingMin / 60)}h ${timeRemainingMin % 60}m left`
-          : '';
-      const cat = ch?.charging_gun_status ? '7.4 kW AC' : '3.3 kW AC';
-      title = `⚡ ${Math.round(soc)}% (${estRange} km) • Charging`;
-      artist = `${cat} (${chargingKw > 0 ? chargingKw.toFixed(1) + ' kW' : 'In Progress'})${timeRemainingStr}`;
-      headline = `⚡ CHARGING ${chargingKw > 0 ? chargingKw.toFixed(1) + ' kW' : ''}`;
-      subline = `${cat}${timeRemainingStr} • ${estRange} km Range`;
-    } else if (activeTrip && activeTrip.distanceKm > 0) {
-      title = `🟢 Live Trip • ${activeTrip.distanceKm.toFixed(1)} km (${Math.round(speedKmh)} km/h)`;
-      artist = `Avg: ${activeTrip.avgSpeedKmh} km/h • Efficiency: ${activeTrip.efficiencyKmPerKwh} km/kWh`;
-      headline = `🟢 ROAD TRIP • ${activeTrip.distanceKm.toFixed(1)} KM`;
-      subline = `Speed: ${Math.round(speedKmh)} km/h • Eff: ${activeTrip.efficiencyKmPerKwh} km/kWh`;
-    }
-
-    const album = 'MG Windsor EV • Lock Screen Live Activity (Tap ⏭️ to Sync)';
-    const artworkUrl = generateLiveActivityArtwork(soc, isCharging, headline, subline);
-
-    try {
-      nav.mediaSession.metadata = new MediaMetadataCtor({
-        title,
-        artist,
-        album,
-        artwork: artworkUrl ? [{ src: artworkUrl, sizes: '512x512', type: 'image/png' }] : [],
-      });
-      nav.mediaSession.playbackState = 'playing';
-
-      nav.mediaSession.setActionHandler('nexttrack', () => {
-        refreshVehicleTelemetryRef.current?.();
-      });
-      nav.mediaSession.setActionHandler('previoustrack', () => {
-        refreshVehicleTelemetryRef.current?.();
-      });
-      nav.mediaSession.setActionHandler('play', () => {
-        startLiveActivityAudio();
-      });
-      nav.mediaSession.setActionHandler('pause', () => {
-        stopLiveActivityAudio();
-      });
-    } catch (err) {
-      console.warn('Error setting mediaSession:', err);
-    }
-  }, [status, charge, activeTrip, activeCharge, clampedSoc, rangeKm, chargingKw, displayName]);
-
-  const handleToggleLiveActivity = () => {
-    if (!isLiveActivityActive) {
-      const ok = startLiveActivityAudio();
-      if (ok) {
-        setIsLiveActivityActive(true);
-        isLiveActivityActiveRef.current = true;
-        SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
-        setTimeout(() => {
-          updateLiveActivityNow();
-        }, 100);
-        showBanner('ok', '📱 Lock Screen & Dynamic Island Live Activity started! Lock your iPhone to view.');
-      } else {
-        Alert.alert(
-          'Live Activity',
-          'Media Session background audio is available in the iOS PWA / Web browser.'
-        );
-      }
-    } else {
-      stopLiveActivityAudio();
-      setIsLiveActivityActive(false);
-      isLiveActivityActiveRef.current = false;
-      SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
-      showBanner('ok', 'Lock Screen Live Activity stopped.');
-    }
-  };
-
-  useEffect(() => {
-    if (isLiveActivityActive) {
-      updateLiveActivityNow();
-    }
-  }, [isLiveActivityActive, updateLiveActivityNow]);
 
   return (
     <View style={styles.container}>
