@@ -4312,7 +4312,11 @@ export default function App() {
       </Modal>
 
       {/* Redesigned Bottom Navigation Tab Bar with Crisp Vector Icons */}
-      <View style={styles.tabBar}>
+      <View
+        nativeID="liquid-glass-tabbar"
+        testID="liquid-glass-tabbar"
+        style={[styles.tabBar, Platform.OS === 'web' && ({ className: 'liquid-glass-tabbar' } as any)]}
+      >
         {(
           [
             {
@@ -6060,7 +6064,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 6,
     gap: 10,
-    paddingBottom: (Platform.OS === 'web' ? 95 : Platform.OS === 'ios' ? 95 : 75),
+    paddingBottom: (Platform.OS === 'web' ? 70 : Platform.OS === 'ios' ? 95 : 75),
   },
   heroCard: {
     backgroundColor: '#131B2E',
@@ -6205,15 +6209,18 @@ const styles = StyleSheet.create({
     width: '100%' as any,
     zIndex: 1000,
     flexDirection: 'row',
-    backgroundColor: '#0A0F1D',
+    backgroundColor: (Platform.OS === 'web' ? 'rgba(10, 15, 29, 0.72)' : '#0A0F1D') as any,
+    backdropFilter: (Platform.OS === 'web' ? 'blur(28px) saturate(210%)' : undefined) as any,
+    WebkitBackdropFilter: (Platform.OS === 'web' ? 'blur(28px) saturate(210%)' : undefined) as any,
     borderTopWidth: 1,
-    borderTopColor: '#1E293B',
-    paddingTop: 8,
+    borderTopColor: (Platform.OS === 'web' ? 'rgba(255, 255, 255, 0.14)' : '#1E293B') as any,
+    boxShadow: (Platform.OS === 'web' ? '0 -8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1)' : undefined) as any,
+    paddingTop: (Platform.OS === 'web' ? 6 : 8),
     paddingBottom: (Platform.OS === 'web'
-      ? 'max(20px, env(safe-area-inset-bottom, 20px))'
+      ? 0
       : Platform.OS === 'ios'
-      ? 28
-      : 10) as any,
+      ? 24
+      : 8) as any,
     justifyContent: 'space-around',
     alignItems: 'center',
   },
@@ -6221,10 +6228,10 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 2,
+    paddingVertical: (Platform.OS === 'web' ? 2 : 2),
   },
   tabIconWrapper: {
-    width: 38,
+    width: 44,
     height: 28,
     alignItems: 'center',
     justifyContent: 'center',
@@ -6232,17 +6239,21 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   tabIconWrapperActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: 'rgba(16, 185, 129, 0.20)',
+    borderWidth: (Platform.OS === 'web' ? 1 : 0) as any,
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+    boxShadow: (Platform.OS === 'web' ? '0 0 10px rgba(16, 185, 129, 0.25)' : undefined) as any,
   },
   tabText: {
-    color: '#64748B',
+    color: '#94A3B8',
     fontSize: 10,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
   tabActive: {
-    color: '#10B981',
+    color: '#34D399',
     fontWeight: '800',
+    textShadow: (Platform.OS === 'web' ? '0 0 8px rgba(52, 211, 153, 0.4)' : undefined) as any,
   },
 
   // Webhook copy cards in Account Tab

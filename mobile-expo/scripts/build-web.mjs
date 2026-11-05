@@ -85,6 +85,25 @@ const tags = `
         background: #0A0E17 !important;
         overflow: hidden;
       }
+      /* Liquid Glass Bottom Navigation Bar for iOS PWA */
+      #liquid-glass-tabbar,
+      [data-testid="liquid-glass-tabbar"],
+      .liquid-glass-tabbar {
+        position: fixed !important;
+        bottom: 0px !important;
+        left: 0px !important;
+        right: 0px !important;
+        width: 100% !important;
+        padding-bottom: 0px !important;
+        margin-bottom: 0px !important;
+        background-color: rgba(10, 15, 29, 0.72) !important;
+        background: rgba(10, 15, 29, 0.72) !important;
+        -webkit-backdrop-filter: blur(28px) saturate(210%) !important;
+        backdrop-filter: blur(28px) saturate(210%) !important;
+        border-top: 1px solid rgba(255, 255, 255, 0.14) !important;
+        box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+        z-index: 9999 !important;
+      }
     </style>
     <script>
       if ('serviceWorker' in navigator) {
