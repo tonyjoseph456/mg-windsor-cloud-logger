@@ -1078,6 +1078,12 @@ async function pollUser(env: Env, u: any, nowSec: number, budget: { n: number })
             });
           }
           u.activeTrip = null;
+          u.lastParkedOdo = odo;
+          u.lastParkedSoc = soc;
+          u.lastParkedEnergyKwh = energy;
+          u.lastParkedTimeSec = nowSec;
+          u.lastParkedLat = lat ?? t.endLat;
+          u.lastParkedLng = lng ?? t.endLng;
           dirty = true;
         }
       } else if (driving) {
