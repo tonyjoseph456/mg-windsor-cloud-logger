@@ -678,6 +678,176 @@ const TripCalendar = ({
   />
 );
 
+const LIVE_ACTIVITY_KEY = 'mg_live_activity_enabled';
+
+let liveActivityAudioInstance: any = null;
+let silentWavBlobUrl: string | null = null;
+
+function getOrCreateSilentWavUrl(): string {
+  if (silentWavBlobUrl) return silentWavBlobUrl;
+  if (typeof window === 'undefined' || typeof Blob === 'undefined') return '';
+
+  const sampleRate = 8000;
+  const numSeconds = 3;
+  const numSamples = sampleRate * numSeconds;
+  const buffer = new ArrayBuffer(44 + numSamples);
+  const view = new DataView(buffer);
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // Mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate, true);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true); // 8-bit
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples, true);
+
+  const bytes = new Uint8Array(buffer, 44);
+  bytes.fill(128); // 8-bit PCM silence
+
+  try {
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    silentWavBlobUrl = URL.createObjectURL(blob);
+    return silentWavBlobUrl;
+  } catch {
+    return '';
+  }
+}
+
+function startLiveActivityAudio(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const AudioCtor: any = (window as any).Audio;
+    if (!AudioCtor) return false;
+
+    const url = getOrCreateSilentWavUrl();
+    if (!url) return false;
+
+    if (!liveActivityAudioInstance) {
+      const audio = new AudioCtor(url);
+      audio.loop = true;
+      audio.autoplay = true;
+      audio.setAttribute('playsinline', '');
+      audio.setAttribute('webkit-playsinline', '');
+      audio.volume = 1.0;
+      liveActivityAudioInstance = audio;
+    }
+
+    const p = liveActivityAudioInstance.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {});
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopLiveActivityAudio() {
+  try {
+    if (liveActivityAudioInstance) {
+      liveActivityAudioInstance.pause();
+      liveActivityAudioInstance.currentTime = 0;
+    }
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (nav && nav.mediaSession) {
+      nav.mediaSession.playbackState = 'none';
+    }
+  } catch {}
+}
+
+function generateLiveActivityArtwork(
+  soc: number,
+  isCharging: boolean,
+  headline: string,
+  subline: string
+): string {
+  if (typeof document === 'undefined') return '';
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+
+    // Gradient background
+    const bg = ctx.createLinearGradient(0, 0, 0, 512);
+    bg.addColorStop(0, '#0F172A');
+    bg.addColorStop(1, '#020617');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Glowing outer ring background
+    const centerX = 256;
+    const centerY = 210;
+    const radius = 135;
+
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+    ctx.strokeStyle = '#1E293B';
+    ctx.lineWidth = 18;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    // Active progress arc
+    const startAngle = -Math.PI / 2;
+    const clampedSoc = Math.min(100, Math.max(0, soc));
+    const endAngle = startAngle + (clampedSoc / 100) * 2 * Math.PI;
+
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+    ctx.strokeStyle = isCharging ? '#10B981' : clampedSoc <= 20 ? '#EF4444' : '#38BDF8';
+    ctx.lineWidth = 18;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    // Brand tag
+    ctx.fillStyle = '#EF4444';
+    ctx.font = 'bold 22px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('MG WINDSOR EV', centerX, centerY - 65);
+
+    // Big SOC text
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 92px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillText(`${Math.round(clampedSoc)}%`, centerX, centerY + 8);
+
+    // Headline (e.g. "⚡ CHARGING 3.3 kW" or "206 KM RANGE")
+    ctx.fillStyle = isCharging ? '#34D399' : '#38BDF8';
+    ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillText(headline.toUpperCase(), centerX, centerY + 70);
+
+    // Divider line
+    ctx.strokeStyle = '#1E293B';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(50, 390);
+    ctx.lineTo(462, 390);
+    ctx.stroke();
+
+    // Subline details (Odo, Cabin Temp, Timestamp)
+    ctx.fillStyle = '#94A3B8';
+    ctx.font = '600 22px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillText(subline, centerX, 435);
+
+    return canvas.toDataURL('image/png');
+  } catch {
+    return '';
+  }
+}
+
 interface PersistedSession {
   phone: string;
   password: string;
@@ -788,6 +958,11 @@ export default function App() {
   const [pushPermission, setPushPermission] = useState<string>(
     Platform.OS === 'web' && typeof Notification !== 'undefined' ? Notification.permission : 'default'
   );
+
+  // iOS Lock Screen & Dynamic Island (Media Session "Now Playing" Trick)
+  const [isLiveActivityActive, setIsLiveActivityActive] = useState<boolean>(false);
+  const isLiveActivityActiveRef = useRef<boolean>(false);
+  const refreshVehicleTelemetryRef = useRef<(() => Promise<any>) | null>(null);
 
   const tripsRef = useRef<TripRecord[]>([]);
   const activeTripRef = useRef<TripRecord | null>(null);
@@ -2066,6 +2241,7 @@ export default function App() {
     const useVin = sessionOverride?.vin ?? vin;
 
     setIsSyncing(true);
+    refreshVehicleTelemetryRef.current = () => refreshVehicleTelemetry();
     try {
 
       const client =
@@ -2952,6 +3128,107 @@ export default function App() {
       ? Math.min(100, Math.max(70, Number(((derivedFullCapacityKwh / nominalCapacityKwh) * 100).toFixed(1))))
       : 100.0;
 
+  const updateLiveActivityNow = useCallback(() => {
+    if (!isLiveActivityActiveRef.current) return;
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (!nav || !nav.mediaSession) return;
+    const MediaMetadataCtor: any = typeof window !== 'undefined' ? (window as any).MediaMetadata : null;
+    if (!MediaMetadataCtor) return;
+
+    const b = status.basic_vehicle_status;
+    const ch = charge;
+    const soc = Number(ch?.battery_percentage ?? b?.battery_percentage ?? clampedSoc);
+    const estRange = Number(rangeKm || ch?.distance_to_empty_km || b?.extended_data2 || Math.round((soc / 100) * 320));
+    const isCharging = Boolean(ch?.is_charging || b?.is_charging || activeCharge);
+    const speedKmh = Number(status.gps?.speed_kmh ?? 0);
+    const odoKm = Number(charge?.odometer_km ?? status.odometer_km ?? 0);
+    const isLocked = Boolean(status.locked ?? b?.is_locked);
+    const interiorTemp = status.interior_temperature ?? b?.interior_temperature ?? null;
+
+    let title = `🚗 ${displayName || 'Windsor EV'} • ${Math.round(soc)}% (${estRange} km)`;
+    let artist = `${isLocked ? '🔒 Locked' : '🔓 Unlocked'} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'} • ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''}`;
+    let headline = `${estRange} KM RANGE • ${isLocked ? 'LOCKED' : 'UNLOCKED'}`;
+    let subline = `Odo: ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'}`;
+
+    if (isCharging) {
+      const timeRemainingMin = ch?.remaining_charge_time_min ?? null;
+      const timeRemainingStr =
+        timeRemainingMin && timeRemainingMin > 0
+          ? ` • ${Math.floor(timeRemainingMin / 60)}h ${timeRemainingMin % 60}m left`
+          : '';
+      const cat = ch?.charging_gun_status ? '7.4 kW AC' : '3.3 kW AC';
+      title = `⚡ ${Math.round(soc)}% (${estRange} km) • Charging`;
+      artist = `${cat} (${chargingKw > 0 ? chargingKw.toFixed(1) + ' kW' : 'In Progress'})${timeRemainingStr}`;
+      headline = `⚡ CHARGING ${chargingKw > 0 ? chargingKw.toFixed(1) + ' kW' : ''}`;
+      subline = `${cat}${timeRemainingStr} • ${estRange} km Range`;
+    } else if (activeTrip && activeTrip.distanceKm > 0) {
+      title = `🟢 Live Trip • ${activeTrip.distanceKm.toFixed(1)} km (${Math.round(speedKmh)} km/h)`;
+      artist = `Avg: ${activeTrip.avgSpeedKmh} km/h • Efficiency: ${activeTrip.efficiencyKmPerKwh} km/kWh`;
+      headline = `🟢 ROAD TRIP • ${activeTrip.distanceKm.toFixed(1)} KM`;
+      subline = `Speed: ${Math.round(speedKmh)} km/h • Eff: ${activeTrip.efficiencyKmPerKwh} km/kWh`;
+    }
+
+    const album = 'MG Windsor EV • Lock Screen Live Activity (Tap ⏭️ to Sync)';
+    const artworkUrl = generateLiveActivityArtwork(soc, isCharging, headline, subline);
+
+    try {
+      nav.mediaSession.metadata = new MediaMetadataCtor({
+        title,
+        artist,
+        album,
+        artwork: artworkUrl ? [{ src: artworkUrl, sizes: '512x512', type: 'image/png' }] : [],
+      });
+      nav.mediaSession.playbackState = 'playing';
+
+      nav.mediaSession.setActionHandler('nexttrack', () => {
+        refreshVehicleTelemetryRef.current?.();
+      });
+      nav.mediaSession.setActionHandler('previoustrack', () => {
+        refreshVehicleTelemetryRef.current?.();
+      });
+      nav.mediaSession.setActionHandler('play', () => {
+        startLiveActivityAudio();
+      });
+      nav.mediaSession.setActionHandler('pause', () => {
+        stopLiveActivityAudio();
+      });
+    } catch (err) {
+      console.warn('Error setting mediaSession:', err);
+    }
+  }, [status, charge, activeTrip, activeCharge, clampedSoc, rangeKm, chargingKw, displayName]);
+
+  const handleToggleLiveActivity = () => {
+    if (!isLiveActivityActive) {
+      const ok = startLiveActivityAudio();
+      if (ok) {
+        setIsLiveActivityActive(true);
+        isLiveActivityActiveRef.current = true;
+        SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
+        setTimeout(() => {
+          updateLiveActivityNow();
+        }, 100);
+        showBanner('ok', '📱 Lock Screen & Dynamic Island Live Activity started! Lock your iPhone to view.');
+      } else {
+        Alert.alert(
+          'Live Activity',
+          'Media Session background audio is available in the iOS PWA / Web browser.'
+        );
+      }
+    } else {
+      stopLiveActivityAudio();
+      setIsLiveActivityActive(false);
+      isLiveActivityActiveRef.current = false;
+      SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
+      showBanner('ok', 'Lock Screen Live Activity stopped.');
+    }
+  };
+
+  useEffect(() => {
+    if (isLiveActivityActive) {
+      updateLiveActivityNow();
+    }
+  }, [isLiveActivityActive, updateLiveActivityNow]);
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -3045,32 +3322,53 @@ export default function App() {
         {tab === 'home' && (
           <>
             <View style={styles.heroCard}>
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                <View
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                  <View
+                    style={[
+                      styles.statusTag,
+                      status.locked ? styles.tagLocked : styles.tagUnlocked,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusTagText,
+                        status.locked ? { color: '#6EE7B7' } : { color: '#FCA5A5' },
+                      ]}
+                    >
+                      {status.locked === undefined || status.locked === null
+                        ? 'PULL DOWN TO SYNC'
+                        : status.locked
+                        ? 'LOCKED & SECURE'
+                        : 'UNLOCKED'}
+                    </Text>
+                  </View>
+
+                  {charge?.is_charging && (
+                    <View style={styles.tagCharging}>
+                      <Text style={styles.tagChargingText}>CHARGING • {chargingKw} kW</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* 1-Tap Lock Screen Live Activity Toggle Pill */}
+                <TouchableOpacity
                   style={[
-                    styles.statusTag,
-                    status.locked ? styles.tagLocked : styles.tagUnlocked,
+                    styles.liveActivityPill,
+                    isLiveActivityActive && styles.liveActivityPillActive,
                   ]}
+                  onPress={handleToggleLiveActivity}
+                  activeOpacity={0.7}
                 >
                   <Text
                     style={[
-                      styles.statusTagText,
-                      status.locked ? { color: '#6EE7B7' } : { color: '#FCA5A5' },
+                      styles.liveActivityPillText,
+                      isLiveActivityActive && styles.liveActivityPillTextActive,
                     ]}
                   >
-                    {status.locked === undefined || status.locked === null
-                      ? 'PULL DOWN TO SYNC'
-                      : status.locked
-                      ? 'LOCKED & SECURE'
-                      : 'UNLOCKED'}
+                    {isLiveActivityActive ? '🟢 Lock Screen: ON' : '📱 Lock Screen: OFF'}
                   </Text>
-                </View>
-
-                {charge?.is_charging && (
-                  <View style={styles.tagCharging}>
-                    <Text style={styles.tagChargingText}>CHARGING • {chargingKw} kW</Text>
-                  </View>
-                )}
+                </TouchableOpacity>
               </View>
 
               <View style={styles.heroRow}>
@@ -4485,55 +4783,93 @@ export default function App() {
             </AccountSectionCard>
 
             {/* CARD 4: iOS LOCK SCREEN & DYNAMIC ISLAND LIVE ACTIVITY CARD */}
-            {backendConfig ? (
-              <AccountSectionCard
-                title="iOS Lock Screen & Dynamic Island"
-                icon="📱"
-                badge="Live Shortcut"
-                badgeBg="#1E293B"
-                badgeColor="#38BDF8"
-                preview="Live speed, battery SOC % & charging on Lock Screen"
-                subtitle="Display ongoing trips, live speed, battery SOC %, and charging status right on your iPhone Lock Screen and Dynamic Island using Apple Shortcuts + the Live Shortcut app."
+            <AccountSectionCard
+              title="iOS Lock Screen & Dynamic Island"
+              icon="📱"
+              badge={isLiveActivityActive ? '🟢 Live Active' : 'Media Session'}
+              badgeBg={isLiveActivityActive ? '#064E3B' : '#1E293B'}
+              badgeColor={isLiveActivityActive ? '#34D399' : '#38BDF8'}
+              preview={isLiveActivityActive ? 'Active on Lock Screen & Dynamic Island' : 'Now Playing Lock Screen trick'}
+              subtitle="Display your Windsor EV live battery %, range, and charging status right on your iPhone Lock Screen and Dynamic Island using the iOS Media Session (&quot;Now Playing&quot;) background trick."
+            >
+              <TouchableOpacity
+                style={[
+                  styles.liveActivityToggleBtn,
+                  isLiveActivityActive && styles.liveActivityToggleBtnActive,
+                ]}
+                onPress={handleToggleLiveActivity}
               >
-                <View style={{ backgroundColor: '#0F172A', padding: 10, borderRadius: 8, marginBottom: 10 }}>
+                <Text style={styles.liveActivityToggleBtnText}>
+                  {isLiveActivityActive
+                    ? '⏹️ Stop Lock Screen Live Activity'
+                    : '▶️ Start Lock Screen & Dynamic Island Live Activity'}
+                </Text>
+              </TouchableOpacity>
+
+              {/* Live Preview Box */}
+              <View style={styles.liveActivityPreviewBox}>
+                <View style={styles.liveActivityPreviewHeader}>
+                  <Text style={styles.liveActivityPreviewTitle}>Lock Screen Preview</Text>
+                  <View style={[
+                    styles.liveActivityPreviewLiveBadge,
+                    !isLiveActivityActive && { backgroundColor: '#1E293B', borderColor: '#334155' },
+                  ]}>
+                    <Text style={[
+                      styles.liveActivityPreviewLiveBadgeText,
+                      !isLiveActivityActive && { color: '#64748B' },
+                    ]}>
+                      {isLiveActivityActive ? '● BROADCASTING' : 'READY TO START'}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.liveActivityPreviewCard}>
+                  <Text style={styles.liveActivityPreviewMainText}>
+                    {charge?.is_charging
+                      ? `⚡ ${Math.round(charge.battery_percentage)}% (${charge.distance_to_empty_km} km) • Charging`
+                      : `🚗 ${displayName || 'Windsor EV'} • ${Math.round(status.basic_vehicle_status?.battery_percentage ?? clampedSoc)}% (${rangeKm || status.basic_vehicle_status?.extended_data2 || Math.round((clampedSoc / 100) * 320)} km)`}
+                  </Text>
+                  <Text style={styles.liveActivityPreviewSubText}>
+                    {charge?.is_charging
+                      ? `${charge.charging_power_kw > 0 ? charge.charging_power_kw.toFixed(1) + ' kW' : '3.3 kW AC'} • Charging in progress`
+                      : `${status.locked ? '🔒 Locked' : '🔓 Unlocked'} • Cabin: ${status.interior_temperature ? status.interior_temperature + '°C' : '--'} • ${status.odometer_km?.toLocaleString() || ''} km`}
+                  </Text>
+                  <Text style={styles.liveActivityPreviewAlbumText}>
+                    MG Windsor EV • Lock Screen Live Activity (Tap ⏭️ to Sync)
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 16, marginBottom: 12 }}>
+                💡 <Text style={{ fontWeight: '700', color: '#F8FAFC' }}>How it works:</Text>{'\n'}
+                1. Tap the button above to start the background Live Activity.{'\n'}
+                2. Lock your iPhone: the Live Activity widget appears on your Lock Screen and in the Dynamic Island.{'\n'}
+                3. <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Lock Screen Sync Control:</Text> Tap <Text style={{ color: '#34D399', fontWeight: '800' }}>⏭️ (Next Track)</Text> on your iPhone Lock Screen or Apple Watch to refresh your car&apos;s live battery &amp; telemetry without unlocking your phone!{'\n'}
+                4. Keeps the web app process running smoothly in the background without iOS freezing it.
+              </Text>
+
+              {/* Secondary Apple Shortcuts Webhook for users who want external shortcuts */}
+              {backendConfig && (
+                <View style={{ backgroundColor: '#0B132B', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#1E293B' }}>
                   <Text style={{ color: '#64748B', fontSize: 10, fontWeight: '700', textTransform: 'uppercase', marginBottom: 4 }}>
-                    Your Personal Live Activity URL
+                    Optional: Apple Shortcuts Webhook URL
                   </Text>
                   <Text style={{ color: '#34D399', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }} numberOfLines={2}>
                     {`${BACKEND_URL}/api/live-status?userId=${backendConfig.userId}&userKey=${backendConfig.userKey}`}
                   </Text>
-                </View>
-
-                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
                   <TouchableOpacity
-                    style={[styles.shareImageBtn, { backgroundColor: '#0284C7', flex: 1, marginTop: 0 }]}
+                    style={[styles.shareImageBtn, { backgroundColor: '#1E293B', marginTop: 8 }]}
                     onPress={() => {
                       const url = `${BACKEND_URL}/api/live-status?userId=${backendConfig.userId}&userKey=${backendConfig.userKey}`;
                       Clipboard.setStringAsync(url);
                       showBanner('ok', 'Copied Live Activity API URL to clipboard');
                     }}
                   >
-                    <Text style={styles.shareImageBtnText}>📋 Copy API URL</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.shareImageBtn, { backgroundColor: '#1E293B', flex: 1, marginTop: 0 }]}
-                    onPress={() => {
-                      const testUrl = `${BACKEND_URL}/api/live-status?userId=${backendConfig.userId}&userKey=${backendConfig.userKey}&test=driving`;
-                      Linking.openURL(testUrl);
-                    }}
-                  >
-                    <Text style={[styles.shareImageBtnText, { color: '#38BDF8' }]}>🧪 Test in Browser</Text>
+                    <Text style={[styles.shareImageBtnText, { color: '#38BDF8' }]}>📋 Copy API URL</Text>
                   </TouchableOpacity>
                 </View>
-
-                <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 16 }}>
-                  💡 <Text style={{ fontWeight: '700', color: '#F8FAFC' }}>Quick Setup in Shortcuts App:</Text>{'\n'}
-                  1. In Shortcuts, add action: <Text style={{ color: '#38BDF8' }}>Get Contents of URL</Text> (paste URL above).{'\n'}
-                  2. Add action: <Text style={{ color: '#38BDF8' }}>Live Shortcut: Update Live Activity</Text>.{'\n'}
-                  3. Set Title to <Text style={{ color: '#34D399' }}>title</Text> and Content to <Text style={{ color: '#34D399' }}>headline</Text>.
-                </Text>
-              </AccountSectionCard>
-            ) : null}
+              )}
+            </AccountSectionCard>
 
             {/* CARD 4: GOOGLE DRIVE & GOOGLE SHEETS BACKUP (legacy in-app sync) */}
             {googleConfig?.accessToken && !backendConfig && (
@@ -6835,6 +7171,101 @@ const styles = StyleSheet.create({
     borderColor: '#06B6D4',
   },
   tagChargingText: { color: '#67E8F9', fontSize: 10, fontWeight: '800' },
+  liveActivityPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 99,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#0F172A',
+  },
+  liveActivityPillActive: {
+    backgroundColor: '#064E3B',
+    borderColor: '#059669',
+  },
+  liveActivityPillText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#94A3B8',
+  },
+  liveActivityPillTextActive: {
+    color: '#34D399',
+  },
+  liveActivityToggleBtn: {
+    backgroundColor: '#0284C7',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  liveActivityToggleBtnActive: {
+    backgroundColor: '#7F1D1D',
+  },
+  liveActivityToggleBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  liveActivityPreviewBox: {
+    backgroundColor: '#070C18',
+    borderColor: '#1E293B',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 12,
+  },
+  liveActivityPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  liveActivityPreviewTitle: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  liveActivityPreviewLiveBadge: {
+    backgroundColor: '#064E3B',
+    borderColor: '#059669',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  liveActivityPreviewLiveBadgeText: {
+    color: '#34D399',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  liveActivityPreviewCard: {
+    backgroundColor: '#0F172A',
+    borderColor: '#334155',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  liveActivityPreviewMainText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  liveActivityPreviewSubText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  liveActivityPreviewAlbumText: {
+    color: '#64748B',
+    fontSize: 10,
+    fontWeight: '500',
+  },
   heroRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
