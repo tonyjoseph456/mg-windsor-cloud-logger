@@ -59,6 +59,9 @@ import {
   fetchD1Charges,
   fetchD1ChargeDates,
   registerCarSession,
+  AppNotificationRecord,
+  fetchD1Notifications,
+  clearD1Notifications,
 } from './src/sdk';
 
 type TabId = 'home' | 'charge' | 'trips' | 'account';
@@ -832,6 +835,27 @@ export default function App() {
   const [isGoogleSyncing, setIsGoogleSyncing] = useState<boolean>(false);
   const googleConfigRef = useRef<GoogleSyncConfig | null>(null);
   const [isBackendBusy, setIsBackendBusy] = useState<boolean>(false);
+
+  // Cloudflare D1 Stored Notifications State
+  const [d1Notifications, setD1Notifications] = useState<AppNotificationRecord[]>([]);
+  const [isNotifsLoading, setIsNotifsLoading] = useState<boolean>(false);
+
+  const refreshD1Notifications = async () => {
+    setIsNotifsLoading(true);
+    try {
+      const list = await fetchD1Notifications(60);
+      setD1Notifications(list);
+    } catch (_) {}
+    finally {
+      setIsNotifsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tab === 'account') {
+      refreshD1Notifications();
+    }
+  }, [tab]);
 
   const tripsRef = useRef<TripRecord[]>([]);
   const activeTripRef = useRef<TripRecord | null>(null);
@@ -3101,6 +3125,125 @@ export default function App() {
                   </Text>
                 </View>
               </View>
+            </AccountSectionCard>
+
+            {/* CARD: Notification History & Activity Log (Cloudflare D1) */}
+            <AccountSectionCard
+              title="Notification History & Activity Log"
+              icon="🔔"
+              badge={`${d1Notifications.length} Stored`}
+              badgeBg="#1E293B"
+              badgeColor="#38BDF8"
+              preview="Cloud-synced log of all vehicle trip alerts in Cloudflare D1"
+              subtitle="All trip start, completed trip, and stationary event notifications are saved in your Cloudflare D1 database and synchronized across all your devices."
+            >
+              {/* Action Toolbar */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <TouchableOpacity
+                  style={[styles.recordBtn, { backgroundColor: '#0284C720', borderColor: '#0284C7', paddingHorizontal: 12, paddingVertical: 6 }]}
+                  onPress={refreshD1Notifications}
+                  disabled={isNotifsLoading}
+                >
+                  <Text style={[styles.recordBtnText, { color: '#38BDF8', fontSize: 12 }]}>
+                    {isNotifsLoading ? 'Refreshing...' : '🔄 Refresh Log'}
+                  </Text>
+                </TouchableOpacity>
+
+                {d1Notifications.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#DC262620', borderColor: '#DC2626', paddingHorizontal: 12, paddingVertical: 6 }]}
+                    onPress={() => {
+                      Alert.alert(
+                        'Clear Notification History',
+                        'Are you sure you want to delete all saved notifications from Cloudflare D1?',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Clear All',
+                            style: 'destructive',
+                            onPress: async () => {
+                              const ok = await clearD1Notifications();
+                              if (ok) {
+                                setD1Notifications([]);
+                                showBanner('ok', 'Cleared notification history from Cloudflare D1');
+                              } else {
+                                showBanner('err', 'Failed to clear notifications');
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                  >
+                    <Text style={[styles.recordBtnText, { color: '#EF4444', fontSize: 12 }]}>
+                      🗑️ Clear Log
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Notification List */}
+              {d1Notifications.length === 0 ? (
+                <View style={{ backgroundColor: '#0B132B', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#1E293B', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 24, marginBottom: 6 }}>📭</Text>
+                  <Text style={{ color: '#F8FAFC', fontWeight: '700', fontSize: 13, marginBottom: 4 }}>
+                    No Notifications Saved Yet
+                  </Text>
+                  <Text style={{ color: '#64748B', fontSize: 11, textAlign: 'center', lineHeight: 16 }}>
+                    When your Apple CarPlay shortcuts run, notifications with full metrics (distance, duration, battery %, energy, efficiency) will be permanently archived here in Cloudflare D1.
+                  </Text>
+                </View>
+              ) : (
+                <View style={{ gap: 10 }}>
+                  {d1Notifications.map((notif) => {
+                    const isStart = notif.type === 'trip_start';
+                    const isStop = notif.type === 'trip_stop';
+                    const isIdle = notif.type === 'trip_idle';
+                    const borderColor = isStop ? '#05966940' : (isStart ? '#0284C740' : '#EAB30840');
+                    const headerBg = isStop ? '#064E3B20' : (isStart ? '#0369A120' : '#713F1220');
+                    const badgeText = isStop ? 'Trip Completed' : (isStart ? 'Trip Started' : (isIdle ? 'Stationary' : 'Alert'));
+                    const badgeColor = isStop ? '#34D399' : (isStart ? '#38BDF8' : '#FBBF24');
+                    const timeStr = notif.timestamp ? new Date(notif.timestamp * 1000).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+                    const dateStr = notif.date || (notif.timestamp ? new Date(notif.timestamp * 1000).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }) : '');
+
+                    return (
+                      <View
+                        key={notif.id}
+                        style={{
+                          backgroundColor: '#0F172A',
+                          borderRadius: 12,
+                          borderWidth: 1,
+                          borderColor,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {/* Header */}
+                        <View style={{ backgroundColor: headerBg, paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, marginRight: 8 }}>
+                            <Text style={{ fontSize: 14 }}>{isStop ? '🏁' : (isStart ? '🟢' : (isIdle ? 'ℹ️' : '⚡'))}</Text>
+                            <Text style={{ color: '#F8FAFC', fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
+                              {notif.title}
+                            </Text>
+                          </View>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <View style={{ backgroundColor: '#1E293B', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                              <Text style={{ color: badgeColor, fontSize: 10, fontWeight: '700' }}>{badgeText}</Text>
+                            </View>
+                            <Text style={{ color: '#64748B', fontSize: 10 }}>{timeStr ? `${timeStr} • ${dateStr}` : dateStr}</Text>
+                          </View>
+                        </View>
+
+                        {/* Body Message */}
+                        <View style={{ padding: 12 }}>
+                          <Text style={{ color: '#CBD5E1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 17 }}>
+                            {notif.message}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
             </AccountSectionCard>
 
             {/* CARD 5: 1-Tap Lock Screen Widget & Siri Setup */}

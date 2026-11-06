@@ -45,3 +45,17 @@ CREATE TABLE IF NOT EXISTS charges (
 
 CREATE INDEX IF NOT EXISTS idx_charges_date ON charges(date);
 CREATE INDEX IF NOT EXISTS idx_charges_status ON charges(status);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,                     -- 'trip_start' | 'trip_stop' | 'trip_idle' | 'charge_start' | 'charge_stop'
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,             -- Unix timestamp in seconds
+  date TEXT NOT NULL,                     -- IST date 'YYYY-MM-DD'
+  metadata TEXT,                          -- JSON string with extra details
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_date ON notifications(date);

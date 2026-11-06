@@ -9725,6 +9725,19 @@ async function initD1(db) {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS idx_charges_date ON charges(date);
+
+      CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        metadata TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_date ON notifications(date);
     `);
   } catch (err) {
     console.warn("initD1 warning:", err);
@@ -10078,6 +10091,68 @@ async function d1GetChargeDates(env) {
   }
   return [];
 }
+async function d1InsertNotification(env, notif) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare(`
+        INSERT INTO notifications (id, type, title, message, timestamp, date, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        notif.id,
+        notif.type,
+        notif.title,
+        notif.message,
+        notif.timestamp,
+        notif.date,
+        notif.metadata || ""
+      ).run();
+    } catch (err) {
+      console.warn("d1InsertNotification error:", err);
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const list = await env.TRIP_KV.get("d1_fallback:notifications", "json") || [];
+      list.unshift(notif);
+      await env.TRIP_KV.put("d1_fallback:notifications", JSON.stringify(list.slice(0, 100)));
+    } catch (_) {
+    }
+  }
+}
+async function d1GetNotifications(env, limit = 50) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const res = await env.DB.prepare("SELECT * FROM notifications ORDER BY timestamp DESC LIMIT ?").bind(limit).all();
+      return res.results || [];
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const list = await env.TRIP_KV.get("d1_fallback:notifications", "json") || [];
+      return list.slice(0, limit);
+    } catch (_) {
+    }
+  }
+  return [];
+}
+async function d1ClearNotifications(env) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare("DELETE FROM notifications").run();
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      await env.TRIP_KV.delete("d1_fallback:notifications");
+    } catch (_) {
+    }
+  }
+}
 async function getMgClientForWebhook(env, url) {
   const token = (url.searchParams.get("token") || url.searchParams.get("key") || "").trim();
   const userId = (url.searchParams.get("userId") || url.searchParams.get("id") || "").trim();
@@ -10191,6 +10266,15 @@ async function handleApi(env, request, url) {
         trip.start_location && trip.start_location !== "Unknown Location" ? `\u{1F4CD} Start: ${trip.start_location}` : null
       ].filter(Boolean).join("\n");
       await dispatchTripNotification(url, title, notificationText, "car,electric_plug");
+      await d1InsertNotification(env, {
+        id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+        type: "trip_start",
+        title,
+        message: notificationText,
+        timestamp: nowSec,
+        date: dateStr,
+        metadata: JSON.stringify(trip)
+      });
       if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
         return new Response(`${title}
 
@@ -10268,6 +10352,15 @@ ${notificationText}`, {
         "\u{1F9F9} Cancelled recording to keep your driving history clean."
       ].join("\n");
       await dispatchTripNotification(url, idleTitle, idleText, "information_source");
+      await d1InsertNotification(env, {
+        id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+        type: "trip_idle",
+        title: idleTitle,
+        message: idleText,
+        timestamp: nowSec,
+        date: istDateString(nowSec),
+        metadata: JSON.stringify({ durationSec, startSoc, endSoc })
+      });
       if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
         return new Response(`${idleTitle}
 
@@ -10313,6 +10406,15 @@ ${idleText}`, {
       `\u{1F3C1} Final Odometer: ${finalOdo.toLocaleString()} km`
     ].filter(Boolean).join("\n");
     await dispatchTripNotification(url, title, notificationText, "white_check_mark,trophy");
+    await d1InsertNotification(env, {
+      id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+      type: "trip_stop",
+      title,
+      message: notificationText,
+      timestamp: nowSec,
+      date: istDateString(nowSec),
+      metadata: JSON.stringify(updates)
+    });
     if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
       return new Response(`${title}
 
@@ -10386,6 +10488,15 @@ ${notificationText}`, {
     };
     await d1UpdateCharge(env, ongoingCharge.id, updates);
     return json({ success: true, message: "Charging session completed", charge: { ...ongoingCharge, ...updates } });
+  }
+  if (path === "/api/notifications") {
+    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+    const notifs = await d1GetNotifications(env, limit);
+    return json({ success: true, notifications: notifs });
+  }
+  if (path === "/api/notifications/clear") {
+    await d1ClearNotifications(env);
+    return json({ success: true, message: "Notification history cleared" });
   }
   if (path === "/api/charges") {
     const date = url.searchParams.get("date");

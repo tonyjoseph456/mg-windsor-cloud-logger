@@ -983,5 +983,43 @@ export async function registerCarSession(car: { uid: string; token: string; vin?
   }
 }
 
+export interface AppNotificationRecord {
+  id: string;
+  type: 'trip_start' | 'trip_stop' | 'trip_idle' | 'charge_start' | 'charge_stop';
+  title: string;
+  message: string;
+  timestamp: number;
+  date: string;
+  metadata?: string | null;
+  created_at?: string;
+}
+
+export async function fetchD1Notifications(limit = 50): Promise<AppNotificationRecord[]> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/notifications?limit=${limit}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (data.success && Array.isArray(data.notifications)) {
+      return data.notifications;
+    }
+  } catch (err) {
+    console.warn('fetchD1Notifications error:', err);
+  }
+  return [];
+}
+
+export async function clearD1Notifications(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/notifications/clear`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+
 
 
