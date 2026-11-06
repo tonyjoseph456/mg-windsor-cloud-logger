@@ -891,15 +891,21 @@ function durationSecToHours(sec: number): number {
 }
 
 export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
-  const startSec = Number(r.start_timestamp) || 0;
-  const endSec = r.end_timestamp ? Number(r.end_timestamp) : null;
+  const startSec = Number(r.start_time ?? r.start_timestamp) || 0;
+  const endSec = (r.end_time != null || r.end_timestamp != null) ? Number(r.end_time ?? r.end_timestamp) : null;
   const startDt = startSec ? formatDateTimeSdk(startSec) : '';
   const endDt = endSec ? formatDateTimeSdk(endSec) : '';
   const startSoc = Number(r.start_soc) || 0;
   const endSoc = Number(r.end_soc) || startSoc;
-  const energyAdded = Number(r.energy_added_kwh) || Number((((endSoc - startSoc) / 100) * 38).toFixed(2));
-  const odo = Number(r.odometer_km) || 0;
-  const durationSeconds = Number(r.duration_seconds) || (endSec ? Math.max(0, endSec - startSec) : 0);
+  const socAdded = Number(r.soc_added) || Math.max(0, endSoc - startSoc);
+  const energyAdded = Number(r.kwh_added ?? r.energy_added_kwh) || Number(((socAdded / 100) * 38).toFixed(2));
+  const energyUsed = Number(r.energy_used_kwh) || Number((energyAdded / (r.charge_type === 'DC' ? 0.94 : 0.88)).toFixed(2));
+  const lossKwh = Number(r.charging_loss_kwh) || Math.max(0, Number((energyUsed - energyAdded).toFixed(2)));
+  const lossPct = energyUsed > 0 ? Number(((lossKwh / energyUsed) * 100).toFixed(1)) : 12;
+  const odo = Number(r.start_odometer_km ?? r.odometer_km) || 0;
+  const durationSeconds = Number(r.active_duration_seconds ?? r.duration_seconds) || (endSec ? Math.max(0, endSec - startSec) : 0);
+  const chargeType = r.charge_type || (r.charger_type && r.charger_type.includes('DC') ? 'DC Fast' : 'AC Standard');
+  const peakKw = Number(r.peak_power_kw ?? r.peak_kw) || 3.3;
 
   return {
     id: String(r.id),
@@ -912,17 +918,17 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
     startEnergyKwh: Number(((startSoc / 100) * 38).toFixed(2)),
     endEnergyKwh: Number(((endSoc / 100) * 38).toFixed(2)),
     odometerKm: odo,
-    distanceToEmptyAfterKm: Math.round((endSoc / 100) * 331),
-    chargerCategory: (r.charger_type && r.charger_type.includes('DC') ? 'DC Fast' : '3.3 kW AC') as any,
-    maxChargingSpeedKw: Number(r.peak_kw) || 3.3,
+    distanceToEmptyAfterKm: r.start_range_km ? Math.round(Number(r.start_range_km) + (socAdded * 3.3)) : Math.round((endSoc / 100) * 331),
+    chargerCategory: (chargeType.includes('DC') ? 'DC Fast' : '3.3 kW AC') as any,
+    maxChargingSpeedKw: peakKw,
     energyAddedToPackKwh: Math.max(0, energyAdded),
-    energyConsumedKwh: Math.max(0, Number((energyAdded * 1.1).toFixed(2))),
-    energyLossPercent: 10,
+    energyConsumedKwh: Math.max(0, energyUsed),
+    energyLossPercent: lossPct,
     distanceTravelledSinceLastChargeKm: 0,
     energyUsedSinceLastChargeKwh: 0,
     efficiencyKmPerKwh: 0,
     durationSeconds,
-    status: r.status === 'charging' ? 'charging' : 'completed',
+    status: (r.status === 'ongoing' || r.status === 'paused' || r.status === 'charging') ? 'charging' : 'completed',
   };
 }
 
@@ -1082,14 +1088,68 @@ export async function fetchD1TripDates(): Promise<string[]> {
   return [];
 }
 
-export async function fetchD1Charges(date?: string): Promise<ChargeLogRecord[]> {
+export interface ChargingSessionRecord {
+  id: string;
+  status: 'ongoing' | 'paused' | 'completed';
+  start_time: number;
+  end_time?: number | null;
+  start_soc: number;
+  end_soc?: number | null;
+  soc_added: number;
+  kwh_added: number;
+  energy_used_kwh: number;
+  charging_loss_kwh: number;
+  charge_type: 'AC' | 'DC';
+  peak_power_kw: number;
+  last_power_kw: number;
+  start_odometer_km: number;
+  start_range_km: number;
+  outage_count: number;
+  paused_at?: number | null;
+  active_duration_seconds: number;
+  date: string;
+  created_at?: string;
+}
+
+export async function fetchChargingHistory(refresh = false): Promise<ChargingSessionRecord[]> {
   try {
-    const url = `${BACKEND_URL}/api/charges${date ? `?date=${encodeURIComponent(date)}` : ''}`;
-    const res = await fetch(url);
+    const url = `${BACKEND_URL}/api/charging-history${refresh ? '?refresh=true' : ''}`;
+    const res = await fetch(url, { headers: { 'Cache-Control': 'no-store' } });
     if (!res.ok) return [];
     const data = await res.json();
-    if (data.success && Array.isArray(data.charges)) {
-      return data.charges.map(mapD1ChargeToRecord);
+    if (data.success && Array.isArray(data.sessions)) {
+      return data.sessions;
+    }
+  } catch (err) {
+    console.warn('fetchChargingHistory error:', err);
+  }
+  return [];
+}
+
+export async function clearChargingHistory(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/charging-history/clear`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch (err) {
+    console.warn('clearChargingHistory error:', err);
+    return false;
+  }
+}
+
+export async function fetchD1Charges(date?: string): Promise<ChargeLogRecord[]> {
+  try {
+    const url = `${BACKEND_URL}/api/charging-history${date && date !== 'all' ? `?date=${encodeURIComponent(date)}` : ''}`;
+    const res = await fetch(url, { headers: { 'Cache-Control': 'no-store' } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const list = data.sessions || data.charges;
+    if (data.success && Array.isArray(list)) {
+      return list.map(mapD1ChargeToRecord);
     }
   } catch (err) {
     console.warn('fetchD1Charges error:', err);

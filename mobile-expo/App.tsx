@@ -64,6 +64,9 @@ import {
   syncChargesToD1,
   deleteD1Charge,
   clearD1Charges,
+  ChargingSessionRecord,
+  fetchChargingHistory,
+  clearChargingHistory,
   registerCarSession,
   AppNotificationRecord,
   fetchD1Notifications,
@@ -842,6 +845,23 @@ export default function App() {
   const [d1Notifications, setD1Notifications] = useState<AppNotificationRecord[]>([]);
   const [isNotifsLoading, setIsNotifsLoading] = useState<boolean>(false);
 
+  // Cloudflare D1 Charging Sessions State
+  const [d1ChargingSessions, setD1ChargingSessions] = useState<ChargingSessionRecord[]>([]);
+  const [isChargingHistoryLoading, setIsChargingHistoryLoading] = useState<boolean>(false);
+
+  const refreshD1ChargingHistory = async (refreshFromVehicle = false) => {
+    setIsChargingHistoryLoading(true);
+    try {
+      const list = await fetchChargingHistory(refreshFromVehicle);
+      if (Array.isArray(list)) {
+        setD1ChargingSessions(list);
+      }
+    } catch (_) {}
+    finally {
+      setIsChargingHistoryLoading(false);
+    }
+  };
+
   const refreshD1Notifications = async () => {
     setIsNotifsLoading(true);
     try {
@@ -856,6 +876,9 @@ export default function App() {
   useEffect(() => {
     if (tab === 'account') {
       refreshD1Notifications();
+    }
+    if (tab === 'charge') {
+      refreshD1ChargingHistory(false);
     }
   }, [tab]);
 
@@ -1267,6 +1290,7 @@ export default function App() {
   const handleRefreshD1Charges = async () => {
     try {
       setIsD1Syncing(true);
+      await refreshD1ChargingHistory(true);
       const refreshed = await fetchD1Charges('all');
       if (Array.isArray(refreshed)) {
         setChargeLogs(refreshed);
@@ -1276,8 +1300,8 @@ export default function App() {
       const dates = await fetchD1ChargeDates();
       if (dates && dates.length > 0) setD1ChargeDates(dates);
       else if (Array.isArray(refreshed) && refreshed.length === 0) setD1ChargeDates([]);
-      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed?.length || 0} charge session(s) from Cloudflare D1.`);
-      showBanner('ok', `Refreshed ${refreshed?.length || 0} charge(s) from D1`);
+      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded fresh charging history from Cloudflare D1.`);
+      showBanner('ok', `Refreshed D1 charging history`);
     } catch (e: any) {
       Alert.alert('Refresh Error', e?.message || 'Failed to fetch charges from Cloudflare D1');
     } finally {
@@ -1307,6 +1331,8 @@ export default function App() {
           onPress: async () => {
             try {
               setIsD1Syncing(true);
+              await clearChargingHistory().catch(() => {});
+              setD1ChargingSessions([]);
               setChargeLogs([]);
               chargeLogsRef.current = [];
               await SecureStore.deleteItemAsync(CHARGE_LOGS_KEY).catch(() => {});
