@@ -588,9 +588,6 @@ export default {
 
   // Native Cloudflare Cron Trigger (Runs automatically if scheduled in wrangler or dashboard)
   async scheduled(event: any, env: Env): Promise<void> {
-    const fakeRequest = new Request('https://worker.internal/?action=poll-trip', {
-      headers: { 'Content-Type': 'application/json' }
-    });
-    await this.fetch(fakeRequest, env);
-  }
+    // 24/7 background polling completely disabled to protect 12V battery
+  },
 };

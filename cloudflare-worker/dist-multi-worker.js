@@ -7252,10 +7252,10 @@ function makeDeviceId(phone) {
 function md5Hex(value) {
   return import_crypto_js.default.MD5(value).toString(import_crypto_js.default.enc.Hex);
 }
-function tapSignature(body) {
-  const half = Math.floor(body.length / 2);
-  const key = md5Hex(body.slice(1, half));
-  return import_crypto_js.default.HmacSHA256(body, key).toString(import_crypto_js.default.enc.Hex);
+function tapSignature(body2) {
+  const half = Math.floor(body2.length / 2);
+  const key = md5Hex(body2.slice(1, half));
+  return import_crypto_js.default.HmacSHA256(body2, key).toString(import_crypto_js.default.enc.Hex);
 }
 function gatewaySignature(path, timestamp, contentType = "application/json") {
   const part1 = md5Hex(path);
@@ -7367,7 +7367,7 @@ function encodeControlRequest(uid, token, vin, eventId, typ, params) {
 }
 function encodePinRequest(uid, token, vin, _eventId, pinHash) {
   const app = codec11.encode("PINVerificationReq", { pin: pinHash });
-  const body = codec11.encode("MPDispatcherBodyV11", {
+  const body2 = codec11.encode("MPDispatcherBodyV11", {
     uid,
     token,
     applicationID: PIN_APP_ID,
@@ -7382,17 +7382,17 @@ function encodePinRequest(uid, token, vin, _eventId, pinHash) {
     applicationDataProtocolVersion: PROTOCOL,
     testFlag: 2
   });
-  const dispatcherLength = body.length + 4;
+  const dispatcherLength = body2.length + 4;
   if (dispatcherLength > 255) {
     throw new Error("TAP PIN dispatcher too large");
   }
-  const payload = new Uint8Array(4 + body.length + app.length);
+  const payload = new Uint8Array(4 + body2.length + app.length);
   payload[0] = V11_PROTOCOL_VERSION;
   payload[1] = 0;
   payload[2] = dispatcherLength;
   payload[3] = 0;
-  payload.set(body, 4);
-  payload.set(app, 4 + body.length);
+  payload.set(body2, 4);
+  payload.set(app, 4 + body2.length);
   const lenHex = (payload.length * 2 + 5).toString(16).toUpperCase().padStart(4, "0");
   return `${lenHex}1${bytesToHex(payload, true)}`;
 }
@@ -7914,18 +7914,18 @@ var MgIndiaClient = class {
   async login() {
     let lastError = null;
     for (let attempt = 0; attempt < LOGIN_ATTEMPTS; attempt++) {
-      const body = this.buildLoginBody();
+      const body2 = this.buildLoginBody();
       const headers = {
         "Content-Type": "text/plain",
         Accept: "*/*",
         "Accept-Language": "en-US;q=1",
-        "APP-SIGNATURE": tapSignature(body),
+        "APP-SIGNATURE": tapSignature(body2),
         SIGNATURE: "1"
       };
       const response = await fetch(this._resolveUrl(TAP_LOGIN_URL), {
         method: "POST",
         headers,
-        body
+        body: body2
       });
       const text = await response.text();
       if (response.status >= 400) {
@@ -8044,18 +8044,18 @@ var MgIndiaClient = class {
     this.capabilities = discoverCapabilities(payloads);
     return this.capabilities;
   }
-  async _postTapFrame(body, errorLabel) {
+  async _postTapFrame(body2, errorLabel) {
     const headers = {
       "Content-Type": "text/plain",
       Accept: "*/*",
       "Accept-Language": "en-US;q=1",
       SIGNATURE: "1",
-      "APP-SIGNATURE": tapSignature(body)
+      "APP-SIGNATURE": tapSignature(body2)
     };
     const response = await fetch(this._resolveUrl(TAP_STATUS_URL), {
       method: "POST",
       headers,
-      body
+      body: body2
     });
     const text = await response.text();
     if (response.status >= 400) {
@@ -8064,22 +8064,22 @@ var MgIndiaClient = class {
     return text;
   }
   async _postStatusFrame(eventId, errorLabel) {
-    const body = encodeStatusRequest(
+    const body2 = encodeStatusRequest(
       this.uid || "0".repeat(50),
       this.token || "0".repeat(40),
       this.vin || "",
       eventId
     );
-    return this._postTapFrame(body, errorLabel);
+    return this._postTapFrame(body2, errorLabel);
   }
   async _postChargeFrame(eventId, errorLabel) {
-    const body = encodeChargeStatusRequest(
+    const body2 = encodeChargeStatusRequest(
       this.uid || "0".repeat(50),
       this.token || "0".repeat(40),
       this.vin || "",
       eventId
     );
-    return this._postTapFrame(body, errorLabel);
+    return this._postTapFrame(body2, errorLabel);
   }
   async _pollRequest(post, want, label, options = {}) {
     const unavailableResults = options.unavailableResults || [];
@@ -8231,7 +8231,7 @@ var MgIndiaClient = class {
         await this.vehicles();
         operationVin = this.vin;
       }
-      const body = encodePinRequest(
+      const body2 = encodePinRequest(
         this.uid || "0".repeat(50),
         this.token || "0".repeat(40),
         operationVin || "",
@@ -8244,10 +8244,10 @@ var MgIndiaClient = class {
           "Content-Type": "text/plain",
           Accept: "*/*",
           "Accept-Language": "en-US;q=1",
-          "APP-SIGNATURE": tapSignature(body),
+          "APP-SIGNATURE": tapSignature(body2),
           SIGNATURE: "1"
         },
-        body
+        body: body2
       });
       const text = await response.text();
       if (response.status >= 400) {
@@ -8274,7 +8274,7 @@ var MgIndiaClient = class {
     const operationVin = this.vin || "";
     let eventId = 0;
     for (let attempt = 0; attempt < CONTROL_ATTEMPTS; attempt++) {
-      const body = encodeControlRequest(
+      const body2 = encodeControlRequest(
         this.uid || "0".repeat(50),
         this.token || "0".repeat(40),
         operationVin,
@@ -8284,7 +8284,7 @@ var MgIndiaClient = class {
       );
       let text;
       try {
-        text = await this._postTapFrame(body, name);
+        text = await this._postTapFrame(body2, name);
       } catch (err) {
         throw new MgIndiaCommandIndeterminate(`${name} completion is unknown: ${err.message}`);
       }
@@ -8834,10 +8834,6 @@ var silent_webhook_default = {
   },
   // Native Cloudflare Cron Trigger (Runs automatically if scheduled in wrangler or dashboard)
   async scheduled(event, env) {
-    const fakeRequest = new Request("https://worker.internal/?action=poll-trip", {
-      headers: { "Content-Type": "application/json" }
-    });
-    await this.fetch(fakeRequest, env);
   }
 };
 
@@ -8926,13 +8922,10 @@ var CORS = {
   "Access-Control-Allow-Headers": "*",
   "Access-Control-Expose-Headers": "APP-SEND-DATE, ORIGINAL-CONTENT-TYPE, app-send-date, original-content-type, x-mg-send-date"
 };
-var json = (body, status = 200) => new Response(JSON.stringify(body), {
+var json = (body2, status = 200) => new Response(JSON.stringify(body2), {
   status,
   headers: { "Content-Type": "application/json", ...CORS }
 });
-var MAX_USERS_PER_RUN = 6;
-var SUBREQUEST_BUDGET = 40;
-var POLL_EVERY_MIN = 2;
 var TRIP_HEADERS = [
   "Trip ID",
   "Date (IST)",
@@ -8989,40 +8982,12 @@ function randomHex(bytes = 24) {
   crypto.getRandomValues(a);
   return [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function hashSlot(id) {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = h * 31 + id.charCodeAt(i) >>> 0;
-  return h;
-}
 async function loadUser(env, id) {
   const raw = await kvOrThrow(env).get(`u:${id}`, "text");
   return raw ? JSON.parse(raw) : null;
 }
-async function saveUser(env, u) {
-  await kvOrThrow(env).put(`u:${u.id}`, JSON.stringify(u));
-}
-async function authUser(env, url, body) {
-  const id = (url.searchParams.get("userId") || url.searchParams.get("id") || body?.userId || "").trim();
-  const key = (url.searchParams.get("userKey") || url.searchParams.get("key") || body?.userKey || "").trim();
-  if (!id || !key) return null;
-  const u = await loadUser(env, id);
-  if (!u) return null;
-  const h = await sha256(key);
-  if (u.keyHash === h) return u;
-  if (Array.isArray(u.keyHashes) && u.keyHashes.includes(h)) return u;
-  if (u.userKey === key || u.key === key) return u;
-  if (!u.keyHash && (!u.keyHashes || !u.keyHashes.length)) {
-    u.keyHash = h;
-    u.keyHashes = [h];
-    await saveUser(env, u);
-    return u;
-  }
-  return null;
-}
-function istParts(sec) {
-  const full = new Date(sec * 1e3).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-  const [date, time] = full.split(", ");
-  return { date: date || full, time: time || "", full };
+async function saveUser(env, u2) {
+  await kvOrThrow(env).put(`u:${u2.id}`, JSON.stringify(u2));
 }
 var fmtDur = (s) => `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
 var VAPID_PUB_B64URL = "BEDIJNL78q2CN6h-Mbf3xfqUKUM5HNR0tjZw4aikdcnztJaOJaP4Xz6ismoVROcaJW760XDrGDUE4byQayacUWE";
@@ -9138,17 +9103,17 @@ async function encryptWebPushPayload(clientP256dhB64url, clientAuthB64url, paylo
   new DataView(header.buffer).setUint32(16, 4096, false);
   header[20] = 65;
   header.set(serverPubRaw, 21);
-  const body = new Uint8Array(header.length + ciphertext.byteLength);
-  body.set(header, 0);
-  body.set(new Uint8Array(ciphertext), header.length);
-  return body;
+  const body2 = new Uint8Array(header.length + ciphertext.byteLength);
+  body2.set(header, 0);
+  body2.set(new Uint8Array(ciphertext), header.length);
+  return body2;
 }
 async function sendPushToSubscription(sub, payload) {
   try {
     const pushUrl = new URL(sub.endpoint);
     const audience = `${pushUrl.protocol}//${pushUrl.host}`;
     const jwt = await createVapidJwt(audience);
-    const body = await encryptWebPushPayload(sub.keys.p256dh, sub.keys.auth, JSON.stringify(payload));
+    const body2 = await encryptWebPushPayload(sub.keys.p256dh, sub.keys.auth, JSON.stringify(payload));
     const res = await fetch(sub.endpoint, {
       method: "POST",
       headers: {
@@ -9159,7 +9124,7 @@ async function sendPushToSubscription(sub, payload) {
         Authorization: `vapid t=${jwt}, k=${VAPID_PUB_B64URL}`,
         "Crypto-Key": `p256ecdsa=${VAPID_PUB_B64URL}`
       },
-      body
+      body: body2
     });
     const isExpired = res.status === 404 || res.status === 410;
     return { ok: res.ok, status: res.status, expired: isExpired };
@@ -9167,71 +9132,19 @@ async function sendPushToSubscription(sub, payload) {
     return { ok: false, status: 0 };
   }
 }
-async function notifyUser(env, u, payload) {
-  if (!Array.isArray(u.pushSubscriptions) || u.pushSubscriptions.length === 0) return;
+async function notifyUser(env, u2, payload) {
+  if (!Array.isArray(u2.pushSubscriptions) || u2.pushSubscriptions.length === 0) return;
   const expiredEndpoints = /* @__PURE__ */ new Set();
   await Promise.allSettled(
-    u.pushSubscriptions.map(async (sub) => {
+    u2.pushSubscriptions.map(async (sub) => {
       const res = await sendPushToSubscription(sub, payload);
       if (res.expired) expiredEndpoints.add(sub.endpoint);
     })
   );
   if (expiredEndpoints.size > 0) {
-    u.pushSubscriptions = u.pushSubscriptions.filter(
+    u2.pushSubscriptions = u2.pushSubscriptions.filter(
       (s) => !expiredEndpoints.has(s.endpoint)
     );
-  }
-}
-async function sendPushWardActivity(apiKey, state, content) {
-  if (!apiKey || !apiKey.trim()) return false;
-  const slug = "ev-live-telemetry";
-  const cleanKey = apiKey.trim();
-  try {
-    const patchRes = await fetch(`https://api.pushward.app/activities/${slug}`, {
-      method: "PATCH",
-      headers: {
-        "Authorization": `Bearer ${cleanKey}`,
-        "Content-Type": "application/merge-patch+json"
-      },
-      body: JSON.stringify({
-        state,
-        content: {
-          template: "generic",
-          ...content
-        }
-      })
-    });
-    if (patchRes.status === 404) {
-      await fetch("https://api.pushward.app/activities", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${cleanKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          slug,
-          name: "MG Windsor EV"
-        })
-      });
-      await fetch(`https://api.pushward.app/activities/${slug}`, {
-        method: "PATCH",
-        headers: {
-          "Authorization": `Bearer ${cleanKey}`,
-          "Content-Type": "application/merge-patch+json"
-        },
-        body: JSON.stringify({
-          state,
-          content: {
-            template: "generic",
-            ...content
-          }
-        })
-      });
-    }
-    return true;
-  } catch (err) {
-    console.warn("PushWard update error:", err);
-    return false;
   }
 }
 async function exchangeCode(env, code, redirectUri) {
@@ -9250,23 +9163,23 @@ async function exchangeCode(env, code, redirectUri) {
   if (!r.ok) throw new Error(`Google token exchange failed: ${d.error_description || d.error}`);
   return d;
 }
-async function googleAccessToken(env, u) {
+async function googleAccessToken(env, u2) {
   const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: env.GOOGLE_CLIENT_ID || "",
       client_secret: env.GOOGLE_CLIENT_SECRET || "",
-      refresh_token: u.googleRefresh,
+      refresh_token: u2.googleRefresh,
       grant_type: "refresh_token"
     })
   });
   const d = await r.json();
   if (!r.ok) {
-    if (d.error === "invalid_grant") u.googleStatus = "revoked";
+    if (d.error === "invalid_grant") u2.googleStatus = "revoked";
     throw new Error(`Google refresh failed: ${d.error}`);
   }
-  u.googleStatus = "ok";
+  u2.googleStatus = "ok";
   return d.access_token;
 }
 async function createSheet(token, title, headers) {
@@ -9534,7 +9447,7 @@ function deduplicateChargeList(charges) {
   }
   return clean;
 }
-async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId, u) {
+async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId, u2) {
   let tripsBefore = 0;
   let tripsAfter = 0;
   let tripsRemoved = 0;
@@ -9547,9 +9460,9 @@ async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId
     if (tripsRemoved > 0 || tripsBefore !== tripsAfter) {
       cleanTrips.sort((a, b) => (a.startTimestampSec || 0) - (b.startTimestampSec || 0));
       await clearAndRewriteSheet(token, tripSheetId, TRIP_HEADERS, cleanTrips.map(tripRow));
-      if (u) {
-        u.trips = cleanTrips.slice(0, 60);
-        u.pendingTrips = [];
+      if (u2) {
+        u2.trips = cleanTrips.slice(0, 60);
+        u2.pendingTrips = [];
       }
     }
   }
@@ -9565,9 +9478,9 @@ async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId
     if (chargesRemoved > 0 || chargesBefore !== chargesAfter) {
       cleanCharges.sort((a, b) => (a.startTimestampSec || 0) - (b.startTimestampSec || 0));
       await clearAndRewriteSheet(token, chargeSheetId, CHARGE_HEADERS, cleanCharges.map(chargeRow));
-      if (u) {
-        u.charges = cleanCharges.slice(0, 60);
-        u.pendingCharges = [];
+      if (u2) {
+        u2.charges = cleanCharges.slice(0, 60);
+        u2.pendingCharges = [];
       }
     }
   }
@@ -9642,478 +9555,7 @@ async function readSheetRecords(token, sheetId) {
   }
   return out.sort((a, b) => (b.startTimestampSec || 0) - (a.startTimestampSec || 0));
 }
-async function flushPending(env, u, budget) {
-  if (!u.pendingTrips.length && !u.pendingCharges.length) return false;
-  if (u.googleStatus === "revoked" || budget.n < 3) return false;
-  try {
-    const token = await googleAccessToken(env, u);
-    budget.n++;
-    if (u.pendingTrips.length) {
-      const cleanPending = deduplicateTripList(u.pendingTrips);
-      const existingSheet = await readSheetRecords(token, u.tripSheetId).catch(() => []);
-      const existingIds = new Set(existingSheet.map((x) => String(x.id)));
-      const toAppend = cleanPending.filter((p) => !existingIds.has(String(p.id)));
-      if (toAppend.length > 0) {
-        await appendRows(token, u.tripSheetId, toAppend.map(tripRow));
-      }
-      budget.n++;
-      u.pendingTrips = [];
-    }
-    if (u.pendingCharges.length) {
-      const cleanPending = deduplicateChargeList(u.pendingCharges);
-      const existingSheet = await readSheetRecords(token, u.chargeSheetId).catch(() => []);
-      const existingIds = new Set(existingSheet.map((x) => String(x.id)));
-      const toAppend = cleanPending.filter((p) => !existingIds.has(String(p.id)));
-      if (toAppend.length > 0) {
-        await appendRows(token, u.chargeSheetId, toAppend.map(chargeRow));
-      }
-      budget.n++;
-      u.pendingCharges = [];
-    }
-  } catch (e) {
-    u.lastError = e.message;
-  }
-  return true;
-}
-async function pollUser(env, u, nowSec, budget) {
-  let dirty = false;
-  u.lastPollSec = nowSec;
-  if (u.mg && u.mgStatus === "ok" && !(u.guardUntilSec > nowSec)) {
-    const client = new MgIndiaClient({ phone: u.mg.phone || "9999999999", password: "", vin: u.mg.vin });
-    client.uid = u.mg.uid;
-    client.token = u.mg.token;
-    try {
-      const snap = await client.snapshot(true);
-      budget.n += 3;
-      u.mgFailures = 0;
-      const st = snap.status;
-      const ch = st?.charge;
-      const raw = st?.raw?.basicVehicleStatus || st?.raw || {};
-      const aux = typeof raw.batteryVoltage === "number" && raw.batteryVoltage > 0 ? Number((raw.batteryVoltage / 10).toFixed(1)) : 12.6;
-      const soc = ch?.soc ?? st?.fuel_level ?? 0;
-      const cap = ch?.total_battery_capacity_kwh > 10 ? ch.total_battery_capacity_kwh : 37.3;
-      const energy = ch?.battery_energy_kwh > 0 ? ch.battery_energy_kwh : Number((soc / 100 * cap).toFixed(2));
-      const odo = ch?.odometer_km ?? st?.odometer_km ?? 0;
-      const speed = st?.gps?.speed_kmh ?? 0;
-      const lat = st?.gps?.latitude ?? null;
-      const lng = st?.gps?.longitude ?? null;
-      const charging = Boolean(ch?.is_charging);
-      u.live = { soc, odometerKm: odo, aux, charging, updatedSec: nowSec, rangeKm: ch?.range_km ?? st?.range_km ?? null };
-      if (aux <= 12.1) {
-        if (!u.last12vAlertSec || nowSec - u.last12vAlertSec > 7200) {
-          u.last12vAlertSec = nowSec;
-          dirty = true;
-          await notifyUser(env, u, {
-            title: `\u26A0\uFE0F 12V Battery Low: ${aux}V`,
-            body: `Warning: 12V auxiliary battery is critically low (${aux}V). Turn on the car or plug in to charge immediately to avoid 12V drain/lockout.`,
-            tag: "windsor-12v-critical"
-          });
-        }
-      } else if (aux >= 12.5) {
-        u.last12vAlertSec = 0;
-      }
-      if (!Array.isArray(u.alertedSocLevels)) {
-        u.alertedSocLevels = [];
-      }
-      if (soc > 35) {
-        if (u.alertedSocLevels.length > 0) {
-          u.alertedSocLevels = [];
-          dirty = true;
-        }
-      }
-      if (soc > 0 && !charging) {
-        const estRange = ch?.range_km ?? Math.round(soc / 100 * 320);
-        if (soc <= 10 && !u.alertedSocLevels.includes(10)) {
-          u.alertedSocLevels.push(10, 20, 30);
-          dirty = true;
-          await notifyUser(env, u, {
-            title: `\u{1F6A8} Critical Battery Alert: ${soc}%`,
-            body: `Main battery is critically low at ${soc}% (~${estRange} km range). Plug in immediately to avoid vehicle shutdown!`,
-            tag: "windsor-soc-10"
-          });
-        } else if (soc <= 20 && !u.alertedSocLevels.includes(20)) {
-          u.alertedSocLevels.push(20, 30);
-          dirty = true;
-          await notifyUser(env, u, {
-            title: `\u{1FAAB} Low Battery Alert: ${soc}%`,
-            body: `Main battery has reached ${soc}% (~${estRange} km range remaining). Please find an EV charger soon.`,
-            tag: "windsor-soc-20"
-          });
-        } else if (soc <= 30 && !u.alertedSocLevels.includes(30)) {
-          u.alertedSocLevels.push(30);
-          dirty = true;
-          await notifyUser(env, u, {
-            title: `\u26A0\uFE0F Battery Notice: ${soc}%`,
-            body: `Main battery is at ${soc}% (~${estRange} km range remaining).`,
-            tag: "windsor-soc-30"
-          });
-        }
-      }
-      if (aux < 12.2 && !charging) {
-        u.guardUntilSec = nowSec + 4 * 3600;
-        return true;
-      }
-      const liveKw = ch?.charging_current && ch?.charging_voltage ? Number((ch.charging_voltage * ch.charging_current / 1e3).toFixed(2)) : 0;
-      if (charging) {
-        if (!u.activeCharge) {
-          u.activeCharge = {
-            id: `chg-${nowSec}`,
-            startTimestampSec: nowSec,
-            startSoc: soc,
-            endSoc: soc,
-            startEnergyKwh: energy,
-            endEnergyKwh: energy,
-            maxKw: liveKw,
-            odometerKm: odo,
-            // BMS freezes these at plug-in = the driving cycle that just ended
-            cycleDistanceKm: ch?.distance_since_last_charge_km ?? 0,
-            cycleEnergyKwh: ch?.power_usage_since_last_charge_kwh ?? 0
-          };
-          dirty = true;
-          await notifyUser(env, u, {
-            title: `\u26A1 Charging Started (${soc}%)`,
-            body: `Plugged in at ${istParts(nowSec).time}. Battery: ${soc}%${liveKw > 0 ? ` \u2022 Charging at ${liveKw} kW` : ""}.`,
-            tag: "windsor-charge-status"
-          });
-          if (u.pushwardKey) {
-            const curRange = ch?.range_km ?? Math.round(soc / 100 * 320);
-            sendPushWardActivity(u.pushwardKey, "ongoing", {
-              progress: Math.max(0.01, Math.min(1, soc / 100)),
-              title: `\u26A1 ${soc}% \u2022 ${curRange} km`,
-              state: liveKw > 0 ? `${liveKw.toFixed(1)} kW AC \u2022 Charging` : "Charging in progress",
-              icon: "bolt.fill",
-              accent_color: "green"
-            });
-          }
-        } else {
-          u.activeCharge.notChargingSinceSec = 0;
-          u.activeCharge.endSoc = Math.max(u.activeCharge.endSoc, soc);
-          u.activeCharge.endEnergyKwh = Math.max(u.activeCharge.endEnergyKwh, energy);
-          u.activeCharge.maxKw = Math.max(u.activeCharge.maxKw || 0, liveKw);
-          if (u.pushwardKey) {
-            const curRange = ch?.range_km ?? Math.round(soc / 100 * 320);
-            const timeLeft = ch?.remaining_charge_time_min ? `${Math.floor(ch.remaining_charge_time_min / 60)}h ${ch.remaining_charge_time_min % 60}m left` : "Charging in progress";
-            sendPushWardActivity(u.pushwardKey, "ongoing", {
-              progress: Math.max(0.01, Math.min(1, soc / 100)),
-              title: `\u26A1 ${soc}% \u2022 ${curRange} km`,
-              state: `${liveKw > 0 ? `${liveKw.toFixed(1)} kW \u2022 ` : ""}${timeLeft}`,
-              icon: "bolt.fill",
-              accent_color: "green"
-            });
-          }
-          if (nowSec - (u.lastSaveSec || 0) > 600) dirty = true;
-        }
-      } else if (u.activeCharge && !u.activeCharge.notChargingSinceSec) {
-        u.activeCharge.notChargingSinceSec = nowSec;
-        dirty = true;
-      } else if (u.activeCharge && nowSec - u.activeCharge.notChargingSinceSec >= 300) {
-        const a = u.activeCharge;
-        const endSec = a.notChargingSinceSec;
-        const durSec = Math.max(60, endSec - a.startTimestampSec);
-        const finalSoc = Math.max(a.endSoc, soc);
-        const finalEnergy = Math.max(a.endEnergyKwh, energy);
-        const added = Math.max(0, Number((finalEnergy - a.startEnergyKwh).toFixed(2)));
-        const kw = a.maxKw || 0;
-        const cat = kw > 22 ? "DC Fast" : kw > 4 ? "7.4 kW AC" : "3.3 kW AC";
-        const loss = cat === "DC Fast" ? 7 : cat === "7.4 kW AC" ? 10 : 13;
-        let cycleKm = Number(a.cycleDistanceKm || 0);
-        let cycleKwh = Number(a.cycleEnergyKwh || 0);
-        if (cycleKm <= 0 && u.charges.length > 0 && u.charges[0].odometerKm > 0 && odo > u.charges[0].odometerKm) {
-          cycleKm = Number((odo - u.charges[0].odometerKm).toFixed(1));
-          if (cycleKwh <= 0) {
-            cycleKwh = Number(((100 - a.startSoc) / 100 * cap).toFixed(2));
-          }
-        }
-        const finalRange = ch?.range_km ?? st?.range_km ?? (finalSoc > 0 ? Math.round(finalSoc / 100 * 320) : 320);
-        const rec = {
-          id: a.id,
-          startTimestampSec: a.startTimestampSec,
-          endTimestampSec: endSec,
-          durationSeconds: durSec,
-          durationFormatted: fmtDur(durSec),
-          startSoc: a.startSoc,
-          endSoc: finalSoc,
-          energyAddedToPackKwh: added,
-          energyConsumedKwh: Number((added / (1 - loss / 100)).toFixed(2)),
-          energyLossPercent: loss,
-          chargerCategory: cat,
-          maxChargingSpeedKw: kw,
-          completionStatus: finalSoc >= 99 ? "Full (100% Complete)" : `Stopped at ${finalSoc.toFixed(0)}% (Power Lost / Unplugged)`,
-          odometerKm: odo,
-          distanceToEmptyAfterKm: finalRange > 0 ? finalRange : Math.round(finalSoc / 100 * 320),
-          rangeKm: finalRange > 0 ? finalRange : Math.round(finalSoc / 100 * 320),
-          // Driving done BEFORE this charge (since the previous charge)
-          distanceTravelledSinceLastChargeKm: cycleKm,
-          energyUsedSinceLastChargeKwh: cycleKwh,
-          efficiencyKmPerKwh: cycleKm > 0 && cycleKwh > 0 ? Number((cycleKm / cycleKwh).toFixed(2)) : 0
-        };
-        u.charges.unshift(rec);
-        u.charges.length = Math.min(u.charges.length, 100);
-        u.pendingCharges.push(rec);
-        u.activeCharge = null;
-        dirty = true;
-        const isFull = finalSoc >= 99;
-        await notifyUser(env, u, {
-          title: isFull ? "\u{1F50B} Charging Complete (100%)" : `\u{1F50C} Charging Stopped at ${finalSoc.toFixed(0)}%`,
-          body: `${a.startSoc}% \u2192 ${finalSoc.toFixed(0)}% (+${added} kWh) in ${rec.durationFormatted}. Estimated DTE: ${rec.rangeKm} km.`,
-          tag: "windsor-charge-status"
-        });
-        if (u.pushwardKey) {
-          sendPushWardActivity(u.pushwardKey, "ended", {
-            progress: 1,
-            title: isFull ? "\u{1F50B} Charging Complete (100%)" : `\u{1F50C} Charging Stopped at ${finalSoc.toFixed(0)}%`,
-            state: `+${added} kWh in ${rec.durationFormatted} \u2022 ${rec.rangeKm} km Range`,
-            icon: "battery.100.bolt",
-            accent_color: isFull ? "green" : "orange"
-          });
-        }
-      }
-      const journeyId = typeof raw.currentJourneyID === "number" && raw.currentJourneyID > 0 ? raw.currentJourneyID : null;
-      const driving = !charging && (speed > 0.5 || st?.engine_status_raw === 1 || (st?.power_mode_raw ?? 0) > 0);
-      if (u.activeTrip) {
-        const t = u.activeTrip;
-        const dt = Math.max(0, nowSec - (t.lastSampleTimeSec || nowSec));
-        const odoDelta = Math.max(0, odo - t.endOdometerKm);
-        const isCarLocked = Boolean(st?.locked);
-        const isNewJourneyId = journeyId != null && t.journeyId != null && journeyId !== t.journeyId;
-        const stationaryDurationSec = speed > 0.5 ? 0 : nowSec - (t.lastMotionSec || t.lastSampleTimeSec || nowSec);
-        const isTrulyFinished = charging || isCarLocked || isNewJourneyId || stationaryDurationSec >= 300;
-        if (!isTrulyFinished) {
-          if (speed < 0.5 && odoDelta < 0.05 && dt > 0 && dt < 600) {
-            t.idleDurationSeconds += dt;
-            t.idleEnergyKwh = Number((t.idleEnergyKwh + (st?.climate_running ? 0.65 : 0.25) * dt / 3600).toFixed(3));
-          } else if (speed > 0.5) {
-            t.lastMotionSec = nowSec;
-          }
-          t.journeyId = t.journeyId || journeyId;
-          t.endSoc = soc;
-          t.endEnergyKwh = energy;
-          t.endOdometerKm = odo;
-          t.maxSpeedKmh = Math.max(t.maxSpeedKmh, speed);
-          t.endLat = lat ?? t.endLat;
-          t.endLng = lng ?? t.endLng;
-          t.endCabinTempC = st?.interior_temperature ?? t.endCabinTempC;
-          t.endExteriorTempC = st?.exterior_temperature ?? t.endExteriorTempC;
-          t.lastSampleTimeSec = nowSec;
-          if (u.pushwardKey) {
-            const dist = Number((odo - t.startOdometerKm).toFixed(1));
-            const curRange = ch?.range_km ?? Math.round(soc / 100 * 320);
-            sendPushWardActivity(u.pushwardKey, "ongoing", {
-              progress: Math.max(0.01, Math.min(1, soc / 100)),
-              title: `\u{1F697} ${dist} km \u2022 ${soc}%`,
-              state: speed > 0 ? `${Math.round(speed)} km/h \u2022 ${curRange} km range` : `Parked / Idle \u2022 ${curRange} km`,
-              icon: "car.fill",
-              accent_color: soc <= 20 ? "red" : "cyan"
-            });
-          }
-          if (nowSec - (u.lastSaveSec || 0) > 600) dirty = true;
-        } else {
-          const dist = Number((odo - t.startOdometerKm).toFixed(1));
-          const durSec = Math.max(60, nowSec - t.startTimestampSec);
-          const used = Math.max(0, Number((t.startEnergyKwh - energy).toFixed(2)));
-          const rec = {
-            id: t.id,
-            journeyId: t.journeyId || journeyId,
-            startTimestampSec: t.startTimestampSec,
-            endTimestampSec: nowSec,
-            durationSeconds: durSec,
-            distanceKm: dist,
-            startOdometerKm: t.startOdometerKm,
-            endOdometerKm: odo,
-            startSoc: t.startSoc,
-            endSoc: soc,
-            energyUsedKwh: used,
-            efficiencyKmPerKwh: used > 0 && dist > 0 ? Number((dist / used).toFixed(2)) : 0,
-            idleDurationSeconds: t.idleDurationSeconds,
-            idleEnergyKwh: Number(t.idleEnergyKwh.toFixed(2)),
-            maxSpeedKmh: t.maxSpeedKmh,
-            avgSpeedKmh: dist > 0 ? Number((dist / (durSec / 3600)).toFixed(1)) : 0,
-            endCabinTempC: st?.interior_temperature ?? t.endCabinTempC,
-            endExteriorTempC: st?.exterior_temperature ?? t.endExteriorTempC,
-            startLat: t.startLat,
-            startLng: t.startLng,
-            endLat: lat ?? t.endLat,
-            endLng: lng ?? t.endLng
-          };
-          if (dist >= 0.2) {
-            u.trips = deduplicateTripList([rec, ...u.trips || []]);
-            u.trips.length = Math.min(u.trips.length, 100);
-            u.pendingTrips.push(rec);
-            await notifyUser(env, u, {
-              title: `\u{1F3C1} Trip Completed: ${dist} km`,
-              body: `Duration: ${fmtDur(durSec)} \u2022 Efficiency: ${rec.efficiencyKmPerKwh} km/kWh \u2022 Battery: ${t.startSoc}% \u2192 ${soc}% \u2022 Odo: ${odo.toLocaleString()} km.`,
-              tag: "windsor-trip-status"
-            });
-            if (u.pushwardKey) {
-              sendPushWardActivity(u.pushwardKey, "ended", {
-                progress: 1,
-                title: `\u{1F3C1} Trip Completed: ${dist} km`,
-                state: `Efficiency: ${rec.efficiencyKmPerKwh} km/kWh \u2022 Battery: ${t.startSoc}% \u2192 ${soc}%`,
-                icon: "flag.checkered",
-                accent_color: "blue"
-              });
-            }
-          }
-          u.activeTrip = null;
-          u.lastParkedOdo = odo;
-          u.lastParkedSoc = soc;
-          u.lastParkedEnergyKwh = energy;
-          u.lastParkedTimeSec = nowSec;
-          u.lastParkedLat = lat ?? t.endLat;
-          u.lastParkedLng = lng ?? t.endLng;
-          dirty = true;
-        }
-      } else if (driving) {
-        if (Array.isArray(u.trips) && u.trips.length > 0) {
-          const last = u.trips[0];
-          const endedRecently = nowSec - (last.endTimestampSec || 0) < 600;
-          const sameJourney = last.journeyId && journeyId && last.journeyId === journeyId;
-          const sameOdo = Math.abs(odo - (last.endOdometerKm || 0)) < 0.35;
-          if (sameJourney || endedRecently && sameOdo) {
-            u.activeTrip = {
-              ...last,
-              lastSampleTimeSec: nowSec,
-              lastMotionSec: nowSec
-            };
-            u.trips.shift();
-            u.pendingTrips = (u.pendingTrips || []).filter((p) => p.id !== last.id);
-            dirty = true;
-            return dirty;
-          }
-        }
-        const tripId = `trip-${journeyId || nowSec}`;
-        u.activeTrip = {
-          id: tripId,
-          journeyId,
-          startTimestampSec: nowSec,
-          lastSampleTimeSec: nowSec,
-          lastMotionSec: nowSec,
-          startSoc: soc,
-          endSoc: soc,
-          startEnergyKwh: energy,
-          endEnergyKwh: energy,
-          startOdometerKm: odo,
-          endOdometerKm: odo,
-          idleDurationSeconds: 0,
-          idleEnergyKwh: 0,
-          maxSpeedKmh: speed,
-          startLat: lat,
-          startLng: lng,
-          endLat: lat,
-          endLng: lng,
-          endCabinTempC: st?.interior_temperature ?? null,
-          endExteriorTempC: st?.exterior_temperature ?? null
-        };
-        dirty = true;
-        const estRange = ch?.range_km ?? Math.round(soc / 100 * 320);
-        await notifyUser(env, u, {
-          title: "\u{1F697} Trip Started",
-          body: `Started at ${istParts(nowSec).time}. Battery: ${soc}% \u2022 Range: ${estRange} km \u2022 Odo: ${odo.toLocaleString()} km.`,
-          tag: "windsor-trip-status"
-        });
-        if (u.pushwardKey) {
-          sendPushWardActivity(u.pushwardKey, "ongoing", {
-            progress: Math.max(0.01, Math.min(1, soc / 100)),
-            title: `\u{1F697} ${soc}% \u2022 ${estRange} km`,
-            state: speed > 0 ? `${Math.round(speed)} km/h \u2022 Trip in progress` : "Driving \u2022 Windsor EV",
-            icon: "car.fill",
-            accent_color: soc <= 20 ? "red" : "cyan"
-          });
-        }
-      } else if (!charging && odo > 0 && u.lastParkedOdo > 0 && odo - u.lastParkedOdo >= 0.3) {
-        const deltaKm = Number((odo - u.lastParkedOdo).toFixed(1));
-        const hasTrip = (u.trips || []).some((t) => Math.abs(t.endOdometerKm - odo) < 0.2);
-        if (!hasTrip) {
-          const startSec = u.lastParkedTimeSec || nowSec - 600;
-          const durSec = Math.max(60, nowSec - startSec);
-          const usedKwh = Math.max(0.1, Number(((u.lastParkedEnergyKwh || energy) - energy).toFixed(2)));
-          const rec = {
-            id: `trip-${journeyId || nowSec}`,
-            journeyId,
-            startTimestampSec: startSec,
-            endTimestampSec: nowSec,
-            durationSeconds: durSec,
-            distanceKm: deltaKm,
-            startOdometerKm: u.lastParkedOdo,
-            endOdometerKm: odo,
-            startSoc: u.lastParkedSoc || soc,
-            endSoc: soc,
-            energyUsedKwh: usedKwh,
-            efficiencyKmPerKwh: usedKwh > 0 ? Number((deltaKm / usedKwh).toFixed(2)) : 0,
-            idleDurationSeconds: 0,
-            idleEnergyKwh: 0,
-            maxSpeedKmh: 0,
-            avgSpeedKmh: Number((deltaKm / (durSec / 3600)).toFixed(1)),
-            endCabinTempC: st?.interior_temperature ?? null,
-            endExteriorTempC: st?.exterior_temperature ?? null,
-            startLat: u.lastParkedLat || lat,
-            startLng: u.lastParkedLng || lng,
-            endLat: lat,
-            endLng: lng
-          };
-          u.trips = deduplicateTripList([rec, ...u.trips || []]);
-          u.trips.length = Math.min(u.trips.length, 100);
-          u.pendingTrips.push(rec);
-          dirty = true;
-          await notifyUser(env, u, {
-            title: `\u{1F3C1} Trip Completed: ${deltaKm} km`,
-            body: `Distance: ${deltaKm} km \u2022 Battery: ${rec.startSoc}% \u2192 ${soc}% \u2022 Odo: ${odo.toLocaleString()} km.`,
-            tag: "windsor-trip-status"
-          });
-          if (u.pushwardKey) {
-            sendPushWardActivity(u.pushwardKey, "ended", {
-              progress: 1,
-              title: `\u{1F3C1} Trip Completed: ${deltaKm} km`,
-              state: `Distance: ${deltaKm} km \u2022 Battery: ${rec.startSoc}% \u2192 ${soc}%`,
-              icon: "flag.checkered",
-              accent_color: "blue"
-            });
-          }
-        }
-        u.lastParkedOdo = odo;
-        u.lastParkedSoc = soc;
-        u.lastParkedEnergyKwh = energy;
-        u.lastParkedTimeSec = nowSec;
-        u.lastParkedLat = lat;
-        u.lastParkedLng = lng;
-      } else if (!charging && odo > 0) {
-        u.lastParkedOdo = odo;
-        u.lastParkedSoc = soc;
-        u.lastParkedEnergyKwh = energy;
-        u.lastParkedTimeSec = nowSec;
-        u.lastParkedLat = lat;
-        u.lastParkedLng = lng;
-      }
-    } catch (e) {
-      const msg = e.message || "";
-      u.mgFailures = (u.mgFailures || 0) + 1;
-      if (/login|401|403|token|session|reject/i.test(msg) || u.mgFailures >= 8) {
-        u.mgStatus = "expired";
-      }
-      u.lastError = msg;
-      dirty = true;
-    }
-  }
-  if (await flushPending(env, u, budget)) dirty = true;
-  if (dirty) u.lastSaveSec = nowSec;
-  return dirty;
-}
 async function runCron(env) {
-  const kv = kvOrThrow(env);
-  const ids = JSON.parse(await kv.get("users", "text") || "[]");
-  if (!ids.length) return;
-  const nowSec = Math.floor(Date.now() / 1e3);
-  const minute = Math.floor(nowSec / 60);
-  const due = ids.filter((id) => (minute + hashSlot(id)) % POLL_EVERY_MIN === 0);
-  const budget = { n: 1 };
-  let processed = 0;
-  for (const id of due) {
-    if (processed >= MAX_USERS_PER_RUN || budget.n > SUBREQUEST_BUDGET - 8) break;
-    const u = await loadUser(env, id);
-    if (!u) continue;
-    processed++;
-    if (await pollUser(env, u, nowSec, budget)) await saveUser(env, u);
-  }
 }
 function redirectPage(target, title) {
   const html = `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
@@ -10168,14 +9610,14 @@ async function handleGoogleCallback(env, url) {
     const email = prof.email || "unknown";
     const kv = kvOrThrow(env);
     let id = await kv.get(`e:${email}`, "text");
-    let u = id ? await loadUser(env, id) : null;
+    let u2 = id ? await loadUser(env, id) : null;
     const userKey = randomHex(24);
     const newHash = await sha256(userKey);
-    if (!u) {
+    if (!u2) {
       id = randomHex(8);
       const tripSheetId = await createSheet(tok.access_token, "MG Windsor EV - Trip Logs", TRIP_HEADERS);
       const chargeSheetId = await createSheet(tok.access_token, "MG Windsor EV - Charging Sessions", CHARGE_HEADERS);
-      u = {
+      u2 = {
         id,
         email,
         name: prof.name || email,
@@ -10201,22 +9643,22 @@ async function handleGoogleCallback(env, url) {
       await kv.put(`e:${email}`, id);
     } else {
       if (tok.refresh_token) {
-        u.googleRefresh = tok.refresh_token;
-        u.googleStatus = "ok";
+        u2.googleRefresh = tok.refresh_token;
+        u2.googleStatus = "ok";
       }
-      u.keyHash = newHash;
-      const existing = Array.isArray(u.keyHashes) ? u.keyHashes : u.keyHash ? [u.keyHash] : [];
+      u2.keyHash = newHash;
+      const existing = Array.isArray(u2.keyHashes) ? u2.keyHashes : u2.keyHash ? [u2.keyHash] : [];
       existing.push(newHash);
-      u.keyHashes = existing.slice(-10);
+      u2.keyHashes = existing.slice(-10);
     }
-    await saveUser(env, u);
+    await saveUser(env, u2);
     const q = new URLSearchParams({
-      userId: u.id,
+      userId: u2.id,
       userKey,
       email,
-      name: u.name,
-      tripSheetId: u.tripSheetId,
-      chargeSheetId: u.chargeSheetId
+      name: u2.name,
+      tripSheetId: u2.tripSheetId,
+      chargeSheetId: u2.chargeSheetId
     });
     return finishSignIn(env, url, q.toString(), "\u2705 Background tracking connected");
   } catch (e) {
@@ -10225,12 +9667,9 @@ async function handleGoogleCallback(env, url) {
 }
 async function handleApi(env, request, url) {
   const path = url.pathname;
-  if (path === "/api/push-vapid-public-key") {
-    return json({ success: true, publicKey: VAPID_PUB_B64URL });
+  if (path.startsWith("/api/push") || path.startsWith("/api/widget")) {
+    return json({ success: false, message: "Push notifications and widgets disabled" });
   }
-  const body = request.method === "POST" ? await request.json().catch(() => ({})) : {};
-  const u = await authUser(env, url, body);
-  if (!u) return json({ error: "Unauthorized" }, 401);
   if (path === "/api/register-car" || path === "/api/update-token") {
     if (!body.uid || !body.token) return json({ error: "uid and token required" }, 400);
     u.mg = { uid: body.uid, token: body.token, vin: body.vin || u.mg?.vin, phone: body.phone || u.mg?.phone };
@@ -10239,56 +9678,6 @@ async function handleApi(env, request, url) {
     u.guardUntilSec = 0;
     await saveUser(env, u);
     return json({ success: true });
-  }
-  if (path === "/api/pushward-save" || path === "/api/pushward-key") {
-    u.pushwardKey = (body.key ?? url.searchParams.get("key") ?? "").trim();
-    await saveUser(env, u);
-    return json({ success: true, key: u.pushwardKey });
-  }
-  if (path === "/api/pushward-test") {
-    const key = (body.key || u.pushwardKey || url.searchParams.get("key") || "").trim();
-    if (!key) return json({ error: "PushWard API key required" }, 400);
-    const soc = u.live?.soc ?? 82;
-    const range = u.live?.rangeKm ?? 265;
-    const isCharging = Boolean(u.activeCharge || u.live?.charging);
-    const powerKw = u.activeCharge?.maxKw || 3.3;
-    const ok = await sendPushWardActivity(key, "ongoing", {
-      progress: Math.max(0.01, Math.min(1, soc / 100)),
-      title: isCharging ? `\u26A1 ${soc}% \u2022 ${range} km` : `\u{1F697} ${soc}% \u2022 ${range} km`,
-      state: isCharging ? `${powerKw} kW AC \u2022 Charging` : "CarPlay Live Activity Connected",
-      icon: isCharging ? "bolt.fill" : "car.fill",
-      accent_color: isCharging ? "green" : "cyan"
-    });
-    return json({ success: ok });
-  }
-  if (path === "/api/pushward-end") {
-    const key = (body.key || u.pushwardKey || url.searchParams.get("key") || "").trim();
-    if (key) {
-      await sendPushWardActivity(key, "ended", {
-        progress: 1,
-        title: "MG Windsor EV",
-        state: "Parked \u2022 Ready",
-        icon: "car.fill",
-        accent_color: "blue"
-      });
-    }
-    return json({ success: true });
-  }
-  if (path === "/api/widget") {
-    const soc = u.live?.soc ?? 0;
-    const range = u.live?.rangeKm ?? Math.round(soc / 100 * 320);
-    const isCharging = Boolean(u.activeCharge || u.live?.charging);
-    const powerKw = u.activeCharge?.maxKw || 0;
-    const temp = u.trips?.[0]?.endCabinTempC ?? 24;
-    return json({
-      soc,
-      range,
-      charging: isCharging,
-      powerKw,
-      temp,
-      odometer: u.live?.odometerKm || 0,
-      offline: false
-    });
   }
   if (path === "/api/status" || path === "/api/data") {
     return json({
@@ -10574,11 +9963,9 @@ var multi_worker_default = {
     }
     const action = url.searchParams.get("action");
     if (action === "poll-trip" || action === "cron") {
-      await runCron(env).catch(() => {
-      });
       return json({
         success: true,
-        message: "Polled registered background users safely. cron-job.org is no longer needed (Cloudflare Cron Trigger runs automatically)."
+        message: "24/7 background polling is disabled to protect vehicle 12V battery."
       });
     }
     try {
