@@ -2085,13 +2085,13 @@ async function syncChargingSessionState(
   // SCENARIO 9: Cabin Pre-Cooling (preserve peak SoC)
   const currentSoc = Math.max(liveTelem.soc, Number(activeSession.end_soc) || startSoc);
 
-  // SCENARIO 5: Car drove away (live.odo > start_odo) OR CarPlay trip started
-  if (odoDiff >= 0.2 || triggerSource === 'trip_start') {
+  // SCENARIO 5: Car drove away (live.odo > start_odo) OR CarPlay trip started OR test_end
+  if (odoDiff >= 0.2 || triggerSource === 'trip_start' || triggerSource === 'test_end') {
     const activeSec = Number(activeSession.active_duration_seconds) || 0;
     const socAdded = Math.max(0, currentSoc - startSoc);
 
     // SCENARIO 8: False Trigger / Brief Plug Test (< 1% added & active_duration < 180s)
-    if (socAdded <= 0 && activeSec < 180) {
+    if (triggerSource !== 'test_end' && socAdded <= 0 && activeSec < 180) {
       await d1DeleteChargingSession(env, activeSession.id);
       return null; // Suppress notification and remove noise row
     }
@@ -2718,6 +2718,73 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   if (path === '/api/charging/active') {
     const active = await d1GetActiveChargingSession(env);
     return json({ success: true, activeSession: active });
+  }
+
+  // TEST ENDPOINT: Start simulated charging session in D1
+  if (path === '/api/charging/test-start') {
+    const qSoc = Number(url.searchParams.get('soc')) || 80;
+    const qKw = Number(url.searchParams.get('power')) || 3.3;
+    const dummyTelem = {
+      odometer: 38598.9,
+      soc: qSoc,
+      lat: 10.05,
+      lng: 76.62,
+      isCharging: true,
+      isPluggedIn: true,
+      powerKw: qKw,
+      chargeType: qKw > 11 ? 'DC' : 'AC',
+      rangeKm: Math.round((qSoc / 100) * 331),
+    };
+    const session = await syncChargingSessionState(env, url, dummyTelem, 'test_start');
+    return json({
+      success: true,
+      message: '⚡ Test charging session started in Cloudflare D1!',
+      session,
+      instructions: 'Check your D1 charging_sessions & notifications tables, or PWA Charging tab. Then run /api/charging/test-end to complete it.',
+    });
+  }
+
+  // TEST ENDPOINT: End simulated charging session in D1
+  if (path === '/api/charging/test-end') {
+    const active = await d1GetActiveChargingSession(env);
+    if (!active) {
+      return json({
+        success: false,
+        message: 'No active ongoing charging session found in D1. Run /api/charging/test-start first!',
+      }, 400);
+    }
+    const startSoc = Number(active.start_soc) || 80;
+    const qSoc = Number(url.searchParams.get('soc')) || Math.min(100, startSoc + 8);
+    const dummyTelem = {
+      odometer: Number(active.start_odometer_km) || 38598.9,
+      soc: qSoc,
+      lat: 10.05,
+      lng: 76.62,
+      isCharging: false,
+      isPluggedIn: false,
+      powerKw: 0,
+      chargeType: active.charge_type || 'AC',
+      rangeKm: Math.round((qSoc / 100) * 331),
+    };
+    // Advance active duration by 45 minutes for realistic energy math
+    const fakeDeltaSec = 2700;
+    active.active_duration_seconds = (Number(active.active_duration_seconds) || 0) + fakeDeltaSec;
+    await d1UpdateChargingSession(env, active.id, { active_duration_seconds: active.active_duration_seconds });
+
+    const session = await syncChargingSessionState(env, url, dummyTelem, 'test_end');
+    return json({
+      success: true,
+      message: '🔋 Test charging session completed and saved to D1!',
+      session,
+      metrics: {
+        startSoc: `${startSoc}%`,
+        endSoc: `${qSoc}%`,
+        socAdded: `+${session?.soc_added}%`,
+        kwhAdded: `+${session?.kwh_added} kWh`,
+        energyUsedKwh: `${session?.energy_used_kwh} kWh`,
+        chargingLossKwh: `${session?.charging_loss_kwh} kWh`,
+      },
+    });
   }
 
   // Get Charges for UI (by date or all)
