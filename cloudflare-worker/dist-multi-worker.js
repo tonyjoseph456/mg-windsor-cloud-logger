@@ -9924,6 +9924,22 @@ async function d1DeleteTrip(env, tripId) {
     }
   }
 }
+async function d1ClearTrips(env) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare("DELETE FROM trips").run();
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      await env.TRIP_KV.delete("d1_fallback:trips");
+      await env.TRIP_KV.delete("d1_fallback:active_trip");
+    } catch (_) {
+    }
+  }
+}
 async function d1UpdateTrip(env, tripId, updates) {
   if (env.DB) {
     await initD1(env.DB);
@@ -10139,6 +10155,22 @@ async function d1DeleteCharge(env, chargeId) {
     try {
       const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
       await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges.filter((c) => c.id !== chargeId)));
+    } catch (_) {
+    }
+  }
+}
+async function d1ClearCharges(env) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare("DELETE FROM charges").run();
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      await env.TRIP_KV.delete("d1_fallback:charges");
+      await env.TRIP_KV.delete("d1_fallback:active_charge");
     } catch (_) {
     }
   }
@@ -10597,6 +10629,10 @@ ${notificationText}`, {
     await d1DeleteTrip(env, tripId);
     return json({ success: true, message: "Trip deleted from Cloudflare D1" });
   }
+  if (path === "/api/trips/clear") {
+    await d1ClearTrips(env);
+    return json({ success: true, message: "All trips permanently cleared from Cloudflare D1" });
+  }
   if (path === "/api/trip/dates") {
     const dates = await d1GetTripDates(env);
     return json({ success: true, dates });
@@ -10675,6 +10711,10 @@ ${notificationText}`, {
     if (!chargeId) return json({ success: false, error: "charge id required" }, 400);
     await d1DeleteCharge(env, chargeId);
     return json({ success: true, message: "Charge deleted from Cloudflare D1" });
+  }
+  if (path === "/api/charges/clear") {
+    await d1ClearCharges(env);
+    return json({ success: true, message: "All charges permanently cleared from Cloudflare D1" });
   }
   if (path === "/api/charge/dates") {
     const dates = await d1GetChargeDates(env);

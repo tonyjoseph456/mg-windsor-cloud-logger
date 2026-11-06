@@ -58,10 +58,12 @@ import {
   fetchD1TripDates,
   syncTripsToD1,
   deleteD1Trip,
+  clearD1Trips,
   fetchD1Charges,
   fetchD1ChargeDates,
   syncChargesToD1,
   deleteD1Charge,
+  clearD1Charges,
   registerCarSession,
   AppNotificationRecord,
   fetchD1Notifications,
@@ -1227,6 +1229,36 @@ export default function App() {
     await syncTripsToD1(cleanedTrips);
     Alert.alert('Deduplicated & Cleaned ✨', `Optimized list to ${cleanedTrips.length} unique trip(s) in Cloudflare D1.`);
     showBanner('ok', 'Trips deduplicated in D1');
+  };
+
+  const handleClearAllD1Trips = () => {
+    Alert.alert(
+      'Clear All Trips from D1?',
+      'This will permanently delete all saved trips from Cloudflare D1 and this device. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All Trips',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setIsD1Syncing(true);
+              setTrips([]);
+              tripsRef.current = [];
+              await SecureStore.deleteItemAsync(TRIPS_KEY).catch(() => {});
+              await clearD1Trips();
+              setD1TripDates([]);
+              Alert.alert('Trips Cleared', 'All trips have been permanently cleared from Cloudflare D1.');
+              showBanner('ok', 'All trips cleared from D1');
+            } catch (err: any) {
+              Alert.alert('Error', err?.message || 'Failed to clear trips');
+            } finally {
+              setIsD1Syncing(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleSyncChargesToD1 = async () => {
@@ -2881,6 +2913,15 @@ export default function App() {
                   >
                     <Text style={[styles.recordBtnText, { color: '#94A3B8' }]}>
                       🧹 Clean & Dedupe
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#7F1D1D24', borderColor: '#DC2626', paddingHorizontal: 12, paddingVertical: 8 }]}
+                    onPress={handleClearAllD1Trips}
+                    disabled={isD1Syncing}
+                  >
+                    <Text style={[styles.recordBtnText, { color: '#F87171' }]}>
+                      🗑️ Clear D1
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity

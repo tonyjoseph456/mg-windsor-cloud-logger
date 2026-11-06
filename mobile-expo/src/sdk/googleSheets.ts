@@ -992,6 +992,21 @@ export async function deleteD1Trip(tripId: string): Promise<boolean> {
   }
 }
 
+export async function clearD1Trips(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/trips/clear`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch (err) {
+    console.warn('clearD1Trips error:', err);
+    return false;
+  }
+}
+
 export async function syncChargesToD1(charges: ChargeLogRecord[]): Promise<boolean> {
   if (!Array.isArray(charges) || charges.length === 0) return true;
   try {
@@ -1034,6 +1049,21 @@ export async function deleteD1Charge(chargeId: string): Promise<boolean> {
     return Boolean(data.success);
   } catch (err) {
     console.warn('deleteD1Charge error:', err);
+    return false;
+  }
+}
+
+export async function clearD1Charges(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/charges/clear`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch (err) {
+    console.warn('clearD1Charges error:', err);
     return false;
   }
 }
