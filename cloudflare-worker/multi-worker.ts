@@ -47,7 +47,7 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json', ...CORS },
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
   });
 
 const MAX_USERS_PER_RUN = 6;
@@ -1141,8 +1141,33 @@ function formatClockTime(sec: number): string {
   return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
 }
 
-async function dispatchTripNotification(url: URL, title: string, bodyText: string, tags = 'car') {
-  const ntfyTopic = (url.searchParams.get('ntfy') || url.searchParams.get('topic') || '').trim();
+async function dispatchTripNotification(url: URL | null, title: string, bodyText: string, tags = 'car', env?: Env) {
+  let ntfyTopic = url ? (url.searchParams.get('ntfy') || url.searchParams.get('topic') || '').trim() : '';
+  let pushwardKey = url ? (url.searchParams.get('pushward') || '').trim() : '';
+
+  if (env) {
+    if (!ntfyTopic && (env as any).NTFY_TOPIC) {
+      ntfyTopic = String((env as any).NTFY_TOPIC || '').trim();
+    }
+    if (!pushwardKey && (env as any).PUSHWARD_KEY) {
+      pushwardKey = String((env as any).PUSHWARD_KEY || '').trim();
+    }
+    if (!ntfyTopic) {
+      const saved = await d1KvGet(env, 'ntfy_topic');
+      if (saved) ntfyTopic = String(saved).trim();
+    }
+    if (!pushwardKey) {
+      const saved = await d1KvGet(env, 'pushward_key');
+      if (saved) pushwardKey = String(saved).trim();
+    }
+    if (url && url.searchParams.get('ntfy') && ntfyTopic) {
+      await d1KvSet(env, 'ntfy_topic', ntfyTopic);
+    }
+    if (url && url.searchParams.get('pushward') && pushwardKey) {
+      await d1KvSet(env, 'pushward_key', pushwardKey);
+    }
+  }
+
   if (ntfyTopic) {
     try {
       await fetch(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
@@ -1153,6 +1178,16 @@ async function dispatchTripNotification(url: URL, title: string, bodyText: strin
           'Priority': 'high',
         },
         body: bodyText,
+      });
+    } catch (_) {}
+  }
+
+  if (pushwardKey) {
+    try {
+      await fetch('https://api.pushward.com/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: pushwardKey, title, body: bodyText }),
       });
     } catch (_) {}
   }
@@ -2005,7 +2040,7 @@ async function syncChargingSessionState(
     // NOTIFICATIONS ENGINE: Charging Started
     const title = `⚡ Charging Started (${chargeType})`;
     const body = `Started at ${startSoc}% (${liveTelem.rangeKm} km) • Drawing ${liveTelem.powerKw} kW`;
-    await dispatchTripNotification(url, title, body, 'electric_plug,zap');
+    await dispatchTripNotification(url, title, body, 'electric_plug,zap', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       type: 'charge_start',
@@ -2061,7 +2096,7 @@ async function syncChargingSessionState(
     // NOTIFICATIONS ENGINE: Charging Completed
     const title = `🔋 Charging Completed (${currentSoc}%)`;
     const body = `Added +${socAdded}% (+${kwhAdded} kWh) • Used ${grossEnergyUsed} kWh • ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, 'battery,white_check_mark');
+    await dispatchTripNotification(url, title, body, 'battery,white_check_mark', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       type: 'charge_end',
@@ -2103,7 +2138,7 @@ async function syncChargingSessionState(
     // NOTIFICATIONS ENGINE: Full Charge (100%)
     const title = `🔋 Charging Complete (100%)`;
     const body = `Full charge reached! Added +${socAdded}% (+${kwhAdded} kWh) • Used ${grossEnergyUsed} kWh • ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, 'battery,sparkles');
+    await dispatchTripNotification(url, title, body, 'battery,sparkles', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       type: 'charge_end',
@@ -2128,6 +2163,21 @@ async function syncChargingSessionState(
         last_poll_time: nowSec,
       };
       await d1UpdateChargingSession(env, activeSession.id, updates);
+
+      const pauseTitle = '⚠️ Charging Paused (Grid Outage / Breaker Cut)';
+      const pauseBody = `Grid power dropped at ${currentSoc}%. Waiting for power to restore...`;
+      await dispatchTripNotification(url, pauseTitle, pauseBody, 'warning,electric_plug', env);
+      await d1InsertNotification(env, {
+        id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        type: 'charge_paused',
+        title: pauseTitle,
+        message: pauseBody,
+        timestamp: nowSec,
+        date: istDateString(nowSec),
+        is_read: 0,
+        metadata: JSON.stringify({ ...activeSession, ...updates }),
+      });
+
       return { ...activeSession, ...updates };
     } else if (activeSession.status === 'paused') {
       const pausedSec = nowSec - (Number(activeSession.paused_at) || nowSec);
@@ -2158,7 +2208,8 @@ async function syncChargingSessionState(
   // SCENARIOS 3 (restored), 4 (solar/fluctuating), 7 (DC fast charge)
   if (liveTelem.isCharging) {
     let outageCount = Number(activeSession.outage_count) || 0;
-    if (activeSession.status === 'paused') {
+    const wasPaused = activeSession.status === 'paused';
+    if (wasPaused) {
       outageCount += 1;
     }
 
@@ -2192,6 +2243,23 @@ async function syncChargingSessionState(
       last_poll_time: nowSec,
     };
     await d1UpdateChargingSession(env, activeSession.id, updates);
+
+    if (wasPaused) {
+      const resumeTitle = `⚡ Charging Resumed (${chargeType})`;
+      const resumeBody = `Grid power restored! Charging continuing at ${currentSoc}% • Drawing ${liveTelem.powerKw} kW`;
+      await dispatchTripNotification(url, resumeTitle, resumeBody, 'electric_plug,zap', env);
+      await d1InsertNotification(env, {
+        id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        type: 'charge_resumed',
+        title: resumeTitle,
+        message: resumeBody,
+        timestamp: nowSec,
+        date: istDateString(nowSec),
+        is_read: 0,
+        metadata: JSON.stringify({ ...activeSession, ...updates }),
+      });
+    }
+
     return { ...activeSession, ...updates };
   }
 
@@ -2281,7 +2349,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
         trip.start_location && trip.start_location !== 'Unknown Location' ? `📍 Start: ${trip.start_location}` : null,
       ].filter(Boolean).join('\n');
 
-      await dispatchTripNotification(url, title, notificationText, 'car,electric_plug');
+      await dispatchTripNotification(url, title, notificationText, 'car,electric_plug', env);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         type: 'trip_start',
@@ -2382,7 +2450,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
         '🧹 Cancelled recording to keep your driving history clean.',
       ].join('\n');
 
-      await dispatchTripNotification(url, idleTitle, idleText, 'information_source');
+      await dispatchTripNotification(url, idleTitle, idleText, 'information_source', env);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         type: 'trip_idle',
@@ -2450,7 +2518,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       `🏁 Final Odometer: ${finalOdo.toLocaleString()} km`,
     ].filter(Boolean).join('\n');
 
-    await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy');
+    await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       type: 'trip_stop',

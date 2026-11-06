@@ -34,6 +34,12 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
+// (disabled):crypto
+var require_crypto = __commonJS({
+  "(disabled):crypto"() {
+  }
+});
+
 // node_modules/crypto-js/core.js
 var require_core = __commonJS({
   "node_modules/crypto-js/core.js"(exports, module) {
@@ -65,7 +71,7 @@ var require_core = __commonJS({
         }
         if (!crypto2 && typeof __require === "function") {
           try {
-            crypto2 = __require("crypto");
+            crypto2 = require_crypto();
           } catch (err) {
           }
         }
@@ -8436,7 +8442,7 @@ var silent_webhook_default = {
           window.location.replace(targetUrl);
         }, 100);
       })();
-    </script>
+    <\/script>
   </body>
 </html>`;
       return new Response(html, {
@@ -8918,7 +8924,7 @@ var CORS = {
 };
 var json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
-  headers: { "Content-Type": "application/json", ...CORS }
+  headers: { "Content-Type": "application/json; charset=utf-8", ...CORS }
 });
 var TRIP_HEADERS = [
   "Trip ID",
@@ -9590,7 +9596,7 @@ function redirectPage(target, title) {
 .b{background:#1C2541;padding:28px;border-radius:16px;border:1px solid #3A506B;max-width:320px}h2{color:#10B981;margin:0 0 10px}
 a{display:inline-block;padding:12px 24px;background:#10B981;color:#fff;border-radius:10px;text-decoration:none;font-weight:bold}</style></head>
 <body><div class="b"><h2>${title}</h2><p>Returning you to the app...</p><a href="${target}">Open MG Windsor EV App</a></div>
-<script>setTimeout(function(){window.location.replace(${JSON.stringify(target)})},50);</script></body></html>`;
+<script>setTimeout(function(){window.location.replace(${JSON.stringify(target)})},50);<\/script></body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 function finishSignIn(env, url, query, title) {
@@ -9618,7 +9624,7 @@ Allowed list currently: ${allowed.join(", ") || "(none)"}`,
 .b{background:#1C2541;padding:28px;border-radius:16px;border:1px solid #3A506B;max-width:320px}h2{color:#10B981;margin:0 0 10px}
 a{display:inline-block;padding:12px 24px;background:#10B981;color:#fff;border-radius:10px;text-decoration:none;font-weight:bold}</style></head>
 <body><div class="b"><h2>\u2705 Connected to Google!</h2><p>Returning you to the MG Windsor EV app...</p><a href="${targetUrl}">Open MG Windsor EV App</a></div>
-<script>window.location.replace(${JSON.stringify(targetUrl)});</script></body></html>`;
+<script>window.location.replace(${JSON.stringify(targetUrl)});<\/script></body></html>`;
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
   return redirectPage(`mgismart://google-auth?${query}`, title);
@@ -9878,8 +9884,31 @@ function formatClockTime(sec) {
   h = h % 12 || 12;
   return `${String(h).padStart(2, "0")}:${m} ${ampm}`;
 }
-async function dispatchTripNotification(url, title, bodyText, tags = "car") {
-  const ntfyTopic = (url.searchParams.get("ntfy") || url.searchParams.get("topic") || "").trim();
+async function dispatchTripNotification(url, title, bodyText, tags = "car", env) {
+  let ntfyTopic = url ? (url.searchParams.get("ntfy") || url.searchParams.get("topic") || "").trim() : "";
+  let pushwardKey = url ? (url.searchParams.get("pushward") || "").trim() : "";
+  if (env) {
+    if (!ntfyTopic && env.NTFY_TOPIC) {
+      ntfyTopic = String(env.NTFY_TOPIC || "").trim();
+    }
+    if (!pushwardKey && env.PUSHWARD_KEY) {
+      pushwardKey = String(env.PUSHWARD_KEY || "").trim();
+    }
+    if (!ntfyTopic) {
+      const saved = await d1KvGet(env, "ntfy_topic");
+      if (saved) ntfyTopic = String(saved).trim();
+    }
+    if (!pushwardKey) {
+      const saved = await d1KvGet(env, "pushward_key");
+      if (saved) pushwardKey = String(saved).trim();
+    }
+    if (url && url.searchParams.get("ntfy") && ntfyTopic) {
+      await d1KvSet(env, "ntfy_topic", ntfyTopic);
+    }
+    if (url && url.searchParams.get("pushward") && pushwardKey) {
+      await d1KvSet(env, "pushward_key", pushwardKey);
+    }
+  }
   if (ntfyTopic) {
     try {
       await fetch(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
@@ -9890,6 +9919,16 @@ async function dispatchTripNotification(url, title, bodyText, tags = "car") {
           "Priority": "high"
         },
         body: bodyText
+      });
+    } catch (_) {
+    }
+  }
+  if (pushwardKey) {
+    try {
+      await fetch("https://api.pushward.com/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: pushwardKey, title, body: bodyText })
       });
     } catch (_) {
     }
@@ -10753,7 +10792,7 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
     await d1CreateChargingSession(env, newSession);
     const title = `\u26A1 Charging Started (${chargeType})`;
     const body = `Started at ${startSoc2}% (${liveTelem.rangeKm} km) \u2022 Drawing ${liveTelem.powerKw} kW`;
-    await dispatchTripNotification(url, title, body, "electric_plug,zap");
+    await dispatchTripNotification(url, title, body, "electric_plug,zap", env);
     await d1InsertNotification(env, {
       id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
       type: "charge_start",
@@ -10796,7 +10835,7 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
     await d1UpdateChargingSession(env, activeSession.id, completedUpdates);
     const title = `\u{1F50B} Charging Completed (${currentSoc}%)`;
     const body = `Added +${socAdded}% (+${kwhAdded} kWh) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, "battery,white_check_mark");
+    await dispatchTripNotification(url, title, body, "battery,white_check_mark", env);
     await d1InsertNotification(env, {
       id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
       type: "charge_end",
@@ -10832,7 +10871,7 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
     await d1UpdateChargingSession(env, activeSession.id, completedUpdates);
     const title = `\u{1F50B} Charging Complete (100%)`;
     const body = `Full charge reached! Added +${socAdded}% (+${kwhAdded} kWh) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, "battery,sparkles");
+    await dispatchTripNotification(url, title, body, "battery,sparkles", env);
     await d1InsertNotification(env, {
       id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
       type: "charge_end",
@@ -10854,6 +10893,19 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
         last_poll_time: nowSec
       };
       await d1UpdateChargingSession(env, activeSession.id, updates);
+      const pauseTitle = "\u26A0\uFE0F Charging Paused (Grid Outage / Breaker Cut)";
+      const pauseBody = `Grid power dropped at ${currentSoc}%. Waiting for power to restore...`;
+      await dispatchTripNotification(url, pauseTitle, pauseBody, "warning,electric_plug", env);
+      await d1InsertNotification(env, {
+        id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+        type: "charge_paused",
+        title: pauseTitle,
+        message: pauseBody,
+        timestamp: nowSec,
+        date: istDateString(nowSec),
+        is_read: 0,
+        metadata: JSON.stringify({ ...activeSession, ...updates })
+      });
       return { ...activeSession, ...updates };
     } else if (activeSession.status === "paused") {
       const pausedSec = nowSec - (Number(activeSession.paused_at) || nowSec);
@@ -10882,7 +10934,8 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
   }
   if (liveTelem.isCharging) {
     let outageCount = Number(activeSession.outage_count) || 0;
-    if (activeSession.status === "paused") {
+    const wasPaused = activeSession.status === "paused";
+    if (wasPaused) {
       outageCount += 1;
     }
     const lastPoll = Number(activeSession.last_poll_time) || nowSec;
@@ -10914,6 +10967,21 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
       last_poll_time: nowSec
     };
     await d1UpdateChargingSession(env, activeSession.id, updates);
+    if (wasPaused) {
+      const resumeTitle = `\u26A1 Charging Resumed (${chargeType})`;
+      const resumeBody = `Grid power restored! Charging continuing at ${currentSoc}% \u2022 Drawing ${liveTelem.powerKw} kW`;
+      await dispatchTripNotification(url, resumeTitle, resumeBody, "electric_plug,zap", env);
+      await d1InsertNotification(env, {
+        id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+        type: "charge_resumed",
+        title: resumeTitle,
+        message: resumeBody,
+        timestamp: nowSec,
+        date: istDateString(nowSec),
+        is_read: 0,
+        metadata: JSON.stringify({ ...activeSession, ...updates })
+      });
+    }
     return { ...activeSession, ...updates };
   }
   return activeSession;
@@ -10991,7 +11059,7 @@ async function handleApi(env, request, url) {
         `\u{1F6E3}\uFE0F Start Odometer: ${trip.start_odometer_km.toLocaleString()} km`,
         trip.start_location && trip.start_location !== "Unknown Location" ? `\u{1F4CD} Start: ${trip.start_location}` : null
       ].filter(Boolean).join("\n");
-      await dispatchTripNotification(url, title, notificationText, "car,electric_plug");
+      await dispatchTripNotification(url, title, notificationText, "car,electric_plug", env);
       await d1InsertNotification(env, {
         id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
         type: "trip_start",
@@ -11084,7 +11152,7 @@ ${emptyMsg}`, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS 
         `\u{1F50B} Battery: ${startSoc}% \u2192 ${endSoc}%`,
         "\u{1F9F9} Cancelled recording to keep your driving history clean."
       ].join("\n");
-      await dispatchTripNotification(url, idleTitle, idleText, "information_source");
+      await dispatchTripNotification(url, idleTitle, idleText, "information_source", env);
       await d1InsertNotification(env, {
         id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
         type: "trip_idle",
@@ -11144,7 +11212,7 @@ ${idleText}`, {
       ongoingTrip.start_location && endLocation && ongoingTrip.start_location !== "Unknown Location" ? `\u{1F4CD} Route: ${ongoingTrip.start_location} \u2192 ${endLocation}` : endLocation && endLocation !== "Unknown Location" ? `\u{1F4CD} Destination: ${endLocation}` : null,
       `\u{1F3C1} Final Odometer: ${finalOdo.toLocaleString()} km`
     ].filter(Boolean).join("\n");
-    await dispatchTripNotification(url, title, notificationText, "white_check_mark,trophy");
+    await dispatchTripNotification(url, title, notificationText, "white_check_mark,trophy", env);
     await d1InsertNotification(env, {
       id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
       type: "trip_stop",

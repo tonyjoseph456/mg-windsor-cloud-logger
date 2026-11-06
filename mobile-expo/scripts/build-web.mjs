@@ -5,7 +5,15 @@ import path from 'node:path';
 
 const out = 'dist-web';
 fs.rmSync(out, { recursive: true, force: true });
-execSync(`npx expo export -p web --output-dir ${out}`, { stdio: 'inherit' });
+const nodeBinDir = path.dirname(process.execPath);
+const envWithNode = {
+  ...process.env,
+  PATH: `${nodeBinDir}${path.delimiter}${process.env.PATH || ''}`,
+};
+execSync(`"${process.execPath}" node_modules/expo/bin/cli export -p web --output-dir ${out}`, {
+  stdio: 'inherit',
+  env: envWithNode,
+});
 
 fs.copyFileSync('public/icon.svg', path.join(out, 'icon.svg'));
 if (fs.existsSync('public/sw.js')) {
