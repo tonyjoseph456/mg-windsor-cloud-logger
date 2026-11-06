@@ -56,8 +56,12 @@ import {
   sheetUrl,
   fetchD1Trips,
   fetchD1TripDates,
+  syncTripsToD1,
+  deleteD1Trip,
   fetchD1Charges,
   fetchD1ChargeDates,
+  syncChargesToD1,
+  deleteD1Charge,
   registerCarSession,
   AppNotificationRecord,
   fetchD1Notifications,
@@ -747,18 +751,29 @@ export default function App() {
         if (dates && dates.length > 0) setD1TripDates(dates);
       }).catch(() => {});
 
-      fetchD1Trips(selectedTripDate === 'all' ? undefined : selectedTripDate).then((d1Trips) => {
+      // Fetch all trips from Cloudflare D1
+      fetchD1Trips('all').then(async (d1Trips) => {
+        const localList = tripsRef.current || [];
         if (d1Trips && d1Trips.length > 0) {
-          setTrips((prev) => {
-            const merged = deduplicateTripList([...d1Trips, ...prev]);
-            tripsRef.current = merged;
-            SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
-            return merged;
-          });
+          const merged = deduplicateTripList([...d1Trips, ...localList]);
+          setTrips(merged);
+          tripsRef.current = merged;
+          SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
+          // If local has more trips than D1, sync them to D1
+          if (merged.length > d1Trips.length) {
+            syncTripsToD1(merged).then(() => {
+              fetchD1TripDates().then((dates) => { if (dates?.length) setD1TripDates(dates); }).catch(() => {});
+            }).catch(() => {});
+          }
+        } else if (localList.length > 0) {
+          // D1 is empty but device has saved trips -> automatically push to D1!
+          syncTripsToD1(localList).then(() => {
+            fetchD1TripDates().then((dates) => { if (dates?.length) setD1TripDates(dates); }).catch(() => {});
+          }).catch(() => {});
         }
       }).catch(() => {});
     }
-  }, [tab, selectedTripDate]);
+  }, [tab]);
 
   const tripDateKeysSet = useMemo(() => {
     const set = new Set<string>();
@@ -793,18 +808,27 @@ export default function App() {
         if (dates && dates.length > 0) setD1ChargeDates(dates);
       }).catch(() => {});
 
-      fetchD1Charges(selectedChargeDate === 'all' ? undefined : selectedChargeDate).then((d1Charges) => {
+      // Fetch all charges from Cloudflare D1
+      fetchD1Charges('all').then(async (d1Charges) => {
+        const localList = chargeLogsRef.current || [];
         if (d1Charges && d1Charges.length > 0) {
-          setChargeLogs((prev) => {
-            const merged = deduplicateChargeList([...d1Charges, ...prev]);
-            chargeLogsRef.current = merged;
-            SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(merged)).catch(() => {});
-            return merged;
-          });
+          const merged = deduplicateChargeList([...d1Charges, ...localList]);
+          setChargeLogs(merged);
+          chargeLogsRef.current = merged;
+          SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(merged)).catch(() => {});
+          if (merged.length > d1Charges.length) {
+            syncChargesToD1(merged).then(() => {
+              fetchD1ChargeDates().then((dates) => { if (dates?.length) setD1ChargeDates(dates); }).catch(() => {});
+            }).catch(() => {});
+          }
+        } else if (localList.length > 0) {
+          syncChargesToD1(localList).then(() => {
+            fetchD1ChargeDates().then((dates) => { if (dates?.length) setD1ChargeDates(dates); }).catch(() => {});
+          }).catch(() => {});
         }
       }).catch(() => {});
     }
-  }, [tab, selectedChargeDate]);
+  }, [tab]);
 
   const chargeDateKeysSet = useMemo(() => {
     const set = new Set<string>();
@@ -1147,34 +1171,122 @@ export default function App() {
     return () => sub.remove();
   }, [pin]);
 
-  const handleSyncAllToBackendSheets = async (silent = false) => {
-    if (!silent) {
-      Alert.alert(
-        'Google Sheets Backup',
-        'Direct Google Sheets backup is active. You can sync from the Account tab.'
-      );
+  const [isD1Syncing, setIsD1Syncing] = useState<boolean>(false);
+
+  const handleSyncTripsToD1 = async () => {
+    try {
+      setIsD1Syncing(true);
+      const cleaned = deduplicateTripList(tripsRef.current);
+      const ok = await syncTripsToD1(cleaned);
+      const refreshed = await fetchD1Trips('all');
+      if (refreshed && refreshed.length > 0) {
+        setTrips(refreshed);
+        tripsRef.current = refreshed;
+        SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(refreshed)).catch(() => {});
+      }
+      const dates = await fetchD1TripDates();
+      if (dates && dates.length > 0) setD1TripDates(dates);
+      if (ok) {
+        Alert.alert('Cloudflare D1 Synced ☁️', `Successfully synced ${cleaned.length} trip(s) to Cloudflare D1 database.`);
+        showBanner('ok', `Synced ${cleaned.length} trip(s) to D1`);
+      } else {
+        Alert.alert('Sync Notice', 'Trips saved locally. Ensure your Cloudflare Worker is deployed with latest code.');
+      }
+    } catch (e: any) {
+      Alert.alert('Sync Error', e?.message || 'Failed to sync with Cloudflare D1');
+    } finally {
+      setIsD1Syncing(false);
     }
   };
 
-  const handleCleanAndDeduplicateSheets = () => {
+  const handleRefreshD1Trips = async () => {
+    try {
+      setIsD1Syncing(true);
+      const refreshed = await fetchD1Trips('all');
+      if (refreshed && refreshed.length > 0) {
+        setTrips(refreshed);
+        tripsRef.current = refreshed;
+        SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(refreshed)).catch(() => {});
+      }
+      const dates = await fetchD1TripDates();
+      if (dates && dates.length > 0) setD1TripDates(dates);
+      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed.length} trip(s) from Cloudflare D1.`);
+      showBanner('ok', `Refreshed ${refreshed.length} trip(s) from D1`);
+    } catch (e: any) {
+      Alert.alert('Refresh Error', e?.message || 'Failed to fetch from Cloudflare D1');
+    } finally {
+      setIsD1Syncing(false);
+    }
+  };
+
+  const handleCleanAndDeduplicateD1 = async () => {
     const cleanedTrips = deduplicateTripList(tripsRef.current);
     setTrips(cleanedTrips);
     tripsRef.current = cleanedTrips;
     SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(cleanedTrips)).catch(() => {});
+    await syncTripsToD1(cleanedTrips);
+    Alert.alert('Deduplicated & Cleaned ✨', `Optimized list to ${cleanedTrips.length} unique trip(s) in Cloudflare D1.`);
+    showBanner('ok', 'Trips deduplicated in D1');
+  };
 
+  const handleSyncChargesToD1 = async () => {
+    try {
+      setIsD1Syncing(true);
+      const cleaned = deduplicateChargeList(chargeLogsRef.current);
+      const ok = await syncChargesToD1(cleaned);
+      const refreshed = await fetchD1Charges('all');
+      if (refreshed && refreshed.length > 0) {
+        setChargeLogs(refreshed);
+        chargeLogsRef.current = refreshed;
+        SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(refreshed)).catch(() => {});
+      }
+      const dates = await fetchD1ChargeDates();
+      if (dates && dates.length > 0) setD1ChargeDates(dates);
+      if (ok) {
+        Alert.alert('Cloudflare D1 Synced ☁️', `Successfully synced ${cleaned.length} charging session(s) to Cloudflare D1.`);
+        showBanner('ok', `Synced ${cleaned.length} charge(s) to D1`);
+      } else {
+        Alert.alert('Sync Notice', 'Charges saved locally. Ensure Cloudflare Worker is deployed.');
+      }
+    } catch (e: any) {
+      Alert.alert('Sync Error', e?.message || 'Failed to sync charges with Cloudflare D1');
+    } finally {
+      setIsD1Syncing(false);
+    }
+  };
+
+  const handleRefreshD1Charges = async () => {
+    try {
+      setIsD1Syncing(true);
+      const refreshed = await fetchD1Charges('all');
+      if (refreshed && refreshed.length > 0) {
+        setChargeLogs(refreshed);
+        chargeLogsRef.current = refreshed;
+        SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(refreshed)).catch(() => {});
+      }
+      const dates = await fetchD1ChargeDates();
+      if (dates && dates.length > 0) setD1ChargeDates(dates);
+      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed.length} charge session(s) from Cloudflare D1.`);
+      showBanner('ok', `Refreshed ${refreshed.length} charge(s) from D1`);
+    } catch (e: any) {
+      Alert.alert('Refresh Error', e?.message || 'Failed to fetch charges from Cloudflare D1');
+    } finally {
+      setIsD1Syncing(false);
+    }
+  };
+
+  const handleCleanAndDeduplicateCharges = async () => {
     const cleanedCharges = deduplicateChargeList(chargeLogsRef.current);
     setChargeLogs(cleanedCharges);
     chargeLogsRef.current = cleanedCharges;
     SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(cleanedCharges)).catch(() => {});
-
-    Alert.alert(
-      'History Cleaned ✨',
-      `Local history cleaned and deduplicated successfully!\n\n⚡ Charges: ${cleanedCharges.length} valid sessions\n🚗 Trips: ${cleanedTrips.length} valid trips`
-    );
-    showBanner('ok', 'Local trips & charges deduplicated');
+    await syncChargesToD1(cleanedCharges);
+    Alert.alert('Deduplicated & Cleaned ✨', `Optimized list to ${cleanedCharges.length} unique charge(s) in Cloudflare D1.`);
+    showBanner('ok', 'Charges deduplicated in D1');
   };
 
-  const handleCleanAndDeduplicateCharges = handleCleanAndDeduplicateSheets;
+  const handleSyncAllToBackendSheets = handleSyncTripsToD1;
+  const handleCleanAndDeduplicateSheets = handleCleanAndDeduplicateD1;
 
   const refreshVehicleTelemetry = async (
     existingClient?: MgIndiaClient,
@@ -2442,12 +2554,30 @@ export default function App() {
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#0284C7', paddingHorizontal: 12, paddingVertical: 8 }]}
+                    onPress={handleSyncChargesToD1}
+                    disabled={isD1Syncing}
+                  >
+                    <Text style={styles.recordBtnText}>
+                      {isD1Syncing ? 'Syncing...' : '☁️ Sync to D1'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
                     style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={handleCleanAndDeduplicateCharges}
-                    disabled={isBackendBusy}
+                    onPress={handleRefreshD1Charges}
+                    disabled={isD1Syncing}
                   >
                     <Text style={[styles.recordBtnText, { color: '#34D399' }]}>
-                      {isBackendBusy ? 'Cleaning...' : '🧹 Clean Sheets'}
+                      🔄 Refresh D1
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#1E293B', borderColor: '#334155', paddingHorizontal: 12, paddingVertical: 8 }]}
+                    onPress={handleCleanAndDeduplicateCharges}
+                    disabled={isD1Syncing}
+                  >
+                    <Text style={[styles.recordBtnText, { color: '#94A3B8' }]}>
+                      🧹 Clean & Dedupe
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -2513,6 +2643,7 @@ export default function App() {
                     setSelectedChargeDate(getTodayDateKey());
                     await SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(nextLogs));
                     showBanner('ok', 'Saved current charging session to history');
+                    syncChargesToD1([manualSession]).catch(() => {});
                   }}
                 >
                   <Text style={styles.recordBtnText}>+ Save Session</Text>
@@ -2726,21 +2857,30 @@ export default function App() {
 
                 <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
                   <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={handleCleanAndDeduplicateSheets}
-                    disabled={isBackendBusy}
+                    style={[styles.recordBtn, { backgroundColor: '#0284C7', paddingHorizontal: 12, paddingVertical: 8 }]}
+                    onPress={handleSyncTripsToD1}
+                    disabled={isD1Syncing}
                   >
-                    <Text style={[styles.recordBtnText, { color: '#34D399' }]}>
-                      {isBackendBusy ? 'Cleaning...' : '🧹 Clean Sheets'}
+                    <Text style={styles.recordBtnText}>
+                      {isD1Syncing ? 'Syncing...' : '☁️ Sync to D1'}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={() => handleSyncAllToBackendSheets(false)}
-                    disabled={isBackendBusy}
+                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
+                    onPress={handleRefreshD1Trips}
+                    disabled={isD1Syncing}
                   >
-                    <Text style={styles.recordBtnText}>
-                      {isBackendBusy ? 'Syncing...' : '📊 Sync Sheets'}
+                    <Text style={[styles.recordBtnText, { color: '#34D399' }]}>
+                      🔄 Refresh D1
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#1E293B', borderColor: '#334155', paddingHorizontal: 12, paddingVertical: 8 }]}
+                    onPress={handleCleanAndDeduplicateD1}
+                    disabled={isD1Syncing}
+                  >
+                    <Text style={[styles.recordBtnText, { color: '#94A3B8' }]}>
+                      🧹 Clean & Dedupe
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -2833,6 +2973,7 @@ export default function App() {
                     setSelectedTripDate(getTodayDateKey());
                     await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips));
                     showBanner('ok', 'Saved current trip to Trip History');
+                    syncTripsToD1([manualTrip]).catch(() => {});
                     if (googleConfigRef.current?.accessToken && googleConfigRef.current?.spreadsheetId && googleConfigRef.current?.autoSync) {
                       syncTripsToGoogleSheet(googleConfigRef.current.accessToken, googleConfigRef.current.spreadsheetId, [manualTrip]).catch(() => {});
                     }

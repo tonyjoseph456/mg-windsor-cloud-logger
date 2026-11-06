@@ -1078,14 +1078,21 @@ async function d1InsertTrip(env: Env, trip: any) {
     await initD1(env.DB);
     try {
       await env.DB.prepare(`
-        INSERT INTO trips (id, date, start_timestamp, end_timestamp, duration_seconds, distance_km, start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh, efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO trips (id, date, start_timestamp, end_timestamp, duration_seconds, distance_km, start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh, efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         trip.id, trip.date, trip.start_timestamp, trip.end_timestamp || null, trip.duration_seconds || null,
-        trip.distance_km || null, trip.start_odometer_km || null, trip.end_odometer_km || null,
-        trip.start_soc || null, trip.end_soc || null, trip.energy_used_kwh || null,
-        trip.efficiency_km_per_kwh || null, trip.start_location || '', trip.end_location || '',
-        trip.avg_speed_kmh || null, trip.status || 'ongoing'
+        trip.distance_km != null ? Number(trip.distance_km) : null,
+        trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
+        trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
+        trip.start_soc != null ? Number(trip.start_soc) : null,
+        trip.end_soc != null ? Number(trip.end_soc) : null,
+        trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
+        trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
+        trip.start_location || '', trip.end_location || '',
+        trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
+        trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
+        trip.status || 'ongoing'
       ).run();
     } catch (err) {
       console.warn('d1InsertTrip error:', err);
@@ -1094,11 +1101,88 @@ async function d1InsertTrip(env: Env, trip: any) {
   if (env.TRIP_KV) {
     try {
       const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
-      trips.unshift(trip);
-      await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips.slice(0, 200)));
+      const filtered = trips.filter((t: any) => t.id !== trip.id);
+      filtered.unshift(trip);
+      await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(filtered.slice(0, 300)));
       if (trip.status === 'ongoing') {
         await env.TRIP_KV.put('d1_fallback:active_trip', JSON.stringify(trip));
       }
+    } catch (_) {}
+  }
+}
+
+async function d1BatchSyncTrips(env: Env, rawTrips: any[]): Promise<number> {
+  if (!Array.isArray(rawTrips) || rawTrips.length === 0) return 0;
+  let count = 0;
+  if (env.DB) {
+    await initD1(env.DB);
+    for (const trip of rawTrips) {
+      try {
+        const id = trip.id || ('trip_' + (trip.start_timestamp || Math.floor(Date.now() / 1000)) + '_' + Math.random().toString(36).substring(2, 6));
+        const date = trip.date || (trip.start_timestamp ? istDateString(Number(trip.start_timestamp)) : istDateString(Math.floor(Date.now() / 1000)));
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO trips (
+            id, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
+            start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh,
+            efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          id, date, Number(trip.start_timestamp) || 0,
+          trip.end_timestamp ? Number(trip.end_timestamp) : null,
+          trip.duration_seconds ? Number(trip.duration_seconds) : null,
+          trip.distance_km != null ? Number(trip.distance_km) : null,
+          trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
+          trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
+          trip.start_soc != null ? Number(trip.start_soc) : null,
+          trip.end_soc != null ? Number(trip.end_soc) : null,
+          trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
+          trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
+          trip.start_location || '', trip.end_location || '',
+          trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
+          trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
+          trip.status || 'completed'
+        ).run();
+        count++;
+      } catch (err) {
+        console.warn('d1BatchSyncTrips error:', err);
+      }
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const existing = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+      const map = new Map<string, any>();
+      for (const t of existing) {
+        if (t?.id) map.set(t.id, t);
+      }
+      for (const t of rawTrips) {
+        if (t?.id) {
+          map.set(t.id, {
+            ...t,
+            date: t.date || (t.start_timestamp ? istDateString(Number(t.start_timestamp)) : ''),
+            status: t.status || 'completed',
+          });
+        }
+      }
+      const merged = Array.from(map.values()).sort((a, b) => (Number(b.start_timestamp) || 0) - (Number(a.start_timestamp) || 0));
+      await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(merged.slice(0, 300)));
+      if (!env.DB) count = rawTrips.length;
+    } catch (_) {}
+  }
+  return count;
+}
+
+async function d1DeleteTrip(env: Env, tripId: string) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare('DELETE FROM trips WHERE id = ?').bind(tripId).run();
+    } catch (_) {}
+  }
+  if (env.TRIP_KV) {
+    try {
+      const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+      await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips.filter((t: any) => t.id !== tripId)));
     } catch (_) {}
   }
 }
@@ -1207,12 +1291,16 @@ async function d1InsertCharge(env: Env, charge: any) {
     await initD1(env.DB);
     try {
       await env.DB.prepare(`
-        INSERT INTO charges (id, date, start_timestamp, end_timestamp, duration_seconds, start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status)
+        INSERT OR REPLACE INTO charges (id, date, start_timestamp, end_timestamp, duration_seconds, start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         charge.id, charge.date, charge.start_timestamp, charge.end_timestamp || null, charge.duration_seconds || null,
-        charge.start_soc || null, charge.end_soc || null, charge.energy_added_kwh || null,
-        charge.charger_type || 'AC 3.3 kW', charge.peak_kw || null, charge.odometer_km || null,
+        charge.start_soc != null ? Number(charge.start_soc) : null,
+        charge.end_soc != null ? Number(charge.end_soc) : null,
+        charge.energy_added_kwh != null ? Number(charge.energy_added_kwh) : null,
+        charge.charger_type || 'AC 3.3 kW',
+        charge.peak_kw != null ? Number(charge.peak_kw) : null,
+        charge.odometer_km != null ? Number(charge.odometer_km) : null,
         charge.status || 'charging'
       ).run();
     } catch (err) {
@@ -1222,11 +1310,83 @@ async function d1InsertCharge(env: Env, charge: any) {
   if (env.TRIP_KV) {
     try {
       const charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
-      charges.unshift(charge);
-      await env.TRIP_KV.put('d1_fallback:charges', JSON.stringify(charges.slice(0, 200)));
+      const filtered = charges.filter((c: any) => c.id !== charge.id);
+      filtered.unshift(charge);
+      await env.TRIP_KV.put('d1_fallback:charges', JSON.stringify(filtered.slice(0, 300)));
       if (charge.status === 'charging') {
         await env.TRIP_KV.put('d1_fallback:active_charge', JSON.stringify(charge));
       }
+    } catch (_) {}
+  }
+}
+
+async function d1BatchSyncCharges(env: Env, rawCharges: any[]): Promise<number> {
+  if (!Array.isArray(rawCharges) || rawCharges.length === 0) return 0;
+  let count = 0;
+  if (env.DB) {
+    await initD1(env.DB);
+    for (const charge of rawCharges) {
+      try {
+        const id = charge.id || ('chg_' + (charge.start_timestamp || Math.floor(Date.now() / 1000)) + '_' + Math.random().toString(36).substring(2, 6));
+        const date = charge.date || (charge.start_timestamp ? istDateString(Number(charge.start_timestamp)) : istDateString(Math.floor(Date.now() / 1000)));
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO charges (
+            id, date, start_timestamp, end_timestamp, duration_seconds,
+            start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          id, date, Number(charge.start_timestamp) || 0,
+          charge.end_timestamp ? Number(charge.end_timestamp) : null,
+          charge.duration_seconds ? Number(charge.duration_seconds) : null,
+          charge.start_soc != null ? Number(charge.start_soc) : null,
+          charge.end_soc != null ? Number(charge.end_soc) : null,
+          charge.energy_added_kwh != null ? Number(charge.energy_added_kwh) : null,
+          charge.charger_type || 'AC 3.3 kW',
+          charge.peak_kw != null ? Number(charge.peak_kw) : null,
+          charge.odometer_km != null ? Number(charge.odometer_km) : null,
+          charge.status || 'completed'
+        ).run();
+        count++;
+      } catch (err) {
+        console.warn('d1BatchSyncCharges error:', err);
+      }
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const existing = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+      const map = new Map<string, any>();
+      for (const c of existing) {
+        if (c?.id) map.set(c.id, c);
+      }
+      for (const c of rawCharges) {
+        if (c?.id) {
+          map.set(c.id, {
+            ...c,
+            date: c.date || (c.start_timestamp ? istDateString(Number(c.start_timestamp)) : ''),
+            status: c.status || 'completed',
+          });
+        }
+      }
+      const merged = Array.from(map.values()).sort((a, b) => (Number(b.start_timestamp) || 0) - (Number(a.start_timestamp) || 0));
+      await env.TRIP_KV.put('d1_fallback:charges', JSON.stringify(merged.slice(0, 300)));
+      if (!env.DB) count = rawCharges.length;
+    } catch (_) {}
+  }
+  return count;
+}
+
+async function d1DeleteCharge(env: Env, chargeId: string) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare('DELETE FROM charges WHERE id = ?').bind(chargeId).run();
+    } catch (_) {}
+  }
+  if (env.TRIP_KV) {
+    try {
+      const charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+      await env.TRIP_KV.put('d1_fallback:charges', JSON.stringify(charges.filter((c: any) => c.id !== chargeId)));
     } catch (_) {}
   }
 }
@@ -1705,6 +1865,21 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     return json({ success: true, trips });
   }
 
+  // Batch Sync Trips from Local App to D1
+  if (path === '/api/trips/sync') {
+    const rawTrips = body?.trips || [];
+    const count = await d1BatchSyncTrips(env, rawTrips);
+    return json({ success: true, count, message: `Synced ${count} trip(s) to Cloudflare D1` });
+  }
+
+  // Delete Trip from D1
+  if (path === '/api/trips/delete') {
+    const tripId = body?.id || url.searchParams.get('id');
+    if (!tripId) return json({ success: false, error: 'trip id required' }, 400);
+    await d1DeleteTrip(env, tripId);
+    return json({ success: true, message: 'Trip deleted from Cloudflare D1' });
+  }
+
   // Get Trip Distinct Dates for Calendar Picker
   if (path === '/api/trip/dates') {
     const dates = await d1GetTripDates(env);
@@ -1784,6 +1959,21 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const date = url.searchParams.get('date');
     const charges = await d1GetCharges(env, date);
     return json({ success: true, charges });
+  }
+
+  // Batch Sync Charges from Local App to D1
+  if (path === '/api/charges/sync') {
+    const rawCharges = body?.charges || [];
+    const count = await d1BatchSyncCharges(env, rawCharges);
+    return json({ success: true, count, message: `Synced ${count} charge(s) to Cloudflare D1` });
+  }
+
+  // Delete Charge from D1
+  if (path === '/api/charges/delete') {
+    const chargeId = body?.id || url.searchParams.get('id');
+    if (!chargeId) return json({ success: false, error: 'charge id required' }, 400);
+    await d1DeleteCharge(env, chargeId);
+    return json({ success: true, message: 'Charge deleted from Cloudflare D1' });
   }
 
   // Get Charge Distinct Dates for Calendar Picker

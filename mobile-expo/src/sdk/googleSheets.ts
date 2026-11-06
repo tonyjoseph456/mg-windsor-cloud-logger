@@ -822,11 +822,25 @@ export const backendCleanSheets = (
 // Cloudflare D1 Relational Database & Apple CarPlay API Client
 // ---------------------------------------------------------------------------
 
+function formatDateTimeSdk(unixSec: number | null | undefined): string {
+  if (!unixSec || unixSec <= 0) return '--';
+  const d = new Date(unixSec * 1000);
+  return d.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 export function mapD1TripToRecord(r: any): TripRecord {
   const startSec = Number(r.start_timestamp) || 0;
   const endSec = Number(r.end_timestamp) || startSec;
-  const startDt = startSec ? new Date(startSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
-  const endDt = endSec ? new Date(endSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
+  const startDt = startSec ? formatDateTimeSdk(startSec) : '';
+  const endDt = endSec ? formatDateTimeSdk(endSec) : '';
   const startSoc = Number(r.start_soc) || 0;
   const endSoc = Number(r.end_soc) || startSoc;
   const distanceKm = Number(r.distance_km) || 0;
@@ -879,8 +893,8 @@ function durationSecToHours(sec: number): number {
 export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
   const startSec = Number(r.start_timestamp) || 0;
   const endSec = r.end_timestamp ? Number(r.end_timestamp) : null;
-  const startDt = startSec ? new Date(startSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
-  const endDt = endSec ? new Date(endSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
+  const startDt = startSec ? formatDateTimeSdk(startSec) : '';
+  const endDt = endSec ? formatDateTimeSdk(endSec) : '';
   const startSoc = Number(r.start_soc) || 0;
   const endSoc = Number(r.end_soc) || startSoc;
   const energyAdded = Number(r.energy_added_kwh) || Number((((endSoc - startSoc) / 100) * 38).toFixed(2));
@@ -914,7 +928,7 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
 
 export async function fetchD1Trips(date?: string): Promise<TripRecord[]> {
   try {
-    const url = `${BACKEND_URL}/api/trips${date ? `?date=${encodeURIComponent(date)}` : ''}`;
+    const url = `${BACKEND_URL}/api/trips${date && date !== 'all' ? `?date=${encodeURIComponent(date)}` : ''}`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json();
@@ -925,6 +939,103 @@ export async function fetchD1Trips(date?: string): Promise<TripRecord[]> {
     console.warn('fetchD1Trips error:', err);
   }
   return [];
+}
+
+export async function syncTripsToD1(trips: TripRecord[]): Promise<boolean> {
+  if (!Array.isArray(trips) || trips.length === 0) return true;
+  try {
+    const payload = trips.map((t) => ({
+      id: t.id,
+      start_timestamp: t.startTimestampSec,
+      end_timestamp: t.endTimestampSec,
+      duration_seconds: t.durationSeconds,
+      distance_km: t.distanceKm,
+      start_odometer_km: t.startOdometerKm,
+      end_odometer_km: t.endOdometerKm,
+      start_soc: t.startSoc,
+      end_soc: t.endSoc,
+      energy_used_kwh: t.energyUsedKwh,
+      efficiency_km_per_kwh: t.efficiencyKmPerKwh,
+      start_location: t.startLocation,
+      end_location: t.endLocation,
+      avg_speed_kmh: t.avgSpeedKmh,
+      max_speed_kmh: t.maxSpeedKmh,
+      status: t.status === 'driving' ? 'ongoing' : 'completed',
+    }));
+    const res = await fetch(`${BACKEND_URL}/api/trips/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trips: payload }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch (err) {
+    console.warn('syncTripsToD1 error:', err);
+    return false;
+  }
+}
+
+export async function deleteD1Trip(tripId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/trips/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: tripId }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch (err) {
+    console.warn('deleteD1Trip error:', err);
+    return false;
+  }
+}
+
+export async function syncChargesToD1(charges: ChargeLogRecord[]): Promise<boolean> {
+  if (!Array.isArray(charges) || charges.length === 0) return true;
+  try {
+    const payload = charges.map((c) => ({
+      id: c.id,
+      start_timestamp: c.startTimestampSec,
+      end_timestamp: c.endTimestampSec,
+      duration_seconds: c.durationSeconds,
+      start_soc: c.startSoc,
+      end_soc: c.endSoc,
+      energy_added_kwh: c.energyAddedToPackKwh,
+      charger_type: c.chargerCategory,
+      peak_kw: c.maxChargingSpeedKw,
+      odometer_km: c.odometerKm,
+      status: c.status,
+    }));
+    const res = await fetch(`${BACKEND_URL}/api/charges/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ charges: payload }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch (err) {
+    console.warn('syncChargesToD1 error:', err);
+    return false;
+  }
+}
+
+export async function deleteD1Charge(chargeId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/charges/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: chargeId }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch (err) {
+    console.warn('deleteD1Charge error:', err);
+    return false;
+  }
 }
 
 export async function fetchD1TripDates(): Promise<string[]> {
