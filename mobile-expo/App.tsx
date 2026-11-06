@@ -3106,11 +3106,11 @@ export default function App() {
             <AccountSectionCard
               title="1-Tap Lock Screen Widget & Siri Setup"
               icon="⚡"
-              badge="4 Webhooks"
+              badge="6 Webhooks"
               badgeBg="#064E3B"
               badgeColor="#34D399"
-              preview="Silent Unlock, Lock, AC On & AC Off background triggers"
-              subtitle="Trigger locking, unlocking, or AC silently from your iOS Lock Screen Widget or Siri with zero app popups!"
+              preview="Silent Unlock, Lock, AC On/Off & CarPlay Start/Stop"
+              subtitle="Trigger locking, unlocking, AC or CarPlay trip logging silently from your iOS Lock Screen Widget, Siri, or Automations with zero app popups!"
             >
               {/* Silent Webhook URLs for currently logged-in car */}
               <View style={{ backgroundColor: '#0B132B', padding: 14, borderRadius: 14, borderWidth: 1, borderColor: '#1E293B', marginBottom: 14 }}>
@@ -3257,16 +3257,82 @@ export default function App() {
                   </TouchableOpacity>
                 </View>
 
+                {/* 5. Start Trip Link */}
+                <View style={styles.copyWebhookCard}>
+                  <View style={styles.copyWebhookHeader}>
+                    <Text style={styles.copyWebhookTitle}>🟢 CarPlay Connects (Start Trip)</Text>
+                    <TouchableOpacity
+                      style={styles.copyPillBtn}
+                      activeOpacity={0.7}
+                      onPress={() =>
+                        copyToClipboard(
+                          `${BACKEND_URL}/api/trip/start`,
+                          'CarPlay Start Trip URL'
+                        )
+                      }
+                    >
+                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.copyUrlTapArea}
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      copyToClipboard(
+                        `${BACKEND_URL}/api/trip/start`,
+                        'CarPlay Start Trip URL'
+                      )
+                    }
+                  >
+                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
+                      {`${BACKEND_URL}/api/trip/start`}
+                    </Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* 6. Stop Trip Link */}
+                <View style={styles.copyWebhookCard}>
+                  <View style={styles.copyWebhookHeader}>
+                    <Text style={styles.copyWebhookTitle}>🔴 CarPlay Disconnects (Stop Trip)</Text>
+                    <TouchableOpacity
+                      style={styles.copyPillBtn}
+                      activeOpacity={0.7}
+                      onPress={() =>
+                        copyToClipboard(
+                          `${BACKEND_URL}/api/trip/stop`,
+                          'CarPlay Stop Trip URL'
+                        )
+                      }
+                    >
+                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.copyUrlTapArea}
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      copyToClipboard(
+                        `${BACKEND_URL}/api/trip/stop`,
+                        'CarPlay Stop Trip URL'
+                      )
+                    }
+                  >
+                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
+                      {`${BACKEND_URL}/api/trip/stop`}
+                    </Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL</Text>
+                  </TouchableOpacity>
+                </View>
+
                 <Text style={{ color: '#F59E0B', fontSize: 11, fontWeight: '700', marginTop: 8, marginBottom: 2 }}>
                   📱 How to set up in Apple Shortcuts (Takes 30 seconds):
                 </Text>
                 <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 17 }}>
-                  1. Tap &quot;Copy Link&quot; above (Unlock, Lock, AC On, or AC Off).{'\n'}
-                  2. Open Apple &quot;Shortcuts&quot; app $\rightarrow$ Tap &quot;+&quot; to create shortcut.{'\n'}
-                  3. Tap &quot;Add Action&quot; $\rightarrow$ Search &quot;Get contents of URL&quot; (NOT &quot;Open URL&quot;).{'\n'}
-                  4. Paste the link into the URL field $\rightarrow$ Rename shortcut to e.g. &quot;Unlock Windsor&quot; or &quot;Turn Off Windsor AC&quot;.{'\n'}
-                  5. Add as a widget to your iPhone Lock Screen or use &quot;Hey Siri, Turn Off Windsor AC&quot;!{'\n'}
-                  6. First run: Tap &quot;Allow&quot; on the one-time privacy popup. It will execute silently in background with zero popups!
+                  1. Tap &quot;Copy Link&quot; above (Unlock, Lock, AC On/Off, or CarPlay Start/Stop).{'\n'}
+                  2. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For Siri / Widgets:</Text> Shortcuts app → &quot;+&quot; → Add Action &quot;Get contents of URL&quot; → Paste link → Rename shortcut (e.g. &quot;Unlock Windsor&quot;).{'\n'}
+                  3. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For CarPlay Automations:</Text> Shortcuts app → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Automation</Text> tab → &quot;+&quot; → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>CarPlay</Text> → Connects (or Disconnects) → Run Immediately (Notify When Run OFF) → Add Action &quot;Get Contents of URL&quot; → Paste Start (or Stop) URL → Done!{'\n'}
+                  4. First run: Tap &quot;Allow&quot; on the one-time privacy popup. It executes silently with zero 12V battery drain!
                 </Text>
               </View>
             </AccountSectionCard>
