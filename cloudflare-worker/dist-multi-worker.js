@@ -9695,72 +9695,77 @@ async function handleGoogleCallback(env, url) {
   }
 }
 var d1Initialized = false;
+var d1InitErrors = [];
+var D1_TABLE_SCHEMAS = [
+  `CREATE TABLE IF NOT EXISTS trips (
+    id TEXT PRIMARY KEY,
+    date TEXT NOT NULL,
+    start_timestamp INTEGER NOT NULL,
+    end_timestamp INTEGER,
+    duration_seconds INTEGER,
+    distance_km REAL,
+    start_odometer_km REAL,
+    end_odometer_km REAL,
+    start_soc INTEGER,
+    end_soc INTEGER,
+    energy_used_kwh REAL,
+    efficiency_km_per_kwh REAL,
+    start_location TEXT,
+    end_location TEXT,
+    avg_speed_kmh REAL,
+    max_speed_kmh REAL,
+    status TEXT DEFAULT 'completed',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_trips_date ON trips(date)`,
+  `CREATE INDEX IF NOT EXISTS idx_trips_status ON trips(status)`,
+  `CREATE TABLE IF NOT EXISTS charges (
+    id TEXT PRIMARY KEY,
+    date TEXT NOT NULL,
+    start_timestamp INTEGER NOT NULL,
+    end_timestamp INTEGER,
+    duration_seconds INTEGER,
+    start_soc INTEGER,
+    end_soc INTEGER,
+    energy_added_kwh REAL,
+    charger_type TEXT,
+    peak_kw REAL,
+    odometer_km REAL,
+    status TEXT DEFAULT 'completed',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_charges_date ON charges(date)`,
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    metadata TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_date ON notifications(date)`,
+  `CREATE TABLE IF NOT EXISTS kv_store (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`
+];
 async function initD1(db) {
   if (d1Initialized) return;
-  try {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS trips (
-        id TEXT PRIMARY KEY,
-        date TEXT NOT NULL,
-        start_timestamp INTEGER NOT NULL,
-        end_timestamp INTEGER,
-        duration_seconds INTEGER,
-        distance_km REAL,
-        start_odometer_km REAL,
-        end_odometer_km REAL,
-        start_soc INTEGER,
-        end_soc INTEGER,
-        energy_used_kwh REAL,
-        efficiency_km_per_kwh REAL,
-        start_location TEXT,
-        end_location TEXT,
-        avg_speed_kmh REAL,
-        max_speed_kmh REAL,
-        status TEXT DEFAULT 'completed',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_trips_date ON trips(date);
-      CREATE INDEX IF NOT EXISTS idx_trips_status ON trips(status);
-
-      CREATE TABLE IF NOT EXISTS charges (
-        id TEXT PRIMARY KEY,
-        date TEXT NOT NULL,
-        start_timestamp INTEGER NOT NULL,
-        end_timestamp INTEGER,
-        duration_seconds INTEGER,
-        start_soc INTEGER,
-        end_soc INTEGER,
-        energy_added_kwh REAL,
-        charger_type TEXT,
-        peak_kw REAL,
-        odometer_km REAL,
-        status TEXT DEFAULT 'completed',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_charges_date ON charges(date);
-
-      CREATE TABLE IF NOT EXISTS notifications (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        date TEXT NOT NULL,
-        metadata TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp DESC);
-      CREATE INDEX IF NOT EXISTS idx_notifications_date ON notifications(date);
-
-      CREATE TABLE IF NOT EXISTS kv_store (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
+  d1InitErrors = [];
+  for (const sql of D1_TABLE_SCHEMAS) {
+    try {
+      await db.prepare(sql).run();
+    } catch (err) {
+      d1InitErrors.push(`${sql.substring(0, 30)}: ${err?.message || err}`);
+      console.warn("initD1 statement error:", err);
+    }
+  }
+  if (d1InitErrors.length === 0) {
     d1Initialized = true;
-  } catch (err) {
-    console.warn("initD1 warning:", err);
   }
 }
 async function d1KvGet(env, key) {
@@ -10421,16 +10426,16 @@ async function getMgClientForWebhook(env, url) {
         }
       }
     }
-    try {
-      const lastSession = await d1KvGet(env, "mg_active_session") || (env.TRIP_KV ? await env.TRIP_KV.get("mg_active_session", "json") : null);
-      if (lastSession?.token && lastSession?.uid) {
-        const client = new MgIndiaClient({ phone: lastSession.phone || "9999999999", password: "", vin: lastSession.vin });
-        client.uid = lastSession.uid;
-        client.token = lastSession.token;
-        return { client, vin: lastSession.vin };
-      }
-    } catch (_) {
+  }
+  try {
+    const lastSession = await d1KvGet(env, "mg_active_session");
+    if (lastSession?.token && lastSession?.uid) {
+      const client = new MgIndiaClient({ phone: lastSession.phone || "9999999999", password: "", vin: lastSession.vin });
+      client.uid = lastSession.uid;
+      client.token = lastSession.token;
+      return { client, vin: lastSession.vin };
     }
+  } catch (_) {
   }
   if (env.MG_PHONE && (env.MG_PASSWORD || env.MG_PIN)) {
     const client = new MgIndiaClient({
@@ -10497,6 +10502,7 @@ async function handleApi(env, request, url) {
       hasKV: Boolean(env.TRIP_KV),
       dbStatus,
       dbError,
+      initErrors: d1InitErrors,
       tables,
       hasPhone: Boolean(env.MG_PHONE),
       hasVin: Boolean(env.MG_VIN),
