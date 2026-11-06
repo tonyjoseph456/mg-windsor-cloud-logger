@@ -9840,12 +9840,16 @@ async function d1KvPut(env, key, value) {
 async function resolveLocation(lat, lng) {
   if (!lat || !lng) return "Unknown Location";
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2e3);
     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`, {
       headers: {
         "User-Agent": "MGWindsorEV-CarPlay/1.0",
         "Accept": "application/json"
-      }
+      },
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
       const addr = data.address || {};
@@ -11069,26 +11073,26 @@ async function handleApi(env, request, url) {
         date: dateStr,
         metadata: JSON.stringify(trip)
       });
-      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
-        return new Response(`${title}
-
-${notificationText}`, {
-          headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+      if (url.searchParams.get("format") === "json") {
+        return json({
+          success: true,
+          title,
+          notification: notificationText,
+          message: "Trip started successfully via CarPlay connection",
+          trip
         });
       }
-      return json({
-        success: true,
-        title,
-        notification: notificationText,
-        message: "Trip started successfully via CarPlay connection",
-        trip
+      return new Response(`${title}
+
+${notificationText}`, {
+        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
       });
     } catch (err) {
       const errMsg = `\u274C Trip Start Error: ${err.message}`;
-      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
-        return new Response(errMsg, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 200 });
+      if (url.searchParams.get("format") === "json") {
+        return json({ success: false, error: err.message }, 500);
       }
-      return json({ success: false, error: err.message }, 500);
+      return new Response(errMsg, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 200 });
     }
   }
   if (path === "/api/trip/stop") {
@@ -11096,12 +11100,12 @@ ${notificationText}`, {
     if (!ongoingTrip) {
       const emptyTitle = "\u2139\uFE0F MG Windsor EV \u2022 No Active Trip";
       const emptyMsg = "No ongoing trip was recorded in Cloudflare D1 to stop.\n(Make sure CarPlay Connects ran first, and D1 database is bound).";
-      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
-        return new Response(`${emptyTitle}
+      if (url.searchParams.get("format") === "json") {
+        return json({ success: false, title: emptyTitle, notification: emptyMsg, message: emptyMsg }, 200);
+      }
+      return new Response(`${emptyTitle}
 
 ${emptyMsg}`, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 200 });
-      }
-      return json({ success: false, title: emptyTitle, notification: emptyMsg, message: emptyMsg }, 200);
     }
     const mg = await getMgClientForWebhook(env, url);
     let telem = null;
@@ -11162,19 +11166,19 @@ ${emptyMsg}`, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS 
         date: istDateString(nowSec),
         metadata: JSON.stringify({ durationSec, startSoc, endSoc })
       });
-      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
-        return new Response(`${idleTitle}
-
-${idleText}`, {
-          headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+      if (url.searchParams.get("format") === "json") {
+        return json({
+          success: true,
+          title: idleTitle,
+          notification: idleText,
+          message: "No drive detected (0.0 km). Stationary session cancelled.",
+          cancelled: true
         });
       }
-      return json({
-        success: true,
-        title: idleTitle,
-        notification: idleText,
-        message: "No drive detected (0.0 km). Stationary session cancelled.",
-        cancelled: true
+      return new Response(`${idleTitle}
+
+${idleText}`, {
+        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
       });
     }
     const energyUsedKwh = Number((socDiff / 100 * 38).toFixed(2));
@@ -11222,19 +11226,19 @@ ${idleText}`, {
       date: istDateString(nowSec),
       metadata: JSON.stringify(updates)
     });
-    if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
-      return new Response(`${title}
-
-${notificationText}`, {
-        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+    if (url.searchParams.get("format") === "json") {
+      return json({
+        success: true,
+        title,
+        notification: notificationText,
+        message: "Trip stopped and logged into Cloudflare D1",
+        trip: { ...ongoingTrip, ...updates }
       });
     }
-    return json({
-      success: true,
-      title,
-      notification: notificationText,
-      message: "Trip stopped and logged into Cloudflare D1",
-      trip: { ...ongoingTrip, ...updates }
+    return new Response(`${title}
+
+${notificationText}`, {
+      headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
     });
   }
   if (path === "/api/trips") {
