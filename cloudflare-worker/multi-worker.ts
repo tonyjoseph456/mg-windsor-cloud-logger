@@ -1375,6 +1375,28 @@ async function getMgClientForWebhook(env: Env, url: URL): Promise<{ client: MgIn
   return null;
 }
 
+async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<{
+  odometer: number;
+  soc: number;
+  lat: number | null;
+  lng: number | null;
+  status: any;
+}> {
+  if (vin && !client.vin) client.vin = vin;
+  const status: any = await client.status(true);
+  const odometer = Number(status.odometer_km ?? status.charge?.odometer_km) || 0;
+  const soc = status.charge?.soc != null ? Number(status.charge.soc) : (status.fuel_level != null ? Number(status.fuel_level) : 0);
+  const lat = status.gps?.latitude ?? null;
+  const lng = status.gps?.longitude ?? null;
+  return {
+    odometer,
+    soc,
+    lat,
+    lng,
+    status,
+  };
+}
+
 async function handleApi(env: Env, request: Request, url: URL): Promise<Response> {
   const path = url.pathname;
   if (path.startsWith('/api/push') || path.startsWith('/api/widget')) {
@@ -1396,9 +1418,8 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       return json({ success: false, error: 'MG vehicle session not found. Please log in from the web app first.' }, 400);
     }
     try {
-      const status = await mg.client.getVehicleStatus(mg.vin);
-      const gps = await mg.client.getGpsPosition(mg.vin).catch(() => null);
-      const startLocation = await resolveLocation(gps?.latitude, gps?.longitude);
+      const telem = await fetchCarTelemetry(mg.client, mg.vin);
+      const startLocation = await resolveLocation(telem.lat, telem.lng);
       const nowSec = Math.floor(Date.now() / 1000);
       const tripId = 'trip_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
       const dateStr = istDateString(nowSec);
@@ -1407,8 +1428,8 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
         id: tripId,
         date: dateStr,
         start_timestamp: nowSec,
-        start_odometer_km: Number(status?.odometer) || 0,
-        start_soc: status?.soc != null ? Number(status.soc) : 0,
+        start_odometer_km: telem.odometer,
+        start_soc: telem.soc,
         start_location: startLocation,
         status: 'ongoing',
       };
@@ -1456,15 +1477,13 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     }
 
     const mg = await getMgClientForWebhook(env, url);
-    let status: any = null;
-    let gps: any = null;
+    let telem: any = null;
     if (mg) {
-      status = await mg.client.getVehicleStatus(mg.vin).catch(() => null);
-      gps = await mg.client.getGpsPosition(mg.vin).catch(() => null);
+      telem = await fetchCarTelemetry(mg.client, mg.vin).catch(() => null);
     }
 
     const startOdo = Number(ongoingTrip.start_odometer_km) || 0;
-    let finalOdo = Number(status?.odometer) || startOdo;
+    let finalOdo = Number(telem?.odometer) || startOdo;
     const startTimestamp = Number(ongoingTrip.start_timestamp) || Math.floor(Date.now() / 1000);
     const nowSec = Math.floor(Date.now() / 1000);
     const durationSec = Math.max(0, nowSec - startTimestamp);
@@ -1473,12 +1492,10 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     if (mg && (finalOdo < startOdo || (finalOdo === startOdo && durationSec > 60))) {
       await new Promise((r) => setTimeout(r, 2500));
       try {
-        const refreshedStatus = await mg.client.getVehicleStatus(mg.vin);
-        if (refreshedStatus && Number(refreshedStatus.odometer) >= startOdo) {
-          status = refreshedStatus;
-          finalOdo = Number(refreshedStatus.odometer);
-          const refreshedGps = await mg.client.getGpsPosition(mg.vin).catch(() => null);
-          if (refreshedGps) gps = refreshedGps;
+        const refreshed = await fetchCarTelemetry(mg.client, mg.vin);
+        if (refreshed && Number(refreshed.odometer) >= startOdo) {
+          telem = refreshed;
+          finalOdo = Number(refreshed.odometer);
         }
       } catch (_) {}
     }
@@ -1488,7 +1505,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     }
 
     const distanceKm = Math.max(0, Number((finalOdo - startOdo).toFixed(1)));
-    const endSoc = status?.soc != null ? Number(status.soc) : (Number(ongoingTrip.start_soc) || 0);
+    const endSoc = telem?.soc != null ? Number(telem.soc) : (Number(ongoingTrip.start_soc) || 0);
     const startSoc = Number(ongoingTrip.start_soc) || endSoc;
     const socDiff = Math.max(0, startSoc - endSoc);
 
@@ -1534,7 +1551,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
     const energyUsedKwh = Number(((socDiff / 100) * 38).toFixed(2));
     const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
-    const endLocation = await resolveLocation(gps?.latitude, gps?.longitude);
+    const endLocation = await resolveLocation(telem?.lat, telem?.lng);
     const avgSpeedKmh = durationSec > 0 && distanceKm > 0 ? Number(((distanceKm / (durationSec / 3600))).toFixed(1)) : 0;
 
     const updates = {
@@ -1600,9 +1617,9 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   // Start Charging
   if (path === '/api/charge/start') {
     const mg = await getMgClientForWebhook(env, url);
-    let status: any = null;
+    let telem: any = null;
     if (mg) {
-      status = await mg.client.getVehicleStatus(mg.vin).catch(() => null);
+      telem = await fetchCarTelemetry(mg.client, mg.vin).catch(() => null);
     }
     const nowSec = Math.floor(Date.now() / 1000);
     const chargeId = 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
@@ -1611,10 +1628,10 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       id: chargeId,
       date: dateStr,
       start_timestamp: nowSec,
-      start_soc: status?.soc != null ? Number(status.soc) : 0,
+      start_soc: telem?.soc != null ? Number(telem.soc) : 0,
       charger_type: 'AC Fast',
       peak_kw: 3.3,
-      odometer_km: Number(status?.odometer) || 0,
+      odometer_km: telem?.odometer || 0,
       status: 'charging',
     };
     await d1InsertCharge(env, charge);
@@ -1628,14 +1645,14 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       return json({ success: false, message: 'No active charging session found to stop' }, 404);
     }
     const mg = await getMgClientForWebhook(env, url);
-    let status: any = null;
+    let telem: any = null;
     if (mg) {
-      status = await mg.client.getVehicleStatus(mg.vin).catch(() => null);
+      telem = await fetchCarTelemetry(mg.client, mg.vin).catch(() => null);
     }
     const nowSec = Math.floor(Date.now() / 1000);
     const startTimestamp = Number(ongoingCharge.start_timestamp) || nowSec;
     const durationSec = Math.max(0, nowSec - startTimestamp);
-    const endSoc = status?.soc != null ? Number(status.soc) : (Number(ongoingCharge.start_soc) || 0);
+    const endSoc = telem?.soc != null ? Number(telem.soc) : (Number(ongoingCharge.start_soc) || 0);
     const startSoc = Number(ongoingCharge.start_soc) || endSoc;
     const addedSoc = Math.max(0, endSoc - startSoc);
     const energyAddedKwh = Number(((addedSoc / 100) * 38).toFixed(2));
@@ -1645,7 +1662,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       duration_seconds: durationSec,
       end_soc: endSoc,
       energy_added_kwh: energyAddedKwh,
-      odometer_km: Number(status?.odometer) || Number(ongoingCharge.odometer_km) || 0,
+      odometer_km: Number(telem?.odometer) || Number(ongoingCharge.odometer_km) || 0,
       status: 'completed',
     };
     await d1UpdateCharge(env, ongoingCharge.id, updates);
