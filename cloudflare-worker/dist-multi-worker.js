@@ -9795,6 +9795,10 @@ async function initD1(db) {
       console.warn("initD1 statement error:", err);
     }
   }
+  try {
+    await db.prepare("ALTER TABLE notifications ADD COLUMN is_read INTEGER DEFAULT 0").run();
+  } catch (_) {
+  }
   if (d1InitErrors.length === 0) {
     d1Initialized = true;
   }
@@ -10428,8 +10432,26 @@ async function d1InsertNotification(env, notif) {
         notif.is_read || 0,
         notif.metadata || ""
       ).run();
+      return;
     } catch (err) {
-      console.warn("d1InsertNotification error:", err);
+      console.warn("d1InsertNotification primary error, trying fallback without is_read:", err?.message || err);
+    }
+    try {
+      await env.DB.prepare(`
+        INSERT INTO notifications (id, type, title, message, timestamp, date, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        notif.id,
+        notif.type,
+        notif.title,
+        notif.message,
+        notif.timestamp,
+        notif.date,
+        notif.metadata || ""
+      ).run();
+      return;
+    } catch (err2) {
+      console.error("d1InsertNotification fallback error:", err2?.message || err2);
     }
   }
   if (env.TRIP_KV) {
@@ -11319,6 +11341,22 @@ ${notificationText}`, {
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
     const notifs = await d1GetNotifications(env, limit);
     return json({ success: true, notifications: notifs });
+  }
+  if (path === "/api/notifications/test") {
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const notif = {
+      id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+      type: "test",
+      title: "\u{1F9EA} MG Windsor EV \u2022 Test Notification",
+      message: `Verified D1 Studio insertion at ${formatClockTime(nowSec)}. System is fully operational!`,
+      timestamp: nowSec,
+      date: istDateString(nowSec),
+      is_read: 0,
+      metadata: JSON.stringify({ test: true, time: (/* @__PURE__ */ new Date()).toISOString() })
+    };
+    await d1InsertNotification(env, notif);
+    const notifs = await d1GetNotifications(env, 10);
+    return json({ success: true, message: "Test notification written to D1", count: notifs.length, notification: notif, recent: notifs });
   }
   if (path === "/api/notifications/clear") {
     await d1ClearNotifications(env);
