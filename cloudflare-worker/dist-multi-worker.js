@@ -9694,7 +9694,9 @@ async function handleGoogleCallback(env, url) {
     return finishSignIn(env, url, `error=${encodeURIComponent(e.message)}`, "Sign-in failed");
   }
 }
+var d1Initialized = false;
 async function initD1(db) {
+  if (d1Initialized) return;
   try {
     await db.exec(`
       CREATE TABLE IF NOT EXISTS trips (
@@ -9756,6 +9758,7 @@ async function initD1(db) {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    d1Initialized = true;
   } catch (err) {
     console.warn("initD1 warning:", err);
   }
@@ -10473,6 +10476,33 @@ async function handleApi(env, request, url) {
   if (path.startsWith("/api/push") || path.startsWith("/api/widget")) {
     return json({ success: false, message: "Push notifications and widgets disabled" });
   }
+  if (path === "/api/diagnostic" || path === "/api/health") {
+    let dbStatus = "missing";
+    let dbError = null;
+    let tables = [];
+    if (env.DB) {
+      try {
+        await initD1(env.DB);
+        const res = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+        tables = (res?.results || []).map((r) => r.name);
+        dbStatus = "connected";
+      } catch (e) {
+        dbStatus = "error";
+        dbError = e?.message || String(e);
+      }
+    }
+    return json({
+      status: "ok",
+      hasDB: Boolean(env.DB),
+      hasKV: Boolean(env.TRIP_KV),
+      dbStatus,
+      dbError,
+      tables,
+      hasPhone: Boolean(env.MG_PHONE),
+      hasVin: Boolean(env.MG_VIN),
+      time: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  }
   let body = null;
   if (request.method === "POST") {
     try {
@@ -10534,17 +10564,24 @@ ${notificationText}`, {
         trip
       });
     } catch (err) {
+      const errMsg = `\u274C Trip Start Error: ${err.message}`;
+      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
+        return new Response(errMsg, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 200 });
+      }
       return json({ success: false, error: err.message }, 500);
     }
   }
   if (path === "/api/trip/stop") {
     const ongoingTrip = await d1GetActiveTrip(env);
     if (!ongoingTrip) {
-      const emptyMsg = "No active ongoing trip found in D1 to stop.";
+      const emptyTitle = "\u2139\uFE0F MG Windsor EV \u2022 No Active Trip";
+      const emptyMsg = "No ongoing trip was recorded in Cloudflare D1 to stop.\n(Make sure CarPlay Connects ran first, and D1 database is bound).";
       if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
-        return new Response(emptyMsg, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 404 });
+        return new Response(`${emptyTitle}
+
+${emptyMsg}`, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 200 });
       }
-      return json({ success: false, message: emptyMsg }, 404);
+      return json({ success: false, title: emptyTitle, notification: emptyMsg, message: emptyMsg }, 200);
     }
     const mg = await getMgClientForWebhook(env, url);
     let telem = null;
