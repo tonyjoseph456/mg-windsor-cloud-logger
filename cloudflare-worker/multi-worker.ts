@@ -69,8 +69,22 @@ const CHARGE_HEADERS = [
 
 // ---------------------------------------------------------------- helpers
 function kvOrThrow(env: Env) {
-  if (!env.TRIP_KV) throw new Error('KV namespace TRIP_KV is not bound to this worker');
-  return env.TRIP_KV;
+  if (env.TRIP_KV) return env.TRIP_KV;
+  return {
+    get: async (key: string, type?: string) => {
+      const val = await d1KvGet(env, key);
+      if (val === null) return null;
+      return type === 'json' ? val : (typeof val === 'string' ? val : JSON.stringify(val));
+    },
+    put: async (key: string, value: any) => {
+      await d1KvPut(env, key, value);
+    },
+    delete: async (key: string) => {
+      if (env.DB) {
+        try { await env.DB.prepare('DELETE FROM kv_store WHERE key = ?').bind(key).run(); } catch (_) {}
+      }
+    },
+  };
 }
 async function sha256(s: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -999,9 +1013,47 @@ async function initD1(db: any) {
       );
       CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_notifications_date ON notifications(date);
+
+      CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
   } catch (err) {
     console.warn('initD1 warning:', err);
+  }
+}
+
+async function d1KvGet(env: Env, key: string): Promise<any | null> {
+  if (env.DB) {
+    try {
+      const row: any = await env.DB.prepare('SELECT value FROM kv_store WHERE key = ?').bind(key).first();
+      if (row?.value) {
+        try { return JSON.parse(row.value); } catch (_) { return row.value; }
+      }
+    } catch (_) {}
+  }
+  if (env.TRIP_KV) {
+    try {
+      return await env.TRIP_KV.get(key, 'json');
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function d1KvPut(env: Env, key: string, value: any): Promise<void> {
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare('INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)').bind(key, str).run();
+    } catch (_) {}
+  }
+  if (env.TRIP_KV) {
+    try {
+      await env.TRIP_KV.put(key, str);
+    } catch (_) {}
   }
 }
 
@@ -1594,9 +1646,9 @@ async function getMgClientForWebhook(env: Env, url: URL): Promise<{ client: MgIn
       }
     }
 
-    // Try last active session stored in KV
+    // Try last active session stored in D1 or KV
     try {
-      const lastSession = await env.TRIP_KV.get('mg_active_session', 'json');
+      const lastSession = (await d1KvGet(env, 'mg_active_session')) || (env.TRIP_KV ? await env.TRIP_KV.get('mg_active_session', 'json') : null);
       if (lastSession?.token && lastSession?.uid) {
         const client = new MgIndiaClient({ phone: lastSession.phone || '9999999999', password: '', vin: lastSession.vin });
         client.uid = lastSession.uid;
@@ -2028,15 +2080,15 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   if (path === '/api/register-car' || path === '/api/update-token') {
     if (!body?.uid || !body?.token) return json({ error: 'uid and token required' }, 400);
 
-    if (env.TRIP_KV) {
-      await env.TRIP_KV.put('mg_active_session', JSON.stringify({
-        uid: body.uid,
-        token: body.token,
-        vin: body.vin,
-        phone: body.phone,
-        updatedAt: Math.floor(Date.now() / 1000),
-      }));
-      await env.TRIP_KV.put('carplay_token:' + body.token, body.uid || 'default');
+    await d1KvPut(env, 'mg_active_session', {
+      uid: body.uid,
+      token: body.token,
+      vin: body.vin,
+      phone: body.phone,
+      updatedAt: Math.floor(Date.now() / 1000),
+    });
+    if (body.token) {
+      await d1KvPut(env, 'carplay_token:' + body.token, body.uid || 'default');
     }
 
     const u = await authUser(env, url, body);
