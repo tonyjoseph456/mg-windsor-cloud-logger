@@ -1,4 +1,4 @@
-name = "mg-windsor-telematics"
+name = "mg-windsor-webhook"
 main = "dist-multi-worker.js"
 compatibility_date = "2024-09-23"
 
