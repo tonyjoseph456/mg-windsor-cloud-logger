@@ -1491,6 +1491,47 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const endSoc = status?.soc != null ? Number(status.soc) : (Number(ongoingTrip.start_soc) || 0);
     const startSoc = Number(ongoingTrip.start_soc) || endSoc;
     const socDiff = Math.max(0, startSoc - endSoc);
+
+    // Stationary / Idle Session Detection:
+    // If the car didn't actually drive (< 0.2 km, e.g. sitting in car for 5 mins in driveway),
+    // remove the ongoing trip from D1/KV so trip history stays clean, and notify user accordingly.
+    if (distanceKm < 0.2) {
+      if (env.DB) {
+        await env.DB.prepare('DELETE FROM trips WHERE id = ?').bind(ongoingTrip.id).run().catch(() => {});
+      }
+      if (env.TRIP_KV) {
+        await env.TRIP_KV.delete('d1_fallback:active_trip').catch(() => {});
+        try {
+          const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+          await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips.filter((t: any) => t.id !== ongoingTrip.id)));
+        } catch (_) {}
+      }
+
+      const idleTitle = 'ℹ️ MG Windsor EV • Stationary (No Trip Logged)';
+      const idleText = [
+        'ℹ️ Vehicle was stationary (0.0 km driven).',
+        `⏱️ Time in car: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} → ${formatClockTime(nowSec)})`,
+        `🔋 Battery: ${startSoc}% → ${endSoc}%`,
+        '🧹 Cancelled recording to keep your driving history clean.',
+      ].join('\n');
+
+      await dispatchTripNotification(url, idleTitle, idleText, 'information_source');
+
+      if (url.searchParams.get('format') === 'text' || request.headers.get('accept')?.includes('text/plain')) {
+        return new Response(`${idleTitle}\n\n${idleText}`, {
+          headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
+        });
+      }
+
+      return json({
+        success: true,
+        title: idleTitle,
+        notification: idleText,
+        message: 'No drive detected (0.0 km). Stationary session cancelled.',
+        cancelled: true,
+      });
+    }
+
     const energyUsedKwh = Number(((socDiff / 100) * 38).toFixed(2));
     const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
     const endLocation = await resolveLocation(gps?.latitude, gps?.longitude);

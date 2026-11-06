@@ -10236,6 +10236,43 @@ ${notificationText}`, {
     const endSoc = status?.soc != null ? Number(status.soc) : Number(ongoingTrip.start_soc) || 0;
     const startSoc = Number(ongoingTrip.start_soc) || endSoc;
     const socDiff = Math.max(0, startSoc - endSoc);
+    if (distanceKm < 0.2) {
+      if (env.DB) {
+        await env.DB.prepare("DELETE FROM trips WHERE id = ?").bind(ongoingTrip.id).run().catch(() => {
+        });
+      }
+      if (env.TRIP_KV) {
+        await env.TRIP_KV.delete("d1_fallback:active_trip").catch(() => {
+        });
+        try {
+          const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
+          await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.filter((t) => t.id !== ongoingTrip.id)));
+        } catch (_) {
+        }
+      }
+      const idleTitle = "\u2139\uFE0F MG Windsor EV \u2022 Stationary (No Trip Logged)";
+      const idleText = [
+        "\u2139\uFE0F Vehicle was stationary (0.0 km driven).",
+        `\u23F1\uFE0F Time in car: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} \u2192 ${formatClockTime(nowSec)})`,
+        `\u{1F50B} Battery: ${startSoc}% \u2192 ${endSoc}%`,
+        "\u{1F9F9} Cancelled recording to keep your driving history clean."
+      ].join("\n");
+      await dispatchTripNotification(url, idleTitle, idleText, "information_source");
+      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
+        return new Response(`${idleTitle}
+
+${idleText}`, {
+          headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+        });
+      }
+      return json({
+        success: true,
+        title: idleTitle,
+        notification: idleText,
+        message: "No drive detected (0.0 km). Stationary session cancelled.",
+        cancelled: true
+      });
+    }
     const energyUsedKwh = Number((socDiff / 100 * 38).toFixed(2));
     const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
     const endLocation = await resolveLocation(gps?.latitude, gps?.longitude);
