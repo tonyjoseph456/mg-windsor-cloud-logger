@@ -754,24 +754,11 @@ export default function App() {
       }).catch(() => {});
 
       // Fetch all trips from Cloudflare D1
-      fetchD1Trips('all').then(async (d1Trips) => {
-        const localList = tripsRef.current || [];
-        if (d1Trips && d1Trips.length > 0) {
-          const merged = deduplicateTripList([...d1Trips, ...localList]);
-          setTrips(merged);
-          tripsRef.current = merged;
-          SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
-          // If local has more trips than D1, sync them to D1
-          if (merged.length > d1Trips.length) {
-            syncTripsToD1(merged).then(() => {
-              fetchD1TripDates().then((dates) => { if (dates?.length) setD1TripDates(dates); }).catch(() => {});
-            }).catch(() => {});
-          }
-        } else if (localList.length > 0) {
-          // D1 is empty but device has saved trips -> automatically push to D1!
-          syncTripsToD1(localList).then(() => {
-            fetchD1TripDates().then((dates) => { if (dates?.length) setD1TripDates(dates); }).catch(() => {});
-          }).catch(() => {});
+      fetchD1Trips('all').then((d1Trips) => {
+        if (Array.isArray(d1Trips)) {
+          setTrips(d1Trips);
+          tripsRef.current = d1Trips;
+          SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(d1Trips)).catch(() => {});
         }
       }).catch(() => {});
     }
@@ -811,22 +798,11 @@ export default function App() {
       }).catch(() => {});
 
       // Fetch all charges from Cloudflare D1
-      fetchD1Charges('all').then(async (d1Charges) => {
-        const localList = chargeLogsRef.current || [];
-        if (d1Charges && d1Charges.length > 0) {
-          const merged = deduplicateChargeList([...d1Charges, ...localList]);
-          setChargeLogs(merged);
-          chargeLogsRef.current = merged;
-          SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(merged)).catch(() => {});
-          if (merged.length > d1Charges.length) {
-            syncChargesToD1(merged).then(() => {
-              fetchD1ChargeDates().then((dates) => { if (dates?.length) setD1ChargeDates(dates); }).catch(() => {});
-            }).catch(() => {});
-          }
-        } else if (localList.length > 0) {
-          syncChargesToD1(localList).then(() => {
-            fetchD1ChargeDates().then((dates) => { if (dates?.length) setD1ChargeDates(dates); }).catch(() => {});
-          }).catch(() => {});
+      fetchD1Charges('all').then((d1Charges) => {
+        if (Array.isArray(d1Charges)) {
+          setChargeLogs(d1Charges);
+          chargeLogsRef.current = d1Charges;
+          SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(d1Charges)).catch(() => {});
         }
       }).catch(() => {});
     }
@@ -1205,15 +1181,16 @@ export default function App() {
     try {
       setIsD1Syncing(true);
       const refreshed = await fetchD1Trips('all');
-      if (refreshed && refreshed.length > 0) {
+      if (Array.isArray(refreshed)) {
         setTrips(refreshed);
         tripsRef.current = refreshed;
         SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(refreshed)).catch(() => {});
       }
       const dates = await fetchD1TripDates();
       if (dates && dates.length > 0) setD1TripDates(dates);
-      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed.length} trip(s) from Cloudflare D1.`);
-      showBanner('ok', `Refreshed ${refreshed.length} trip(s) from D1`);
+      else if (Array.isArray(refreshed) && refreshed.length === 0) setD1TripDates([]);
+      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed?.length || 0} trip(s) from Cloudflare D1.`);
+      showBanner('ok', `Refreshed ${refreshed?.length || 0} trip(s) from D1`);
     } catch (e: any) {
       Alert.alert('Refresh Error', e?.message || 'Failed to fetch from Cloudflare D1');
     } finally {
@@ -1291,15 +1268,16 @@ export default function App() {
     try {
       setIsD1Syncing(true);
       const refreshed = await fetchD1Charges('all');
-      if (refreshed && refreshed.length > 0) {
+      if (Array.isArray(refreshed)) {
         setChargeLogs(refreshed);
         chargeLogsRef.current = refreshed;
         SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(refreshed)).catch(() => {});
       }
       const dates = await fetchD1ChargeDates();
       if (dates && dates.length > 0) setD1ChargeDates(dates);
-      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed.length} charge session(s) from Cloudflare D1.`);
-      showBanner('ok', `Refreshed ${refreshed.length} charge(s) from D1`);
+      else if (Array.isArray(refreshed) && refreshed.length === 0) setD1ChargeDates([]);
+      Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed?.length || 0} charge session(s) from Cloudflare D1.`);
+      showBanner('ok', `Refreshed ${refreshed?.length || 0} charge(s) from D1`);
     } catch (e: any) {
       Alert.alert('Refresh Error', e?.message || 'Failed to fetch charges from Cloudflare D1');
     } finally {
@@ -1315,6 +1293,36 @@ export default function App() {
     await syncChargesToD1(cleanedCharges);
     Alert.alert('Deduplicated & Cleaned ✨', `Optimized list to ${cleanedCharges.length} unique charge(s) in Cloudflare D1.`);
     showBanner('ok', 'Charges deduplicated in D1');
+  };
+
+  const handleClearAllD1Charges = () => {
+    Alert.alert(
+      'Clear All Charges from D1?',
+      'This will permanently delete all saved charge logs from Cloudflare D1 and this device. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All Charges',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setIsD1Syncing(true);
+              setChargeLogs([]);
+              chargeLogsRef.current = [];
+              await SecureStore.deleteItemAsync(CHARGE_LOGS_KEY).catch(() => {});
+              await clearD1Charges();
+              setD1ChargeDates([]);
+              Alert.alert('Charges Cleared', 'All charge logs have been permanently cleared from Cloudflare D1.');
+              showBanner('ok', 'All charges cleared from D1');
+            } catch (err: any) {
+              Alert.alert('Error', err?.message || 'Failed to clear charges');
+            } finally {
+              setIsD1Syncing(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleSyncAllToBackendSheets = handleSyncTripsToD1;
@@ -2610,6 +2618,15 @@ export default function App() {
                   >
                     <Text style={[styles.recordBtnText, { color: '#94A3B8' }]}>
                       🧹 Clean & Dedupe
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.recordBtn, { backgroundColor: '#7F1D1D24', borderColor: '#DC2626', paddingHorizontal: 12, paddingVertical: 8 }]}
+                    onPress={handleClearAllD1Charges}
+                    disabled={isD1Syncing}
+                  >
+                    <Text style={[styles.recordBtnText, { color: '#F87171' }]}>
+                      🗑️ Clear D1
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity

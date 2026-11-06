@@ -7259,7 +7259,7 @@ function gatewaySignature(path, timestamp, contentType = "application/json") {
     import_crypto_js.default.enc.Hex
   );
 }
-function hashControlPin2(pin) {
+function hashControlPin(pin) {
   if (!/^\d{4}$/.test(pin || "")) {
     throw new MgIndiaApiError("Control PIN must be exactly 4 digits");
   }
@@ -8533,7 +8533,7 @@ var silent_webhook_default = {
         phone,
         password,
         vin,
-        pinHash: hashControlPin2(pin)
+        pinHash: hashControlPin(pin)
       });
       await client.login();
       if (!client.vin) {

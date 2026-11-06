@@ -16,6 +16,7 @@
  *   Cron trigger  : * * * * *
  */
 import { MgIndiaClient } from '../src/sdk/client';
+import { hashControlPin } from '../src/sdk/crypto';
 import legacy from './silent-webhook';
 import mgProxy from './worker';
 
