@@ -818,4 +818,170 @@ export const backendCleanSheets = (
   error?: string;
 }> => backendCall('/api/clean-sheets', cfg);
 
+// ---------------------------------------------------------------------------
+// Cloudflare D1 Relational Database & Apple CarPlay API Client
+// ---------------------------------------------------------------------------
+
+export function mapD1TripToRecord(r: any): TripRecord {
+  const startSec = Number(r.start_timestamp) || 0;
+  const endSec = Number(r.end_timestamp) || startSec;
+  const startDt = startSec ? new Date(startSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
+  const endDt = endSec ? new Date(endSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
+  const startSoc = Number(r.start_soc) || 0;
+  const endSoc = Number(r.end_soc) || startSoc;
+  const distanceKm = Number(r.distance_km) || 0;
+  const startOdo = Number(r.start_odometer_km) || 0;
+  const endOdo = Number(r.end_odometer_km) || (startOdo + distanceKm);
+  const durationSeconds = Number(r.duration_seconds) || Math.max(0, endSec - startSec);
+  const energyUsedKwh = Number(r.energy_used_kwh) || Number((((startSoc - endSoc) / 100) * 38).toFixed(2));
+  const efficiencyKmPerKwh = Number(r.efficiency_km_per_kwh) || (energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0);
+
+  return {
+    id: String(r.id),
+    journeyId: null,
+    startTimestampSec: startSec,
+    endTimestampSec: endSec,
+    startDateTime: startDt,
+    endDateTime: endDt,
+    startSoc,
+    endSoc,
+    startEnergyKwh: Number(((startSoc / 100) * 38).toFixed(2)),
+    endEnergyKwh: Number(((endSoc / 100) * 38).toFixed(2)),
+    durationSeconds,
+    distanceKm,
+    startOdometerKm: startOdo,
+    endOdometerKm: endOdo,
+    energyUsedKwh: Math.max(0, energyUsedKwh),
+    efficiencyKmPerKwh: Math.max(0, efficiencyKmPerKwh),
+    startLat: null,
+    startLng: null,
+    endLat: null,
+    endLng: null,
+    startLocation: r.start_location || 'Start',
+    endLocation: r.end_location || 'Destination',
+    idleDurationSeconds: 0,
+    idleEnergyKwh: 0,
+    acState: 'Off',
+    cabinTempC: null,
+    exteriorTempC: null,
+    acTargetTempC: '--',
+    acFanSpeed: 'Off',
+    maxSpeedKmh: Number(r.max_speed_kmh) || 0,
+    avgSpeedKmh: Number(r.avg_speed_kmh) || (durationSeconds > 0 && distanceKm > 0 ? Number((distanceKm / (durationSecToHours(durationSeconds))).toFixed(1)) : 0),
+    status: r.status === 'ongoing' ? 'driving' : 'completed',
+  };
+}
+
+function durationSecToHours(sec: number): number {
+  return sec > 0 ? sec / 3600 : 1;
+}
+
+export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
+  const startSec = Number(r.start_timestamp) || 0;
+  const endSec = r.end_timestamp ? Number(r.end_timestamp) : null;
+  const startDt = startSec ? new Date(startSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
+  const endDt = endSec ? new Date(endSec * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
+  const startSoc = Number(r.start_soc) || 0;
+  const endSoc = Number(r.end_soc) || startSoc;
+  const energyAdded = Number(r.energy_added_kwh) || Number((((endSoc - startSoc) / 100) * 38).toFixed(2));
+  const odo = Number(r.odometer_km) || 0;
+  const durationSeconds = Number(r.duration_seconds) || (endSec ? Math.max(0, endSec - startSec) : 0);
+
+  return {
+    id: String(r.id),
+    startTimestampSec: startSec,
+    endTimestampSec: endSec,
+    startDateTime: startDt,
+    endDateTime: endDt,
+    startSoc,
+    endSoc,
+    startEnergyKwh: Number(((startSoc / 100) * 38).toFixed(2)),
+    endEnergyKwh: Number(((endSoc / 100) * 38).toFixed(2)),
+    odometerKm: odo,
+    distanceToEmptyAfterKm: Math.round((endSoc / 100) * 331),
+    chargerCategory: (r.charger_type && r.charger_type.includes('DC') ? 'DC Fast' : '3.3 kW AC') as any,
+    maxChargingSpeedKw: Number(r.peak_kw) || 3.3,
+    energyAddedToPackKwh: Math.max(0, energyAdded),
+    energyConsumedKwh: Math.max(0, Number((energyAdded * 1.1).toFixed(2))),
+    energyLossPercent: 10,
+    distanceTravelledSinceLastChargeKm: 0,
+    energyUsedSinceLastChargeKwh: 0,
+    efficiencyKmPerKwh: 0,
+    durationSeconds,
+    status: r.status === 'charging' ? 'charging' : 'completed',
+  };
+}
+
+export async function fetchD1Trips(date?: string): Promise<TripRecord[]> {
+  try {
+    const url = `${BACKEND_URL}/api/trips${date ? `?date=${encodeURIComponent(date)}` : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (data.success && Array.isArray(data.trips)) {
+      return data.trips.map(mapD1TripToRecord);
+    }
+  } catch (err) {
+    console.warn('fetchD1Trips error:', err);
+  }
+  return [];
+}
+
+export async function fetchD1TripDates(): Promise<string[]> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/trip/dates`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (data.success && Array.isArray(data.dates)) {
+      return data.dates;
+    }
+  } catch (err) {
+    console.warn('fetchD1TripDates error:', err);
+  }
+  return [];
+}
+
+export async function fetchD1Charges(date?: string): Promise<ChargeLogRecord[]> {
+  try {
+    const url = `${BACKEND_URL}/api/charges${date ? `?date=${encodeURIComponent(date)}` : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (data.success && Array.isArray(data.charges)) {
+      return data.charges.map(mapD1ChargeToRecord);
+    }
+  } catch (err) {
+    console.warn('fetchD1Charges error:', err);
+  }
+  return [];
+}
+
+export async function fetchD1ChargeDates(): Promise<string[]> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/charge/dates`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (data.success && Array.isArray(data.dates)) {
+      return data.dates;
+    }
+  } catch (err) {
+    console.warn('fetchD1ChargeDates error:', err);
+  }
+  return [];
+}
+
+export async function registerCarSession(car: { uid: string; token: string; vin?: string; phone?: string }): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/register-car`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(car),
+    });
+    return res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
+
 

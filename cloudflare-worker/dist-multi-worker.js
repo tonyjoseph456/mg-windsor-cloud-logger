@@ -7252,10 +7252,10 @@ function makeDeviceId(phone) {
 function md5Hex(value) {
   return import_crypto_js.default.MD5(value).toString(import_crypto_js.default.enc.Hex);
 }
-function tapSignature(body2) {
-  const half = Math.floor(body2.length / 2);
-  const key = md5Hex(body2.slice(1, half));
-  return import_crypto_js.default.HmacSHA256(body2, key).toString(import_crypto_js.default.enc.Hex);
+function tapSignature(body) {
+  const half = Math.floor(body.length / 2);
+  const key = md5Hex(body.slice(1, half));
+  return import_crypto_js.default.HmacSHA256(body, key).toString(import_crypto_js.default.enc.Hex);
 }
 function gatewaySignature(path, timestamp, contentType = "application/json") {
   const part1 = md5Hex(path);
@@ -7265,7 +7265,7 @@ function gatewaySignature(path, timestamp, contentType = "application/json") {
     import_crypto_js.default.enc.Hex
   );
 }
-function hashControlPin(pin) {
+function hashControlPin2(pin) {
   if (!/^\d{4}$/.test(pin || "")) {
     throw new MgIndiaApiError("Control PIN must be exactly 4 digits");
   }
@@ -7367,7 +7367,7 @@ function encodeControlRequest(uid, token, vin, eventId, typ, params) {
 }
 function encodePinRequest(uid, token, vin, _eventId, pinHash) {
   const app = codec11.encode("PINVerificationReq", { pin: pinHash });
-  const body2 = codec11.encode("MPDispatcherBodyV11", {
+  const body = codec11.encode("MPDispatcherBodyV11", {
     uid,
     token,
     applicationID: PIN_APP_ID,
@@ -7382,17 +7382,17 @@ function encodePinRequest(uid, token, vin, _eventId, pinHash) {
     applicationDataProtocolVersion: PROTOCOL,
     testFlag: 2
   });
-  const dispatcherLength = body2.length + 4;
+  const dispatcherLength = body.length + 4;
   if (dispatcherLength > 255) {
     throw new Error("TAP PIN dispatcher too large");
   }
-  const payload = new Uint8Array(4 + body2.length + app.length);
+  const payload = new Uint8Array(4 + body.length + app.length);
   payload[0] = V11_PROTOCOL_VERSION;
   payload[1] = 0;
   payload[2] = dispatcherLength;
   payload[3] = 0;
-  payload.set(body2, 4);
-  payload.set(app, 4 + body2.length);
+  payload.set(body, 4);
+  payload.set(app, 4 + body.length);
   const lenHex = (payload.length * 2 + 5).toString(16).toUpperCase().padStart(4, "0");
   return `${lenHex}1${bytesToHex(payload, true)}`;
 }
@@ -7914,18 +7914,18 @@ var MgIndiaClient = class {
   async login() {
     let lastError = null;
     for (let attempt = 0; attempt < LOGIN_ATTEMPTS; attempt++) {
-      const body2 = this.buildLoginBody();
+      const body = this.buildLoginBody();
       const headers = {
         "Content-Type": "text/plain",
         Accept: "*/*",
         "Accept-Language": "en-US;q=1",
-        "APP-SIGNATURE": tapSignature(body2),
+        "APP-SIGNATURE": tapSignature(body),
         SIGNATURE: "1"
       };
       const response = await fetch(this._resolveUrl(TAP_LOGIN_URL), {
         method: "POST",
         headers,
-        body: body2
+        body
       });
       const text = await response.text();
       if (response.status >= 400) {
@@ -8044,18 +8044,18 @@ var MgIndiaClient = class {
     this.capabilities = discoverCapabilities(payloads);
     return this.capabilities;
   }
-  async _postTapFrame(body2, errorLabel) {
+  async _postTapFrame(body, errorLabel) {
     const headers = {
       "Content-Type": "text/plain",
       Accept: "*/*",
       "Accept-Language": "en-US;q=1",
       SIGNATURE: "1",
-      "APP-SIGNATURE": tapSignature(body2)
+      "APP-SIGNATURE": tapSignature(body)
     };
     const response = await fetch(this._resolveUrl(TAP_STATUS_URL), {
       method: "POST",
       headers,
-      body: body2
+      body
     });
     const text = await response.text();
     if (response.status >= 400) {
@@ -8064,22 +8064,22 @@ var MgIndiaClient = class {
     return text;
   }
   async _postStatusFrame(eventId, errorLabel) {
-    const body2 = encodeStatusRequest(
+    const body = encodeStatusRequest(
       this.uid || "0".repeat(50),
       this.token || "0".repeat(40),
       this.vin || "",
       eventId
     );
-    return this._postTapFrame(body2, errorLabel);
+    return this._postTapFrame(body, errorLabel);
   }
   async _postChargeFrame(eventId, errorLabel) {
-    const body2 = encodeChargeStatusRequest(
+    const body = encodeChargeStatusRequest(
       this.uid || "0".repeat(50),
       this.token || "0".repeat(40),
       this.vin || "",
       eventId
     );
-    return this._postTapFrame(body2, errorLabel);
+    return this._postTapFrame(body, errorLabel);
   }
   async _pollRequest(post, want, label, options = {}) {
     const unavailableResults = options.unavailableResults || [];
@@ -8231,7 +8231,7 @@ var MgIndiaClient = class {
         await this.vehicles();
         operationVin = this.vin;
       }
-      const body2 = encodePinRequest(
+      const body = encodePinRequest(
         this.uid || "0".repeat(50),
         this.token || "0".repeat(40),
         operationVin || "",
@@ -8244,10 +8244,10 @@ var MgIndiaClient = class {
           "Content-Type": "text/plain",
           Accept: "*/*",
           "Accept-Language": "en-US;q=1",
-          "APP-SIGNATURE": tapSignature(body2),
+          "APP-SIGNATURE": tapSignature(body),
           SIGNATURE: "1"
         },
-        body: body2
+        body
       });
       const text = await response.text();
       if (response.status >= 400) {
@@ -8274,7 +8274,7 @@ var MgIndiaClient = class {
     const operationVin = this.vin || "";
     let eventId = 0;
     for (let attempt = 0; attempt < CONTROL_ATTEMPTS; attempt++) {
-      const body2 = encodeControlRequest(
+      const body = encodeControlRequest(
         this.uid || "0".repeat(50),
         this.token || "0".repeat(40),
         operationVin,
@@ -8284,7 +8284,7 @@ var MgIndiaClient = class {
       );
       let text;
       try {
-        text = await this._postTapFrame(body2, name);
+        text = await this._postTapFrame(body, name);
       } catch (err) {
         throw new MgIndiaCommandIndeterminate(`${name} completion is unknown: ${err.message}`);
       }
@@ -8539,7 +8539,7 @@ var silent_webhook_default = {
         phone,
         password,
         vin,
-        pinHash: hashControlPin(pin)
+        pinHash: hashControlPin2(pin)
       });
       await client.login();
       if (!client.vin) {
@@ -8922,7 +8922,7 @@ var CORS = {
   "Access-Control-Allow-Headers": "*",
   "Access-Control-Expose-Headers": "APP-SEND-DATE, ORIGINAL-CONTENT-TYPE, app-send-date, original-content-type, x-mg-send-date"
 };
-var json = (body2, status = 200) => new Response(JSON.stringify(body2), {
+var json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
   headers: { "Content-Type": "application/json", ...CORS }
 });
@@ -8986,8 +8986,26 @@ async function loadUser(env, id) {
   const raw = await kvOrThrow(env).get(`u:${id}`, "text");
   return raw ? JSON.parse(raw) : null;
 }
-async function saveUser(env, u2) {
-  await kvOrThrow(env).put(`u:${u2.id}`, JSON.stringify(u2));
+async function saveUser(env, u) {
+  await kvOrThrow(env).put(`u:${u.id}`, JSON.stringify(u));
+}
+async function authUser(env, url, body) {
+  const id = (url.searchParams.get("userId") || url.searchParams.get("id") || body?.userId || "").trim();
+  const key = (url.searchParams.get("userKey") || url.searchParams.get("key") || body?.userKey || "").trim();
+  if (!id || !key) return null;
+  const u = await loadUser(env, id);
+  if (!u) return null;
+  const h = await sha256(key);
+  if (u.keyHash === h) return u;
+  if (Array.isArray(u.keyHashes) && u.keyHashes.includes(h)) return u;
+  if (u.userKey === key || u.key === key) return u;
+  if (!u.keyHash && (!u.keyHashes || !u.keyHashes.length)) {
+    u.keyHash = h;
+    u.keyHashes = [h];
+    await saveUser(env, u);
+    return u;
+  }
+  return null;
 }
 var fmtDur = (s) => `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
 var VAPID_PUB_B64URL = "BEDIJNL78q2CN6h-Mbf3xfqUKUM5HNR0tjZw4aikdcnztJaOJaP4Xz6ismoVROcaJW760XDrGDUE4byQayacUWE";
@@ -9103,17 +9121,17 @@ async function encryptWebPushPayload(clientP256dhB64url, clientAuthB64url, paylo
   new DataView(header.buffer).setUint32(16, 4096, false);
   header[20] = 65;
   header.set(serverPubRaw, 21);
-  const body2 = new Uint8Array(header.length + ciphertext.byteLength);
-  body2.set(header, 0);
-  body2.set(new Uint8Array(ciphertext), header.length);
-  return body2;
+  const body = new Uint8Array(header.length + ciphertext.byteLength);
+  body.set(header, 0);
+  body.set(new Uint8Array(ciphertext), header.length);
+  return body;
 }
 async function sendPushToSubscription(sub, payload) {
   try {
     const pushUrl = new URL(sub.endpoint);
     const audience = `${pushUrl.protocol}//${pushUrl.host}`;
     const jwt = await createVapidJwt(audience);
-    const body2 = await encryptWebPushPayload(sub.keys.p256dh, sub.keys.auth, JSON.stringify(payload));
+    const body = await encryptWebPushPayload(sub.keys.p256dh, sub.keys.auth, JSON.stringify(payload));
     const res = await fetch(sub.endpoint, {
       method: "POST",
       headers: {
@@ -9124,7 +9142,7 @@ async function sendPushToSubscription(sub, payload) {
         Authorization: `vapid t=${jwt}, k=${VAPID_PUB_B64URL}`,
         "Crypto-Key": `p256ecdsa=${VAPID_PUB_B64URL}`
       },
-      body: body2
+      body
     });
     const isExpired = res.status === 404 || res.status === 410;
     return { ok: res.ok, status: res.status, expired: isExpired };
@@ -9132,17 +9150,17 @@ async function sendPushToSubscription(sub, payload) {
     return { ok: false, status: 0 };
   }
 }
-async function notifyUser(env, u2, payload) {
-  if (!Array.isArray(u2.pushSubscriptions) || u2.pushSubscriptions.length === 0) return;
+async function notifyUser(env, u, payload) {
+  if (!Array.isArray(u.pushSubscriptions) || u.pushSubscriptions.length === 0) return;
   const expiredEndpoints = /* @__PURE__ */ new Set();
   await Promise.allSettled(
-    u2.pushSubscriptions.map(async (sub) => {
+    u.pushSubscriptions.map(async (sub) => {
       const res = await sendPushToSubscription(sub, payload);
       if (res.expired) expiredEndpoints.add(sub.endpoint);
     })
   );
   if (expiredEndpoints.size > 0) {
-    u2.pushSubscriptions = u2.pushSubscriptions.filter(
+    u.pushSubscriptions = u.pushSubscriptions.filter(
       (s) => !expiredEndpoints.has(s.endpoint)
     );
   }
@@ -9163,23 +9181,23 @@ async function exchangeCode(env, code, redirectUri) {
   if (!r.ok) throw new Error(`Google token exchange failed: ${d.error_description || d.error}`);
   return d;
 }
-async function googleAccessToken(env, u2) {
+async function googleAccessToken(env, u) {
   const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: env.GOOGLE_CLIENT_ID || "",
       client_secret: env.GOOGLE_CLIENT_SECRET || "",
-      refresh_token: u2.googleRefresh,
+      refresh_token: u.googleRefresh,
       grant_type: "refresh_token"
     })
   });
   const d = await r.json();
   if (!r.ok) {
-    if (d.error === "invalid_grant") u2.googleStatus = "revoked";
+    if (d.error === "invalid_grant") u.googleStatus = "revoked";
     throw new Error(`Google refresh failed: ${d.error}`);
   }
-  u2.googleStatus = "ok";
+  u.googleStatus = "ok";
   return d.access_token;
 }
 async function createSheet(token, title, headers) {
@@ -9447,7 +9465,7 @@ function deduplicateChargeList(charges) {
   }
   return clean;
 }
-async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId, u2) {
+async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId, u) {
   let tripsBefore = 0;
   let tripsAfter = 0;
   let tripsRemoved = 0;
@@ -9460,9 +9478,9 @@ async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId
     if (tripsRemoved > 0 || tripsBefore !== tripsAfter) {
       cleanTrips.sort((a, b) => (a.startTimestampSec || 0) - (b.startTimestampSec || 0));
       await clearAndRewriteSheet(token, tripSheetId, TRIP_HEADERS, cleanTrips.map(tripRow));
-      if (u2) {
-        u2.trips = cleanTrips.slice(0, 60);
-        u2.pendingTrips = [];
+      if (u) {
+        u.trips = cleanTrips.slice(0, 60);
+        u.pendingTrips = [];
       }
     }
   }
@@ -9478,9 +9496,9 @@ async function cleanGoogleSheetTripsAndCharges(token, tripSheetId, chargeSheetId
     if (chargesRemoved > 0 || chargesBefore !== chargesAfter) {
       cleanCharges.sort((a, b) => (a.startTimestampSec || 0) - (b.startTimestampSec || 0));
       await clearAndRewriteSheet(token, chargeSheetId, CHARGE_HEADERS, cleanCharges.map(chargeRow));
-      if (u2) {
-        u2.charges = cleanCharges.slice(0, 60);
-        u2.pendingCharges = [];
+      if (u) {
+        u.charges = cleanCharges.slice(0, 60);
+        u.pendingCharges = [];
       }
     }
   }
@@ -9610,14 +9628,14 @@ async function handleGoogleCallback(env, url) {
     const email = prof.email || "unknown";
     const kv = kvOrThrow(env);
     let id = await kv.get(`e:${email}`, "text");
-    let u2 = id ? await loadUser(env, id) : null;
+    let u = id ? await loadUser(env, id) : null;
     const userKey = randomHex(24);
     const newHash = await sha256(userKey);
-    if (!u2) {
+    if (!u) {
       id = randomHex(8);
       const tripSheetId = await createSheet(tok.access_token, "MG Windsor EV - Trip Logs", TRIP_HEADERS);
       const chargeSheetId = await createSheet(tok.access_token, "MG Windsor EV - Charging Sessions", CHARGE_HEADERS);
-      u2 = {
+      u = {
         id,
         email,
         name: prof.name || email,
@@ -9643,42 +9661,638 @@ async function handleGoogleCallback(env, url) {
       await kv.put(`e:${email}`, id);
     } else {
       if (tok.refresh_token) {
-        u2.googleRefresh = tok.refresh_token;
-        u2.googleStatus = "ok";
+        u.googleRefresh = tok.refresh_token;
+        u.googleStatus = "ok";
       }
-      u2.keyHash = newHash;
-      const existing = Array.isArray(u2.keyHashes) ? u2.keyHashes : u2.keyHash ? [u2.keyHash] : [];
+      u.keyHash = newHash;
+      const existing = Array.isArray(u.keyHashes) ? u.keyHashes : u.keyHash ? [u.keyHash] : [];
       existing.push(newHash);
-      u2.keyHashes = existing.slice(-10);
+      u.keyHashes = existing.slice(-10);
     }
-    await saveUser(env, u2);
+    await saveUser(env, u);
     const q = new URLSearchParams({
-      userId: u2.id,
+      userId: u.id,
       userKey,
       email,
-      name: u2.name,
-      tripSheetId: u2.tripSheetId,
-      chargeSheetId: u2.chargeSheetId
+      name: u.name,
+      tripSheetId: u.tripSheetId,
+      chargeSheetId: u.chargeSheetId
     });
     return finishSignIn(env, url, q.toString(), "\u2705 Background tracking connected");
   } catch (e) {
     return finishSignIn(env, url, `error=${encodeURIComponent(e.message)}`, "Sign-in failed");
   }
 }
+async function initD1(db) {
+  try {
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS trips (
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        start_timestamp INTEGER NOT NULL,
+        end_timestamp INTEGER,
+        duration_seconds INTEGER,
+        distance_km REAL,
+        start_odometer_km REAL,
+        end_odometer_km REAL,
+        start_soc INTEGER,
+        end_soc INTEGER,
+        energy_used_kwh REAL,
+        efficiency_km_per_kwh REAL,
+        start_location TEXT,
+        end_location TEXT,
+        avg_speed_kmh REAL,
+        max_speed_kmh REAL,
+        status TEXT DEFAULT 'completed',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_trips_date ON trips(date);
+      CREATE INDEX IF NOT EXISTS idx_trips_status ON trips(status);
+
+      CREATE TABLE IF NOT EXISTS charges (
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        start_timestamp INTEGER NOT NULL,
+        end_timestamp INTEGER,
+        duration_seconds INTEGER,
+        start_soc INTEGER,
+        end_soc INTEGER,
+        energy_added_kwh REAL,
+        charger_type TEXT,
+        peak_kw REAL,
+        odometer_km REAL,
+        status TEXT DEFAULT 'completed',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_charges_date ON charges(date);
+    `);
+  } catch (err) {
+    console.warn("initD1 warning:", err);
+  }
+}
+async function resolveLocation(lat, lng) {
+  if (!lat || !lng) return "Unknown Location";
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`, {
+      headers: {
+        "User-Agent": "MGWindsorEV-CarPlay/1.0",
+        "Accept": "application/json"
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const addr = data.address || {};
+      const road = addr.road || addr.suburb || addr.neighbourhood || "";
+      const city = addr.city || addr.town || addr.village || addr.county || "";
+      if (road && city) return `${road}, ${city}`;
+      if (city) return city;
+      if (data.display_name) return data.display_name.split(",").slice(0, 2).join(",").trim();
+    }
+  } catch (_) {
+  }
+  return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+}
+function istDateString(sec) {
+  const d = new Date((sec + 19800) * 1e3);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+async function d1InsertTrip(env, trip) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare(`
+        INSERT INTO trips (id, date, start_timestamp, end_timestamp, duration_seconds, distance_km, start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh, efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        trip.id,
+        trip.date,
+        trip.start_timestamp,
+        trip.end_timestamp || null,
+        trip.duration_seconds || null,
+        trip.distance_km || null,
+        trip.start_odometer_km || null,
+        trip.end_odometer_km || null,
+        trip.start_soc || null,
+        trip.end_soc || null,
+        trip.energy_used_kwh || null,
+        trip.efficiency_km_per_kwh || null,
+        trip.start_location || "",
+        trip.end_location || "",
+        trip.avg_speed_kmh || null,
+        trip.status || "ongoing"
+      ).run();
+    } catch (err) {
+      console.warn("d1InsertTrip error:", err);
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
+      trips.unshift(trip);
+      await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.slice(0, 200)));
+      if (trip.status === "ongoing") {
+        await env.TRIP_KV.put("d1_fallback:active_trip", JSON.stringify(trip));
+      }
+    } catch (_) {
+    }
+  }
+}
+async function d1UpdateTrip(env, tripId, updates) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare(`
+        UPDATE trips SET
+          end_timestamp = ?,
+          duration_seconds = ?,
+          distance_km = ?,
+          end_odometer_km = ?,
+          end_soc = ?,
+          energy_used_kwh = ?,
+          efficiency_km_per_kwh = ?,
+          end_location = ?,
+          avg_speed_kmh = ?,
+          status = 'completed'
+        WHERE id = ?
+      `).bind(
+        updates.end_timestamp,
+        updates.duration_seconds,
+        updates.distance_km,
+        updates.end_odometer_km,
+        updates.end_soc,
+        updates.energy_used_kwh,
+        updates.efficiency_km_per_kwh,
+        updates.end_location,
+        updates.avg_speed_kmh,
+        tripId
+      ).run();
+    } catch (err) {
+      console.warn("d1UpdateTrip error:", err);
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
+      const idx = trips.findIndex((t) => t.id === tripId);
+      if (idx !== -1) {
+        trips[idx] = { ...trips[idx], ...updates, status: "completed" };
+        await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.slice(0, 200)));
+      }
+      await env.TRIP_KV.delete("d1_fallback:active_trip");
+    } catch (_) {
+    }
+  }
+}
+async function d1GetActiveTrip(env) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' ORDER BY start_timestamp DESC LIMIT 1").first();
+      if (row) return row;
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const active = await env.TRIP_KV.get("d1_fallback:active_trip", "json");
+      if (active) return active;
+      const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
+      return trips.find((t) => t.status === "ongoing") || null;
+    } catch (_) {
+    }
+  }
+  return null;
+}
+async function d1GetTrips(env, date) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      if (!date || date === "all") {
+        const res2 = await env.DB.prepare("SELECT * FROM trips ORDER BY start_timestamp DESC LIMIT 150").all();
+        return res2.results || [];
+      }
+      const res = await env.DB.prepare("SELECT * FROM trips WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
+      return res.results || [];
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
+      if (!date || date === "all") return trips;
+      return trips.filter((t) => t.date === date);
+    } catch (_) {
+    }
+  }
+  return [];
+}
+async function d1GetTripDates(env) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const res = await env.DB.prepare("SELECT DISTINCT date FROM trips ORDER BY date DESC").all();
+      return (res.results || []).map((r) => r.date).filter(Boolean);
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
+      return Array.from(new Set(trips.map((t) => t.date).filter(Boolean)));
+    } catch (_) {
+    }
+  }
+  return [];
+}
+async function d1InsertCharge(env, charge) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare(`
+        INSERT INTO charges (id, date, start_timestamp, end_timestamp, duration_seconds, start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        charge.id,
+        charge.date,
+        charge.start_timestamp,
+        charge.end_timestamp || null,
+        charge.duration_seconds || null,
+        charge.start_soc || null,
+        charge.end_soc || null,
+        charge.energy_added_kwh || null,
+        charge.charger_type || "AC 3.3 kW",
+        charge.peak_kw || null,
+        charge.odometer_km || null,
+        charge.status || "charging"
+      ).run();
+    } catch (err) {
+      console.warn("d1InsertCharge error:", err);
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
+      charges.unshift(charge);
+      await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges.slice(0, 200)));
+      if (charge.status === "charging") {
+        await env.TRIP_KV.put("d1_fallback:active_charge", JSON.stringify(charge));
+      }
+    } catch (_) {
+    }
+  }
+}
+async function d1UpdateCharge(env, chargeId, updates) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      await env.DB.prepare(`
+        UPDATE charges SET
+          end_timestamp = ?,
+          duration_seconds = ?,
+          end_soc = ?,
+          energy_added_kwh = ?,
+          peak_kw = ?,
+          status = 'completed'
+        WHERE id = ?
+      `).bind(
+        updates.end_timestamp,
+        updates.duration_seconds,
+        updates.end_soc,
+        updates.energy_added_kwh,
+        updates.peak_kw,
+        chargeId
+      ).run();
+    } catch (err) {
+      console.warn("d1UpdateCharge error:", err);
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
+      const idx = charges.findIndex((c) => c.id === chargeId);
+      if (idx !== -1) {
+        charges[idx] = { ...charges[idx], ...updates, status: "completed" };
+        await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges.slice(0, 200)));
+      }
+      await env.TRIP_KV.delete("d1_fallback:active_charge");
+    } catch (_) {
+    }
+  }
+}
+async function d1GetActiveCharge(env) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const row = await env.DB.prepare("SELECT * FROM charges WHERE status = 'charging' ORDER BY start_timestamp DESC LIMIT 1").first();
+      if (row) return row;
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const active = await env.TRIP_KV.get("d1_fallback:active_charge", "json");
+      if (active) return active;
+      const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
+      return charges.find((c) => c.status === "charging") || null;
+    } catch (_) {
+    }
+  }
+  return null;
+}
+async function d1GetCharges(env, date) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      if (!date || date === "all") {
+        const res2 = await env.DB.prepare("SELECT * FROM charges ORDER BY start_timestamp DESC LIMIT 150").all();
+        return res2.results || [];
+      }
+      const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
+      return res.results || [];
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
+      if (!date || date === "all") return charges;
+      return charges.filter((c) => c.date === date);
+    } catch (_) {
+    }
+  }
+  return [];
+}
+async function d1GetChargeDates(env) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const res = await env.DB.prepare("SELECT DISTINCT date FROM charges ORDER BY date DESC").all();
+      return (res.results || []).map((r) => r.date).filter(Boolean);
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
+      return Array.from(new Set(charges.map((c) => c.date).filter(Boolean)));
+    } catch (_) {
+    }
+  }
+  return [];
+}
+async function getMgClientForWebhook(env, url) {
+  const token = (url.searchParams.get("token") || url.searchParams.get("key") || "").trim();
+  const userId = (url.searchParams.get("userId") || url.searchParams.get("id") || "").trim();
+  if (env.TRIP_KV) {
+    let targetId = userId;
+    if (!targetId && token) {
+      const mappedId = await env.TRIP_KV.get(`carplay_token:${token}`, "text");
+      if (mappedId) targetId = mappedId;
+    }
+    if (targetId) {
+      const raw = await env.TRIP_KV.get(`u:${targetId}`, "text");
+      if (raw) {
+        const u = JSON.parse(raw);
+        if (u.mg?.token && u.mg?.uid) {
+          const client = new MgIndiaClient({ phone: u.mg.phone || "9999999999", password: "", vin: u.mg.vin });
+          client.uid = u.mg.uid;
+          client.token = u.mg.token;
+          return { client, vin: u.mg.vin };
+        }
+      }
+    }
+    try {
+      const lastSession = await env.TRIP_KV.get("mg_active_session", "json");
+      if (lastSession?.token && lastSession?.uid) {
+        const client = new MgIndiaClient({ phone: lastSession.phone || "9999999999", password: "", vin: lastSession.vin });
+        client.uid = lastSession.uid;
+        client.token = lastSession.token;
+        return { client, vin: lastSession.vin };
+      }
+    } catch (_) {
+    }
+  }
+  if (env.MG_PHONE && (env.MG_PASSWORD || env.MG_PIN)) {
+    const client = new MgIndiaClient({
+      phone: env.MG_PHONE,
+      password: env.MG_PASSWORD || "",
+      vin: env.MG_VIN,
+      pinHash: env.MG_PIN && /^\d{4}$/.test(env.MG_PIN) ? hashControlPin(env.MG_PIN) : void 0
+    });
+    return { client, vin: env.MG_VIN };
+  }
+  const qPhone = url.searchParams.get("phone");
+  const qPass = url.searchParams.get("password");
+  const qVin = url.searchParams.get("vin");
+  const qPin = url.searchParams.get("pin");
+  if (qPhone && (qPass || qPin)) {
+    const client = new MgIndiaClient({
+      phone: qPhone,
+      password: qPass || "",
+      vin: qVin || void 0,
+      pinHash: qPin && /^\d{4}$/.test(qPin) ? hashControlPin(qPin) : void 0
+    });
+    return { client, vin: qVin || void 0 };
+  }
+  return null;
+}
 async function handleApi(env, request, url) {
   const path = url.pathname;
   if (path.startsWith("/api/push") || path.startsWith("/api/widget")) {
     return json({ success: false, message: "Push notifications and widgets disabled" });
   }
-  if (path === "/api/register-car" || path === "/api/update-token") {
-    if (!body.uid || !body.token) return json({ error: "uid and token required" }, 400);
-    u.mg = { uid: body.uid, token: body.token, vin: body.vin || u.mg?.vin, phone: body.phone || u.mg?.phone };
-    u.mgStatus = "ok";
-    u.mgFailures = 0;
-    u.guardUntilSec = 0;
-    await saveUser(env, u);
-    return json({ success: true });
+  let body = null;
+  if (request.method === "POST") {
+    try {
+      body = await request.json();
+    } catch (_) {
+    }
   }
+  if (path === "/api/trip/start") {
+    const mg = await getMgClientForWebhook(env, url);
+    if (!mg) {
+      return json({ success: false, error: "MG vehicle session not found. Please log in from the web app first." }, 400);
+    }
+    try {
+      const status = await mg.client.getVehicleStatus(mg.vin);
+      const gps = await mg.client.getGpsPosition(mg.vin).catch(() => null);
+      const startLocation = await resolveLocation(gps?.latitude, gps?.longitude);
+      const nowSec = Math.floor(Date.now() / 1e3);
+      const tripId = "trip_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
+      const dateStr = istDateString(nowSec);
+      const trip = {
+        id: tripId,
+        date: dateStr,
+        start_timestamp: nowSec,
+        start_odometer_km: Number(status?.odometer) || 0,
+        start_soc: status?.soc != null ? Number(status.soc) : 0,
+        start_location: startLocation,
+        status: "ongoing"
+      };
+      await d1InsertTrip(env, trip);
+      return json({
+        success: true,
+        message: "Trip started successfully via CarPlay connection",
+        trip
+      });
+    } catch (err) {
+      return json({ success: false, error: err.message }, 500);
+    }
+  }
+  if (path === "/api/trip/stop") {
+    const ongoingTrip = await d1GetActiveTrip(env);
+    if (!ongoingTrip) {
+      return json({ success: false, message: "No active ongoing trip found to stop" }, 404);
+    }
+    const mg = await getMgClientForWebhook(env, url);
+    let status = null;
+    let gps = null;
+    if (mg) {
+      status = await mg.client.getVehicleStatus(mg.vin).catch(() => null);
+      gps = await mg.client.getGpsPosition(mg.vin).catch(() => null);
+    }
+    const startOdo = Number(ongoingTrip.start_odometer_km) || 0;
+    let finalOdo = Number(status?.odometer) || startOdo;
+    const startTimestamp = Number(ongoingTrip.start_timestamp) || Math.floor(Date.now() / 1e3);
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const durationSec = Math.max(0, nowSec - startTimestamp);
+    if (mg && (finalOdo < startOdo || finalOdo === startOdo && durationSec > 60)) {
+      await new Promise((r) => setTimeout(r, 2500));
+      try {
+        const refreshedStatus = await mg.client.getVehicleStatus(mg.vin);
+        if (refreshedStatus && Number(refreshedStatus.odometer) >= startOdo) {
+          status = refreshedStatus;
+          finalOdo = Number(refreshedStatus.odometer);
+          const refreshedGps = await mg.client.getGpsPosition(mg.vin).catch(() => null);
+          if (refreshedGps) gps = refreshedGps;
+        }
+      } catch (_) {
+      }
+    }
+    if (finalOdo < startOdo) {
+      finalOdo = startOdo;
+    }
+    const distanceKm = Math.max(0, Number((finalOdo - startOdo).toFixed(1)));
+    const endSoc = status?.soc != null ? Number(status.soc) : Number(ongoingTrip.start_soc) || 0;
+    const startSoc = Number(ongoingTrip.start_soc) || endSoc;
+    const socDiff = Math.max(0, startSoc - endSoc);
+    const energyUsedKwh = Number((socDiff / 100 * 38).toFixed(2));
+    const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
+    const endLocation = await resolveLocation(gps?.latitude, gps?.longitude);
+    const avgSpeedKmh = durationSec > 0 && distanceKm > 0 ? Number((distanceKm / (durationSec / 3600)).toFixed(1)) : 0;
+    const updates = {
+      end_timestamp: nowSec,
+      duration_seconds: durationSec,
+      distance_km: distanceKm,
+      end_odometer_km: finalOdo,
+      end_soc: endSoc,
+      energy_used_kwh: energyUsedKwh,
+      efficiency_km_per_kwh: efficiencyKmPerKwh,
+      end_location: endLocation,
+      avg_speed_kmh: avgSpeedKmh,
+      status: "completed"
+    };
+    await d1UpdateTrip(env, ongoingTrip.id, updates);
+    return json({
+      success: true,
+      message: "Trip stopped and logged into Cloudflare D1",
+      trip: { ...ongoingTrip, ...updates }
+    });
+  }
+  if (path === "/api/trips") {
+    const date = url.searchParams.get("date");
+    const trips = await d1GetTrips(env, date);
+    return json({ success: true, trips });
+  }
+  if (path === "/api/trip/dates") {
+    const dates = await d1GetTripDates(env);
+    return json({ success: true, dates });
+  }
+  if (path === "/api/charge/start") {
+    const mg = await getMgClientForWebhook(env, url);
+    let status = null;
+    if (mg) {
+      status = await mg.client.getVehicleStatus(mg.vin).catch(() => null);
+    }
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const chargeId = "chg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
+    const dateStr = istDateString(nowSec);
+    const charge = {
+      id: chargeId,
+      date: dateStr,
+      start_timestamp: nowSec,
+      start_soc: status?.soc != null ? Number(status.soc) : 0,
+      charger_type: "AC Fast",
+      peak_kw: 3.3,
+      odometer_km: Number(status?.odometer) || 0,
+      status: "charging"
+    };
+    await d1InsertCharge(env, charge);
+    return json({ success: true, message: "Charging session started", charge });
+  }
+  if (path === "/api/charge/stop") {
+    const ongoingCharge = await d1GetActiveCharge(env);
+    if (!ongoingCharge) {
+      return json({ success: false, message: "No active charging session found to stop" }, 404);
+    }
+    const mg = await getMgClientForWebhook(env, url);
+    let status = null;
+    if (mg) {
+      status = await mg.client.getVehicleStatus(mg.vin).catch(() => null);
+    }
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const startTimestamp = Number(ongoingCharge.start_timestamp) || nowSec;
+    const durationSec = Math.max(0, nowSec - startTimestamp);
+    const endSoc = status?.soc != null ? Number(status.soc) : Number(ongoingCharge.start_soc) || 0;
+    const startSoc = Number(ongoingCharge.start_soc) || endSoc;
+    const addedSoc = Math.max(0, endSoc - startSoc);
+    const energyAddedKwh = Number((addedSoc / 100 * 38).toFixed(2));
+    const updates = {
+      end_timestamp: nowSec,
+      duration_seconds: durationSec,
+      end_soc: endSoc,
+      energy_added_kwh: energyAddedKwh,
+      odometer_km: Number(status?.odometer) || Number(ongoingCharge.odometer_km) || 0,
+      status: "completed"
+    };
+    await d1UpdateCharge(env, ongoingCharge.id, updates);
+    return json({ success: true, message: "Charging session completed", charge: { ...ongoingCharge, ...updates } });
+  }
+  if (path === "/api/charges") {
+    const date = url.searchParams.get("date");
+    const charges = await d1GetCharges(env, date);
+    return json({ success: true, charges });
+  }
+  if (path === "/api/charge/dates") {
+    const dates = await d1GetChargeDates(env);
+    return json({ success: true, dates });
+  }
+  if (path === "/api/register-car" || path === "/api/update-token") {
+    if (!body?.uid || !body?.token) return json({ error: "uid and token required" }, 400);
+    if (env.TRIP_KV) {
+      await env.TRIP_KV.put("mg_active_session", JSON.stringify({
+        uid: body.uid,
+        token: body.token,
+        vin: body.vin,
+        phone: body.phone,
+        updatedAt: Math.floor(Date.now() / 1e3)
+      }));
+      await env.TRIP_KV.put("carplay_token:" + body.token, body.uid || "default");
+    }
+    const u2 = await authUser(env, url, body);
+    if (u2) {
+      u2.mg = { uid: body.uid, token: body.token, vin: body.vin || u2.mg?.vin, phone: body.phone || u2.mg?.phone };
+      u2.mgStatus = "ok";
+      u2.mgFailures = 0;
+      u2.guardUntilSec = 0;
+      await saveUser(env, u2);
+    }
+    return json({ success: true, message: "Car registered for CarPlay webhooks & PWA" });
+  }
+  const u = await authUser(env, url, body);
   if (path === "/api/status" || path === "/api/data") {
     return json({
       success: true,

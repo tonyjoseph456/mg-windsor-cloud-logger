@@ -54,6 +54,11 @@ import {
   isValidChargeRecord,
   BACKEND_URL,
   sheetUrl,
+  fetchD1Trips,
+  fetchD1TripDates,
+  fetchD1Charges,
+  fetchD1ChargeDates,
+  registerCarSession,
 } from './src/sdk';
 
 type TabId = 'home' | 'charge' | 'trips' | 'account';
@@ -729,14 +734,40 @@ export default function App() {
 
   const todayKey = getTodayDateKey();
 
+  const [d1TripDates, setD1TripDates] = useState<string[]>([]);
+  const [d1ChargeDates, setD1ChargeDates] = useState<string[]>([]);
+
+  // Query D1 trips and distinct dates whenever Trips tab or date filter changes
+  useEffect(() => {
+    if (tab === 'trips') {
+      fetchD1TripDates().then((dates) => {
+        if (dates && dates.length > 0) setD1TripDates(dates);
+      }).catch(() => {});
+
+      fetchD1Trips(selectedTripDate === 'all' ? undefined : selectedTripDate).then((d1Trips) => {
+        if (d1Trips && d1Trips.length > 0) {
+          setTrips((prev) => {
+            const merged = deduplicateTripList([...d1Trips, ...prev]);
+            tripsRef.current = merged;
+            SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
+            return merged;
+          });
+        }
+      }).catch(() => {});
+    }
+  }, [tab, selectedTripDate]);
+
   const tripDateKeysSet = useMemo(() => {
     const set = new Set<string>();
+    for (const d of d1TripDates) {
+      if (d) set.add(d);
+    }
     for (const t of trips) {
       const k = getTripDateKey(t);
       if (k) set.add(k);
     }
     return set;
-  }, [trips]);
+  }, [trips, d1TripDates]);
 
   const displayedTrips = useMemo(() => {
     if (selectedTripDate === 'all') {
@@ -752,14 +783,37 @@ export default function App() {
   const [selectedChargeDate, setSelectedChargeDate] = useState<string>(() => getTodayDateKey());
   const [showChargeCalendar, setShowChargeCalendar] = useState<boolean>(false);
 
+  // Query D1 charges and distinct dates whenever Charge tab or date filter changes
+  useEffect(() => {
+    if (tab === 'charge') {
+      fetchD1ChargeDates().then((dates) => {
+        if (dates && dates.length > 0) setD1ChargeDates(dates);
+      }).catch(() => {});
+
+      fetchD1Charges(selectedChargeDate === 'all' ? undefined : selectedChargeDate).then((d1Charges) => {
+        if (d1Charges && d1Charges.length > 0) {
+          setChargeLogs((prev) => {
+            const merged = deduplicateChargeList([...d1Charges, ...prev]);
+            chargeLogsRef.current = merged;
+            SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(merged)).catch(() => {});
+            return merged;
+          });
+        }
+      }).catch(() => {});
+    }
+  }, [tab, selectedChargeDate]);
+
   const chargeDateKeysSet = useMemo(() => {
     const set = new Set<string>();
+    for (const d of d1ChargeDates) {
+      if (d) set.add(d);
+    }
     for (const c of chargeLogs) {
       const k = getChargeDateKey(c);
       if (k) set.add(k);
     }
     return set;
-  }, [chargeLogs]);
+  }, [chargeLogs, d1ChargeDates]);
 
   const displayedCharges = useMemo(() => {
     if (selectedChargeDate === 'all') {
@@ -1165,6 +1219,12 @@ export default function App() {
           token: client.token,
         };
         await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(updatedSession));
+        registerCarSession({
+          uid: client.uid,
+          token: client.token,
+          vin: discoveredVin,
+          phone: usePhone,
+        }).catch(() => {});
       }
       await SecureStore.setItemAsync(SNAPSHOT_KEY, JSON.stringify(snap));
       showBanner('ok', `Synced ${snap.vehicle.name} (${snap.vehicle.vin})`);
@@ -2941,6 +3001,106 @@ export default function App() {
                 </View>
               </AccountSectionCard>
             )}
+
+            {/* CARD 4: Apple CarPlay Automations (Cloudflare D1) */}
+            <AccountSectionCard
+              title="Apple CarPlay Automations (Cloudflare D1)"
+              icon="🚘"
+              badge="Zero 12V Drain"
+              badgeBg="#064E3B"
+              badgeColor="#34D399"
+              preview="Automatic trip recording upon CarPlay Connect & Disconnect"
+              subtitle="Automatically records odometer, SOC, energy usage, duration, and efficiency to Cloudflare D1 SQL database whenever your iPhone connects or disconnects from CarPlay. Zero background polling keeps your 12V battery completely safe."
+            >
+              <View style={{ backgroundColor: '#0B132B', padding: 14, borderRadius: 14, borderWidth: 1, borderColor: '#1E293B', marginBottom: 14 }}>
+                <Text style={{ color: '#38BDF8', fontWeight: '800', fontSize: 13, marginBottom: 6 }}>
+                  ⚡ Step-by-Step iOS Shortcuts Setup (Takes 30 Seconds)
+                </Text>
+                <Text style={{ color: '#94A3B8', fontSize: 11, marginBottom: 12, lineHeight: 18 }}>
+                  1. Open the Apple <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Shortcuts</Text> app on your iPhone.{'\n'}
+                  2. Tap the <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Automation</Text> tab at the bottom, then tap <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>+</Text> (top right).{'\n'}
+                  3. Select <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>CarPlay</Text> → Choose <Text style={{ color: '#34D399', fontWeight: '700' }}>Connects</Text>.{'\n'}
+                  4. Select <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Run Immediately</Text> (turn Notify When Run OFF) → Next.{'\n'}
+                  5. Tap <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>New Blank Automation</Text> → Add Action → Search <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Get Contents of URL&quot;</Text>.{'\n'}
+                  6. Paste the <Text style={{ color: '#34D399', fontWeight: '700' }}>Start Trip Webhook URL</Text> below → Done.{'\n'}
+                  7. Repeat for <Text style={{ color: '#F87171', fontWeight: '700' }}>Disconnects</Text> using the <Text style={{ color: '#F87171', fontWeight: '700' }}>Stop Trip Webhook URL</Text>.
+                </Text>
+
+                {/* 1. Start Trip Webhook */}
+                <View style={styles.copyWebhookCard}>
+                  <View style={styles.copyWebhookHeader}>
+                    <Text style={styles.copyWebhookTitle}>🟢 CarPlay Connects (Start Trip)</Text>
+                    <TouchableOpacity
+                      style={styles.copyPillBtn}
+                      activeOpacity={0.7}
+                      onPress={() =>
+                        copyToClipboard(
+                          `${BACKEND_URL}/api/trip/start`,
+                          'CarPlay Start Trip URL'
+                        )
+                      }
+                    >
+                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.copyUrlTapArea}
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      copyToClipboard(
+                        `${BACKEND_URL}/api/trip/start`,
+                        'CarPlay Start Trip URL'
+                      )
+                    }
+                  >
+                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
+                      {`${BACKEND_URL}/api/trip/start`}
+                    </Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* 2. Stop Trip Webhook */}
+                <View style={[styles.copyWebhookCard, { marginTop: 10 }]}>
+                  <View style={styles.copyWebhookHeader}>
+                    <Text style={styles.copyWebhookTitle}>🔴 CarPlay Disconnects (Stop Trip)</Text>
+                    <TouchableOpacity
+                      style={styles.copyPillBtn}
+                      activeOpacity={0.7}
+                      onPress={() =>
+                        copyToClipboard(
+                          `${BACKEND_URL}/api/trip/stop`,
+                          'CarPlay Stop Trip URL'
+                        )
+                      }
+                    >
+                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.copyUrlTapArea}
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      copyToClipboard(
+                        `${BACKEND_URL}/api/trip/stop`,
+                        'CarPlay Stop Trip URL'
+                      )
+                    }
+                  >
+                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
+                      {`${BACKEND_URL}/api/trip/stop`}
+                    </Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={{ marginTop: 12, padding: 10, backgroundColor: '#064E3B18', borderRadius: 8, borderWidth: 1, borderColor: '#064E3B40' }}>
+                  <Text style={{ color: '#34D399', fontSize: 11, lineHeight: 16 }}>
+                    🛡️ <Text style={{ fontWeight: '700' }}>12V Battery Guarantee:</Text> Webhooks query vehicle telemetry only at the exact moments CarPlay connects (car is driving) and disconnects (car is parking). No background polling loops run while the car is asleep.
+                  </Text>
+                </View>
+              </View>
+            </AccountSectionCard>
 
             {/* CARD 5: 1-Tap Lock Screen Widget & Siri Setup */}
             <AccountSectionCard

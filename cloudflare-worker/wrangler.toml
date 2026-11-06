@@ -1,0 +1,14 @@
+name = "mg-windsor-telematics"
+main = "dist-multi-worker.js"
+compatibility_date = "2024-09-23"
+
+# Cloudflare D1 Relational SQL Database
+[[d1_databases]]
+binding = "DB"
+database_name = "mg-windsor-db"
+database_id = "mg-windsor-db" # Replace with your D1 database ID from 'wrangler d1 create mg-windsor-db'
+
+# Fallback KV namespace
+kv_namespaces = [
+  { binding = "TRIP_KV", id = "trip_kv_id" }
+]
