@@ -9759,6 +9759,41 @@ function istDateString(sec) {
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+function formatDurationSec(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    const remM = m % 60;
+    return `${h} hr ${remM} min`;
+  }
+  return `${m} min ${s} sec`;
+}
+function formatClockTime(sec) {
+  const d = new Date((sec + 19800) * 1e3);
+  let h = d.getUTCHours();
+  const m = String(d.getUTCMinutes()).padStart(2, "0");
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${String(h).padStart(2, "0")}:${m} ${ampm}`;
+}
+async function dispatchTripNotification(url, title, bodyText, tags = "car") {
+  const ntfyTopic = (url.searchParams.get("ntfy") || url.searchParams.get("topic") || "").trim();
+  if (ntfyTopic) {
+    try {
+      await fetch(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
+        method: "POST",
+        headers: {
+          "Title": title,
+          "Tags": tags,
+          "Priority": "high"
+        },
+        body: bodyText
+      });
+    } catch (_) {
+    }
+  }
+}
 async function d1InsertTrip(env, trip) {
   if (env.DB) {
     await initD1(env.DB);
@@ -10133,8 +10168,26 @@ async function handleApi(env, request, url) {
         status: "ongoing"
       };
       await d1InsertTrip(env, trip);
+      const title = "\u{1F697} MG Windsor EV \u2022 Trip Started";
+      const notificationText = [
+        "\u{1F7E2} Trip recording actively started in Cloudflare D1.",
+        `\u23F1\uFE0F Started: ${formatClockTime(nowSec)}`,
+        `\u{1F50B} Battery: ${trip.start_soc}% SOC`,
+        `\u{1F6E3}\uFE0F Start Odometer: ${trip.start_odometer_km.toLocaleString()} km`,
+        trip.start_location && trip.start_location !== "Unknown Location" ? `\u{1F4CD} Start: ${trip.start_location}` : null
+      ].filter(Boolean).join("\n");
+      await dispatchTripNotification(url, title, notificationText, "car,electric_plug");
+      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
+        return new Response(`${title}
+
+${notificationText}`, {
+          headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+        });
+      }
       return json({
         success: true,
+        title,
+        notification: notificationText,
         message: "Trip started successfully via CarPlay connection",
         trip
       });
@@ -10145,7 +10198,11 @@ async function handleApi(env, request, url) {
   if (path === "/api/trip/stop") {
     const ongoingTrip = await d1GetActiveTrip(env);
     if (!ongoingTrip) {
-      return json({ success: false, message: "No active ongoing trip found to stop" }, 404);
+      const emptyMsg = "No active ongoing trip found in D1 to stop.";
+      if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
+        return new Response(emptyMsg, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 404 });
+      }
+      return json({ success: false, message: emptyMsg }, 404);
     }
     const mg = await getMgClientForWebhook(env, url);
     let status = null;
@@ -10196,8 +10253,30 @@ async function handleApi(env, request, url) {
       status: "completed"
     };
     await d1UpdateTrip(env, ongoingTrip.id, updates);
+    const title = "\u2705 MG Windsor EV \u2022 Trip Completed";
+    const notificationText = [
+      "\u2705 Trip completed & safely logged in Cloudflare D1.",
+      "",
+      `\u{1F6E3}\uFE0F Distance Travelled: ${distanceKm} km`,
+      `\u23F1\uFE0F Time Taken: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} \u2192 ${formatClockTime(nowSec)})`,
+      `\u{1F50B} Battery: ${startSoc}% \u2192 ${endSoc}% (${socDiff > 0 ? `-${socDiff}%` : "0%"})`,
+      `\u26A1 Energy Used: ${energyUsedKwh} kWh`,
+      `\u{1F331} Efficiency: ${efficiencyKmPerKwh > 0 ? `${efficiencyKmPerKwh} km/kWh` : "N/A"}`,
+      ongoingTrip.start_location && endLocation && ongoingTrip.start_location !== "Unknown Location" ? `\u{1F4CD} Route: ${ongoingTrip.start_location} \u2192 ${endLocation}` : endLocation && endLocation !== "Unknown Location" ? `\u{1F4CD} Destination: ${endLocation}` : null,
+      `\u{1F3C1} Final Odometer: ${finalOdo.toLocaleString()} km`
+    ].filter(Boolean).join("\n");
+    await dispatchTripNotification(url, title, notificationText, "white_check_mark,trophy");
+    if (url.searchParams.get("format") === "text" || request.headers.get("accept")?.includes("text/plain")) {
+      return new Response(`${title}
+
+${notificationText}`, {
+        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+      });
+    }
     return json({
       success: true,
+      title,
+      notification: notificationText,
       message: "Trip stopped and logged into Cloudflare D1",
       trip: { ...ongoingTrip, ...updates }
     });

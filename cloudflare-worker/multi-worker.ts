@@ -1042,6 +1042,23 @@ function formatClockTime(sec: number): string {
   return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
 }
 
+async function dispatchTripNotification(url: URL, title: string, bodyText: string, tags = 'car') {
+  const ntfyTopic = (url.searchParams.get('ntfy') || url.searchParams.get('topic') || '').trim();
+  if (ntfyTopic) {
+    try {
+      await fetch(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
+        method: 'POST',
+        headers: {
+          'Title': title,
+          'Tags': tags,
+          'Priority': 'high',
+        },
+        body: bodyText,
+      });
+    } catch (_) {}
+  }
+}
+
 // D1 and KV Dual Storage Helpers
 async function d1InsertTrip(env: Env, trip: any) {
   if (env.DB) {
@@ -1397,8 +1414,28 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       };
 
       await d1InsertTrip(env, trip);
+
+      const title = '🚗 MG Windsor EV • Trip Started';
+      const notificationText = [
+        '🟢 Trip recording actively started in Cloudflare D1.',
+        `⏱️ Started: ${formatClockTime(nowSec)}`,
+        `🔋 Battery: ${trip.start_soc}% SOC`,
+        `🛣️ Start Odometer: ${trip.start_odometer_km.toLocaleString()} km`,
+        trip.start_location && trip.start_location !== 'Unknown Location' ? `📍 Start: ${trip.start_location}` : null,
+      ].filter(Boolean).join('\n');
+
+      await dispatchTripNotification(url, title, notificationText, 'car,electric_plug');
+
+      if (url.searchParams.get('format') === 'text' || request.headers.get('accept')?.includes('text/plain')) {
+        return new Response(`${title}\n\n${notificationText}`, {
+          headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
+        });
+      }
+
       return json({
         success: true,
+        title,
+        notification: notificationText,
         message: 'Trip started successfully via CarPlay connection',
         trip,
       });
@@ -1411,7 +1448,11 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   if (path === '/api/trip/stop') {
     const ongoingTrip = await d1GetActiveTrip(env);
     if (!ongoingTrip) {
-      return json({ success: false, message: 'No active ongoing trip found to stop' }, 404);
+      const emptyMsg = 'No active ongoing trip found in D1 to stop.';
+      if (url.searchParams.get('format') === 'text' || request.headers.get('accept')?.includes('text/plain')) {
+        return new Response(emptyMsg, { headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS }, status: 404 });
+      }
+      return json({ success: false, message: emptyMsg }, 404);
     }
 
     const mg = await getMgClientForWebhook(env, url);
@@ -1469,8 +1510,34 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     };
 
     await d1UpdateTrip(env, ongoingTrip.id, updates);
+
+    const title = '✅ MG Windsor EV • Trip Completed';
+    const notificationText = [
+      '✅ Trip completed & safely logged in Cloudflare D1.',
+      '',
+      `🛣️ Distance Travelled: ${distanceKm} km`,
+      `⏱️ Time Taken: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} → ${formatClockTime(nowSec)})`,
+      `🔋 Battery: ${startSoc}% → ${endSoc}% (${socDiff > 0 ? `-${socDiff}%` : '0%'})`,
+      `⚡ Energy Used: ${energyUsedKwh} kWh`,
+      `🌱 Efficiency: ${efficiencyKmPerKwh > 0 ? `${efficiencyKmPerKwh} km/kWh` : 'N/A'}`,
+      ongoingTrip.start_location && endLocation && ongoingTrip.start_location !== 'Unknown Location'
+        ? `📍 Route: ${ongoingTrip.start_location} → ${endLocation}`
+        : (endLocation && endLocation !== 'Unknown Location' ? `📍 Destination: ${endLocation}` : null),
+      `🏁 Final Odometer: ${finalOdo.toLocaleString()} km`,
+    ].filter(Boolean).join('\n');
+
+    await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy');
+
+    if (url.searchParams.get('format') === 'text' || request.headers.get('accept')?.includes('text/plain')) {
+      return new Response(`${title}\n\n${notificationText}`, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
+      });
+    }
+
     return json({
       success: true,
+      title,
+      notification: notificationText,
       message: 'Trip stopped and logged into Cloudflare D1',
       trip: { ...ongoingTrip, ...updates },
     });

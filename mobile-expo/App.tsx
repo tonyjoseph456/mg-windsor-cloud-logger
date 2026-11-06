@@ -3021,9 +3021,10 @@ export default function App() {
                   2. Tap the <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Automation</Text> tab at the bottom, then tap <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>+</Text> (top right).{'\n'}
                   3. Select <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>CarPlay</Text> → Choose <Text style={{ color: '#34D399', fontWeight: '700' }}>Connects</Text>.{'\n'}
                   4. Select <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Run Immediately</Text> (turn Notify When Run OFF) → Next.{'\n'}
-                  5. Tap <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>New Blank Automation</Text> → Add Action → Search <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Get Contents of URL&quot;</Text>.{'\n'}
-                  6. Paste the <Text style={{ color: '#34D399', fontWeight: '700' }}>Start Trip Webhook URL</Text> below → Done.{'\n'}
-                  7. Repeat for <Text style={{ color: '#F87171', fontWeight: '700' }}>Disconnects</Text> using the <Text style={{ color: '#F87171', fontWeight: '700' }}>Stop Trip Webhook URL</Text>.
+                  5. Tap <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>New Blank Automation</Text> → Add Action → Search <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Get Contents of URL&quot;</Text> → Paste the <Text style={{ color: '#34D399', fontWeight: '700' }}>Start Trip Webhook URL</Text> below.{'\n'}
+                  6. <Text style={{ color: '#38BDF8', fontWeight: '700' }}>To Show Notification:</Text> Add Action directly below it → Search <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Show Notification&quot;</Text> → Set Text to <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Contents of URL&quot;</Text>!{'\n'}
+                  7. Repeat for <Text style={{ color: '#F87171', fontWeight: '700' }}>Disconnects</Text> using the <Text style={{ color: '#F87171', fontWeight: '700' }}>Stop Trip Webhook URL</Text>.{'\n'}
+                  8. When your trip ends, iOS will display the complete summary: distance, time taken, battery start &amp; end %, energy used, and efficiency!
                 </Text>
 
                 {/* 1. Start Trip Webhook */}
@@ -3035,7 +3036,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/start`,
+                          `${BACKEND_URL}/api/trip/start?format=text`,
                           'CarPlay Start Trip URL'
                         )
                       }
@@ -3048,15 +3049,15 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/start`,
+                        `${BACKEND_URL}/api/trip/start?format=text`,
                         'CarPlay Start Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/start`}
+                      {`${BACKEND_URL}/api/trip/start?format=text`}
                     </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL</Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL (with notification text)</Text>
                   </TouchableOpacity>
                 </View>
 
@@ -3069,7 +3070,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/stop`,
+                          `${BACKEND_URL}/api/trip/stop?format=text`,
                           'CarPlay Stop Trip URL'
                         )
                       }
@@ -3082,15 +3083,15 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/stop`,
+                        `${BACKEND_URL}/api/trip/stop?format=text`,
                         'CarPlay Stop Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/stop`}
+                      {`${BACKEND_URL}/api/trip/stop?format=text`}
                     </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL</Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL (with complete trip metrics)</Text>
                   </TouchableOpacity>
                 </View>
 
@@ -3266,7 +3267,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/start`,
+                          `${BACKEND_URL}/api/trip/start?format=text`,
                           'CarPlay Start Trip URL'
                         )
                       }
@@ -3279,15 +3280,15 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/start`,
+                        `${BACKEND_URL}/api/trip/start?format=text`,
                         'CarPlay Start Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/start`}
+                      {`${BACKEND_URL}/api/trip/start?format=text`}
                     </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL</Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL (with notification text)</Text>
                   </TouchableOpacity>
                 </View>
 
@@ -3300,7 +3301,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/stop`,
+                          `${BACKEND_URL}/api/trip/stop?format=text`,
                           'CarPlay Stop Trip URL'
                         )
                       }
@@ -3313,15 +3314,15 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/stop`,
+                        `${BACKEND_URL}/api/trip/stop?format=text`,
                         'CarPlay Stop Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/stop`}
+                      {`${BACKEND_URL}/api/trip/stop?format=text`}
                     </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL</Text>
+                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL (with complete trip metrics)</Text>
                   </TouchableOpacity>
                 </View>
 
@@ -3331,7 +3332,7 @@ export default function App() {
                 <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 17 }}>
                   1. Tap &quot;Copy Link&quot; above (Unlock, Lock, AC On/Off, or CarPlay Start/Stop).{'\n'}
                   2. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For Siri / Widgets:</Text> Shortcuts app → &quot;+&quot; → Add Action &quot;Get contents of URL&quot; → Paste link → Rename shortcut (e.g. &quot;Unlock Windsor&quot;).{'\n'}
-                  3. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For CarPlay Automations:</Text> Shortcuts app → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Automation</Text> tab → &quot;+&quot; → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>CarPlay</Text> → Connects (or Disconnects) → Run Immediately (Notify When Run OFF) → Add Action &quot;Get Contents of URL&quot; → Paste Start (or Stop) URL → Done!{'\n'}
+                  3. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For CarPlay Trip Notifications:</Text> Shortcuts app → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Automation</Text> tab → &quot;+&quot; → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>CarPlay</Text> → Connects (or Disconnects) → Run Immediately (Notify When Run OFF) → Add Action &quot;Get Contents of URL&quot; → Paste Start (or Stop) URL → Add Action <Text style={{ color: '#38BDF8', fontWeight: '700' }}>&quot;Show Notification&quot;</Text> (Text: Contents of URL) → Done!{'\n'}
                   4. First run: Tap &quot;Allow&quot; on the one-time privacy popup. It executes silently with zero 12V battery drain!
                 </Text>
               </View>
