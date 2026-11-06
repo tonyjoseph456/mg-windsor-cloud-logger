@@ -1044,7 +1044,7 @@ const D1_TABLE_SCHEMAS = [
 ];
 
 async function initD1(db: any) {
-  if (d1Initialized) return;
+  if (d1Initialized || !db || typeof db.prepare !== 'function') return;
   d1InitErrors = [];
   for (const sql of D1_TABLE_SCHEMAS) {
     try {
@@ -3246,18 +3246,12 @@ export default {
     try {
       if (url.pathname === '/google-callback') return await handleGoogleCallback(env, url);
       if (url.pathname.startsWith('/api/')) return await handleApi(env, request, url);
-    } catch (e) {
-      return json({ error: (e as Error).message }, 500);
+      if (url.searchParams.has('url')) return await (mgProxy as any).fetch(request);
+      return await (legacy as any).fetch(request, env, ctx);
+    } catch (e: any) {
+      console.error('Unhandled worker exception:', e);
+      return json({ error: e?.message || String(e), stack: e?.stack }, 500);
     }
-    // PWA CORS proxy to MG servers (?url=...)
-    if (url.searchParams.has('url')) {
-      try {
-        return await (mgProxy as any).fetch(request);
-      } catch (err) {
-        return json({ error: (err as Error).message || 'Proxy error' }, 502);
-      }
-    }
-    return (legacy as any).fetch(request, env, ctx);
   },
 
   async scheduled(event: any, env: Env, ctx?: any): Promise<void> {

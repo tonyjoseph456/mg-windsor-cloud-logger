@@ -9785,7 +9785,7 @@ var D1_TABLE_SCHEMAS = [
   )`
 ];
 async function initD1(db) {
-  if (d1Initialized) return;
+  if (d1Initialized || !db || typeof db.prepare !== "function") return;
   d1InitErrors = [];
   for (const sql of D1_TABLE_SCHEMAS) {
     try {
@@ -11847,17 +11847,12 @@ var multi_worker_default = {
     try {
       if (url.pathname === "/google-callback") return await handleGoogleCallback(env, url);
       if (url.pathname.startsWith("/api/")) return await handleApi(env, request, url);
+      if (url.searchParams.has("url")) return await worker_default.fetch(request);
+      return await silent_webhook_default.fetch(request, env, ctx);
     } catch (e) {
-      return json({ error: e.message }, 500);
+      console.error("Unhandled worker exception:", e);
+      return json({ error: e?.message || String(e), stack: e?.stack }, 500);
     }
-    if (url.searchParams.has("url")) {
-      try {
-        return await worker_default.fetch(request);
-      } catch (err) {
-        return json({ error: err.message || "Proxy error" }, 502);
-      }
-    }
-    return silent_webhook_default.fetch(request, env, ctx);
   },
   async scheduled(event, env, ctx) {
     await runCron(env).catch(() => {
