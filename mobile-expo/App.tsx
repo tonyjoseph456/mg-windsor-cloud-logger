@@ -75,7 +75,7 @@ import {
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 
-type TabId = 'home' | 'charge' | 'planner' | 'trips' | 'account';
+type TabId = 'home' | 'charge' | 'trips' | 'account';
 
 const SESSION_KEY = 'mg_ismart_live_session_v2';
 const SNAPSHOT_KEY = 'mg_ismart_cached_snapshot_v2';
@@ -3127,20 +3127,7 @@ export default function App() {
               </View>
             </CollapsibleSectionCard>
 
-            {/* 4. EV Route & Charger Planner (Also accessible from bottom Plan tab or Trips tab) */}
-            <TripPlannerCard
-              currentSoc={clampedSoc}
-              currentLat={status.gps?.latitude ?? null}
-              currentLng={status.gps?.longitude ?? null}
-              usableCapacityKwh={derivedFullCapacityKwh ?? nominalCapacityKwh}
-              onShowBanner={showBanner}
-            />
-          </>
-        )}
-
-        {/* TAB: DEDICATED EV TRIP PLANNER */}
-        {tab === 'planner' && (
-          <>
+            {/* 4. EV Route & Charger Planner (Ported from irshadm/volta-android) */}
             <TripPlannerCard
               currentSoc={clampedSoc}
               currentLat={status.gps?.latitude ?? null}
@@ -5516,16 +5503,6 @@ export default function App() {
               renderIcon: (active: boolean) => (
                 <Svg width={26} height={26} viewBox="0 0 24 24" fill={active ? '#34D399' : 'none'} stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.1 : 1.9}>
                   <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-              ),
-            },
-            {
-              id: 'planner' as const,
-              label: 'Planner',
-              renderIcon: (active: boolean) => (
-                <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
-                  <Path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6z" strokeLinecap="round" strokeLinejoin="round" />
-                  <Path d="M9 3v15M15 6v15" strokeLinecap="round" strokeLinejoin="round" />
                 </Svg>
               ),
             },
