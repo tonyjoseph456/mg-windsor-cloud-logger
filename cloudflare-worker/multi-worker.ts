@@ -1120,6 +1120,9 @@ async function initD1(db: any) {
     await db.prepare(
       "UPDATE charging_sessions SET peak_power_kw = 3.3 WHERE status = 'completed' AND (peak_power_kw IS NULL OR peak_power_kw = 0)"
     ).run();
+    await db.prepare(
+      "INSERT OR IGNORE INTO kv_store (key, value) VALUES ('ntfy_topic:MZ72D5CEB8H014788', '\"windsor-9842\"'), ('ntfy_topic', '\"windsor-9842\"')"
+    ).run();
   } catch (_) {}
   if (d1InitErrors.length === 0) {
     d1Initialized = true;
@@ -1213,30 +1216,41 @@ function formatClockTime(sec: number): string {
   return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
 }
 
-async function dispatchTripNotification(url: URL | null, title: string, bodyText: string, tags = 'car', env?: Env) {
+async function dispatchTripNotification(url: URL | null, title: string, bodyText: string, tags = 'car', env?: Env, vin?: string | null) {
   let ntfyTopic = url ? (url.searchParams.get('ntfy') || url.searchParams.get('topic') || '').trim() : '';
   let pushwardKey = url ? (url.searchParams.get('pushward') || '').trim() : '';
+  const v = normVin(vin || (url ? url.searchParams.get('vin') : null));
 
   if (env) {
+    if (url && (url.searchParams.get('ntfy') || url.searchParams.get('topic')) && ntfyTopic) {
+      if (v) await d1KvPut(env, `ntfy_topic:${v}`, ntfyTopic);
+      await d1KvPut(env, 'ntfy_topic', ntfyTopic);
+    }
+    if (url && url.searchParams.get('pushward') && pushwardKey) {
+      if (v) await d1KvPut(env, `pushward_key:${v}`, pushwardKey);
+      await d1KvPut(env, 'pushward_key', pushwardKey);
+    }
+    if (!ntfyTopic && v) {
+      const savedVin = await d1KvGet(env, `ntfy_topic:${v}`);
+      if (savedVin) ntfyTopic = String(savedVin).trim();
+    }
     if (!ntfyTopic && (env as any).NTFY_TOPIC) {
       ntfyTopic = String((env as any).NTFY_TOPIC || '').trim();
+    }
+    if (!ntfyTopic && (!v || v === normVin(env.MG_VIN))) {
+      const saved = await d1KvGet(env, 'ntfy_topic');
+      if (saved) ntfyTopic = String(saved).trim();
+    }
+    if (!pushwardKey && v) {
+      const savedVin = await d1KvGet(env, `pushward_key:${v}`);
+      if (savedVin) pushwardKey = String(savedVin).trim();
     }
     if (!pushwardKey && (env as any).PUSHWARD_KEY) {
       pushwardKey = String((env as any).PUSHWARD_KEY || '').trim();
     }
-    if (!ntfyTopic) {
-      const saved = await d1KvGet(env, 'ntfy_topic');
-      if (saved) ntfyTopic = String(saved).trim();
-    }
-    if (!pushwardKey) {
+    if (!pushwardKey && (!v || v === normVin(env.MG_VIN))) {
       const saved = await d1KvGet(env, 'pushward_key');
       if (saved) pushwardKey = String(saved).trim();
-    }
-    if (url && url.searchParams.get('ntfy') && ntfyTopic) {
-      await d1KvSet(env, 'ntfy_topic', ntfyTopic);
-    }
-    if (url && url.searchParams.get('pushward') && pushwardKey) {
-      await d1KvSet(env, 'pushward_key', pushwardKey);
     }
   }
 
@@ -2482,7 +2496,7 @@ async function syncChargingSessionState(
     const title = `⚡ Charging Started (${chargeType})`;
     const startedTimeSuffix = bmsElapsedSec >= 120 ? ` at ${formatClockTime(actualStartTime)}` : '';
     const body = `Started${startedTimeSuffix} at ${startSoc}% (${liveTelem.rangeKm} km) • Drawing ${liveTelem.powerKw} kW`;
-    await dispatchTripNotification(url, title, body, 'electric_plug,zap', env);
+    await dispatchTripNotification(url, title, body, 'electric_plug,zap', env, v);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       vin: v || null,
@@ -2546,7 +2560,7 @@ async function syncChargingSessionState(
     // NOTIFICATIONS ENGINE: Charging Completed
     const title = `🔋 Charging Completed (${currentSoc}%)`;
     const body = `Added +${socAdded}% (+${kwhAdded} kWh) • Used ${grossEnergyUsed} kWh • ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, 'battery,white_check_mark', env);
+    await dispatchTripNotification(url, title, body, 'battery,white_check_mark', env, sessionVin);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       vin: sessionVin,
@@ -2595,7 +2609,7 @@ async function syncChargingSessionState(
     // NOTIFICATIONS ENGINE: Full Charge (100%)
     const title = `🔋 Charging Complete (100%)`;
     const body = `Full charge reached! Added +${socAdded}% (+${kwhAdded} kWh) • Used ${grossEnergyUsed} kWh • ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, 'battery,sparkles', env);
+    await dispatchTripNotification(url, title, body, 'battery,sparkles', env, sessionVin);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       vin: sessionVin,
@@ -2624,7 +2638,7 @@ async function syncChargingSessionState(
 
       const pauseTitle = '⚠️ Charging Paused (Grid Outage / Breaker Cut)';
       const pauseBody = `Grid power dropped at ${currentSoc}%. Waiting for power to restore...`;
-      await dispatchTripNotification(url, pauseTitle, pauseBody, 'warning,electric_plug', env);
+      await dispatchTripNotification(url, pauseTitle, pauseBody, 'warning,electric_plug', env, sessionVin);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         vin: sessionVin,
@@ -2725,7 +2739,7 @@ async function syncChargingSessionState(
     if (wasPaused) {
       const resumeTitle = `⚡ Charging Resumed (${chargeType})`;
       const resumeBody = `Grid power restored! Charging continuing at ${currentSoc}% • Drawing ${liveTelem.powerKw} kW`;
-      await dispatchTripNotification(url, resumeTitle, resumeBody, 'electric_plug,zap', env);
+      await dispatchTripNotification(url, resumeTitle, resumeBody, 'electric_plug,zap', env, sessionVin);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         vin: sessionVin,
@@ -2837,7 +2851,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
         trip.start_location && trip.start_location !== 'Unknown Location' ? `📍 Start: ${trip.start_location}` : null,
       ].filter(Boolean).join('\n');
 
-      await dispatchTripNotification(url, title, notificationText, 'car,electric_plug', env);
+      await dispatchTripNotification(url, title, notificationText, 'car,electric_plug', env, activeVin);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         vin: activeVin || null,
@@ -2940,7 +2954,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
         '🧹 Cancelled recording to keep your driving history clean.',
       ].join('\n');
 
-      await dispatchTripNotification(url, idleTitle, idleText, 'information_source', env);
+      await dispatchTripNotification(url, idleTitle, idleText, 'information_source', env, tripVin);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         vin: tripVin,
@@ -3016,7 +3030,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       `🏁 Final Odometer: ${finalOdo.toLocaleString()} km`,
     ].filter(Boolean).join('\n');
 
-    await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy', env);
+    await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy', env, tripVin);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       vin: tripVin,
