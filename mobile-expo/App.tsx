@@ -139,7 +139,7 @@ async function resolveLocationLabel(
   if (lat === null || lat === undefined || lng === null || lng === undefined) {
     return 'Unknown Location';
   }
-  const coordStr = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  const coordStr = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
   try {
     const resp = await fetch(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`,
@@ -246,13 +246,13 @@ function mergeD1TripsWithLocalRichData(
       endLng,
       startLocation:
         startLat != null && startLng != null && !/\([-\d.]+,\s*[-\d.]+\)/.test(dt.startLocation || '')
-          ? `${dt.startLocation} (${startLat.toFixed(4)}, ${startLng.toFixed(4)})`
+          ? `${dt.startLocation} (${startLat.toFixed(6)}, ${startLng.toFixed(6)})`
           : match?.startLocation && /\([-\d.]+,\s*[-\d.]+\)/.test(match.startLocation)
           ? match.startLocation
           : dt.startLocation,
       endLocation:
         endLat != null && endLng != null && !/\([-\d.]+,\s*[-\d.]+\)/.test(dt.endLocation || '')
-          ? `${dt.endLocation} (${endLat.toFixed(4)}, ${endLng.toFixed(4)})`
+          ? `${dt.endLocation} (${endLat.toFixed(6)}, ${endLng.toFixed(6)})`
           : match?.endLocation && /\([-\d.]+,\s*[-\d.]+\)/.test(match.endLocation)
           ? match.endLocation
           : dt.endLocation,
@@ -400,7 +400,7 @@ async function labelOrCoords(
   budget: { n: number }
 ): Promise<string> {
   if (lat === null || lat === undefined || lng === null || lng === undefined) return 'Unknown Location';
-  if (budget.n <= 0) return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  if (budget.n <= 0) return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
   budget.n--;
   return resolveLocationLabel(lat, lng);
 }
@@ -2417,7 +2417,7 @@ export default function App() {
               const fix3d = status.gps?.gps_status === GpsStatus.FIX_3D;
               const hasFix = Boolean(status.gps && (status.gps.latitude || status.gps.longitude));
               const gpsSummary = hasFix
-                ? `${status.gps?.latitude?.toFixed(4)}°, ${status.gps?.longitude?.toFixed(4)}° • ${status.gps?.speed_kmh ?? 0} km/h`
+                ? `${status.gps?.latitude?.toFixed(6)}, ${status.gps?.longitude?.toFixed(6)} • ${status.gps?.speed_kmh ?? 0} km/h`
                 : 'Pull down to refresh GPS fix';
               return (
                 <CollapsibleSectionCard
@@ -5113,14 +5113,20 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
     lat: number | null,
     lng: number | null
   ): string => {
-    const base = loc || 'Unknown';
-    if (/\([-\d.]+,\s*[-\d.]+\)/.test(base)) {
-      return base;
+    const raw = (loc || 'Unknown').replace(/\s*•\s*GPS:.*$/i, '').trim();
+    const baseWithoutParen = raw.replace(/\s*\([-\d.]+,\s*[-\d.]+\)\s*$/, '').trim();
+    if (lat !== null && lng !== null && !Number.isNaN(lat) && !Number.isNaN(lng)) {
+      return `${baseWithoutParen} • ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
     }
-    if (lat !== null && lng !== null && (!Number.isNaN(lat) && !Number.isNaN(lng))) {
-      return `${base} • GPS: ${lat.toFixed(4)}°N, ${lng.toFixed(4)}°E`;
+    const parenMatch = raw.match(/\(([-\d.]+),\s*([-\d.]+)\)/);
+    if (parenMatch) {
+      const pLat = Number(parenMatch[1]);
+      const pLng = Number(parenMatch[2]);
+      if (!Number.isNaN(pLat) && !Number.isNaN(pLng)) {
+        return `${baseWithoutParen} • ${pLat.toFixed(6)}, ${pLng.toFixed(6)}`;
+      }
     }
-    return base;
+    return raw;
   };
 
   const fullStartLocation = formatLocationWithGps(trip.startLocation, startLatVal, startLngVal);

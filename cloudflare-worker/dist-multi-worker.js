@@ -9929,14 +9929,14 @@ async function resolveLocation(lat, lng) {
       const addr = data.address || {};
       const road = addr.road || addr.suburb || addr.neighbourhood || "";
       const city = addr.city || addr.town || addr.village || addr.county || "";
-      const coordSuffix = `(${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+      const coordSuffix = `(${lat.toFixed(6)}, ${lng.toFixed(6)})`;
       if (road && city) return `${road}, ${city} ${coordSuffix}`;
       if (city) return `${city} ${coordSuffix}`;
       if (data.display_name) return `${data.display_name.split(",").slice(0, 2).join(",").trim()} ${coordSuffix}`;
     }
   } catch (_) {
   }
-  return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
 }
 function istDateString(sec) {
   const d = new Date((sec + 19800) * 1e3);
