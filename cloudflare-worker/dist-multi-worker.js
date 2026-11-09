@@ -10014,13 +10014,15 @@ async function dispatchTripNotification(url, title, bodyText, tags = "car", env,
       if (saved) pushwardKey = String(saved).trim();
     }
   }
+  const result = { ntfyTopic: ntfyTopic || null, ntfyStatus: null, ntfyBody: null, ntfyError: null };
   if (ntfyTopic) {
+    const tagList = tags ? String(tags).split(",").map((t) => t.trim()).filter(Boolean) : ["car"];
     try {
-      const tagList = tags ? String(tags).split(",").map((t) => t.trim()).filter(Boolean) : ["car"];
-      await fetch("https://ntfy.sh", {
+      const res = await fetch("https://ntfy.sh", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json; charset=utf-8"
+          "Content-Type": "application/json; charset=utf-8",
+          "User-Agent": "MGWindsorEV-CarPlay/1.0"
         },
         body: JSON.stringify({
           topic: ntfyTopic,
@@ -10030,7 +10032,25 @@ async function dispatchTripNotification(url, title, bodyText, tags = "car", env,
           tags: tagList
         })
       });
-    } catch (_) {
+      result.ntfyStatus = res.status;
+      result.ntfyBody = await res.text().catch(() => "");
+      if (!res.ok) {
+        const b64Title = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(title)))}?=`;
+        const res2 = await fetch(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
+          method: "POST",
+          headers: {
+            "Title": b64Title,
+            "Tags": tagList.join(","),
+            "Priority": "4",
+            "User-Agent": "MGWindsorEV-CarPlay/1.0"
+          },
+          body: bodyText
+        });
+        result.ntfyFallbackStatus = res2.status;
+        result.ntfyFallbackBody = await res2.text().catch(() => "");
+      }
+    } catch (e) {
+      result.ntfyError = e?.message || String(e);
     }
   }
   if (pushwardKey) {
@@ -10043,6 +10063,7 @@ async function dispatchTripNotification(url, title, bodyText, tags = "car", env,
     } catch (_) {
     }
   }
+  return result;
 }
 async function d1InsertTrip(env, trip) {
   const v = normVin(trip.vin);
@@ -11862,10 +11883,10 @@ ${notificationText}`, {
       is_read: 0,
       metadata: JSON.stringify({ test: true, time: (/* @__PURE__ */ new Date()).toISOString() })
     };
-    await dispatchTripNotification(url, notif.title, notif.message, "test_tube,car", env, reqVin);
+    const pushResult = await dispatchTripNotification(url, notif.title, notif.message, "test_tube,car", env, reqVin);
     await d1InsertNotification(env, notif);
     const notifs = await d1GetNotifications(env, 10, reqVin);
-    return json({ success: true, message: "Test notification dispatched to ntfy & written to D1", count: notifs.length, notification: notif, recent: notifs });
+    return json({ success: true, message: "Test notification dispatched to ntfy & written to D1", pushResult, count: notifs.length, notification: notif, recent: notifs });
   }
   if (path === "/api/notifications/clear") {
     await d1ClearNotifications(env, reqVin);
