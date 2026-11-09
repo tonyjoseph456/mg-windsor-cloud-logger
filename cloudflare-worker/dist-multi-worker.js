@@ -11170,6 +11170,66 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
   const nowSec = Math.floor(Date.now() / 1e3);
   if (!activeSession) {
     if (!liveTelem.isCharging) {
+      const lastTrip2 = await d1GetLastCompletedTrip(env, v);
+      const lastSession2 = await d1GetLastCompletedChargingSession(env, v);
+      if (lastTrip2 && lastTrip2.end_timestamp && lastTrip2.end_soc != null && Math.abs(liveTelem.odometer - (Number(lastTrip2.end_odometer_km) || liveTelem.odometer)) < 0.5) {
+        const parkTime = Number(lastTrip2.end_timestamp);
+        const parkSoc = Number(lastTrip2.end_soc);
+        const socGain = Math.max(0, liveTelem.soc - parkSoc);
+        const alreadyLogged = lastSession2 && Number(lastSession2.start_time) >= parkTime - 300;
+        if (socGain >= 3 && !alreadyLogged && nowSec > parkTime + 120) {
+          const bmsElapsed = Math.max(0, Math.min(86400, Number(liveTelem.chargeTimeElapsedSec) || 0));
+          const estStartTime = Math.min(nowSec - 60, parkTime + 120);
+          const estDurationSec = bmsElapsed >= 120 && bmsElapsed <= nowSec - parkTime ? bmsElapsed : Math.max(60, nowSec - estStartTime);
+          const estEndTime = Math.min(nowSec, estStartTime + estDurationSec);
+          const kwhAdded = Number((socGain / 100 * 38).toFixed(2));
+          const impliedKw = Number((kwhAdded / (estDurationSec / 3600)).toFixed(1));
+          const chargeType2 = impliedKw > 11 ? "DC" : "AC";
+          const effFactor2 = chargeType2 === "DC" ? 0.94 : 0.88;
+          const grossEnergyUsed = Number((kwhAdded / effFactor2).toFixed(2));
+          const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
+          const peakKw = chargeType2 === "DC" ? Math.max(30, impliedKw) : impliedKw > 4.2 ? 7.4 : 3.3;
+          const recoveredSession = {
+            id: "chg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+            vin: v || null,
+            status: "completed",
+            start_time: estStartTime,
+            end_time: estEndTime,
+            start_soc: parkSoc,
+            end_soc: liveTelem.soc,
+            soc_added: socGain,
+            kwh_added: kwhAdded,
+            energy_used_kwh: grossEnergyUsed,
+            charging_loss_kwh: lossKwh,
+            charge_type: chargeType2,
+            peak_power_kw: peakKw,
+            last_power_kw: 0,
+            start_odometer_km: liveTelem.odometer,
+            start_range_km: Math.round(parkSoc / 100 * 330),
+            outage_count: 0,
+            paused_at: null,
+            active_duration_seconds: estDurationSec,
+            last_poll_time: nowSec,
+            date: istDateString(estStartTime)
+          };
+          await d1CreateChargingSession(env, recoveredSession);
+          const title2 = `\u{1F50B} Charging Completed (${liveTelem.soc}%)`;
+          const body2 = `Added +${socGain}% (+${kwhAdded} kWh ${chargeType2}) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${Math.round(estDurationSec / 60)}m`;
+          await dispatchTripNotification(url, title2, body2, "battery,white_check_mark", env, v);
+          await d1InsertNotification(env, {
+            id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+            vin: v || null,
+            type: "charge_end",
+            title: title2,
+            message: body2,
+            timestamp: nowSec,
+            date: istDateString(nowSec),
+            is_read: 0,
+            metadata: JSON.stringify(recoveredSession)
+          });
+          return recoveredSession;
+        }
+      }
       return null;
     }
     const lastSession = await d1GetLastCompletedChargingSession(env, v);
@@ -12373,26 +12433,25 @@ async function runCron(env) {
     }
     return;
   }
-  if (min === 0 || min === 30) {
-    try {
-      const lastTrip = await d1GetLastCompletedTrip(env);
-      if (lastTrip && lastTrip.end_timestamp) {
-        const hoursSincePark = (nowSec - Number(lastTrip.end_timestamp)) / 3600;
-        const lastSoc = Number(lastTrip.end_soc) || 100;
-        if (hoursSincePark < 14 && lastSoc < 100) {
-          const tVin = normVin(lastTrip.vin);
-          const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev${tVin ? `?vin=${encodeURIComponent(tVin)}` : ""}`);
-          const mg = await getMgClientForWebhook(env, dummyUrl);
-          if (mg) {
-            const telem = await fetchCarTelemetry(mg.client, tVin || mg.vin);
-            if (telem.isCharging) {
-              await syncChargingSessionState(env, dummyUrl, telem, "cron_idle", tVin || mg.vin);
-            }
-          }
+  try {
+    const lastTrip = await d1GetLastCompletedTrip(env);
+    if (lastTrip && lastTrip.end_timestamp) {
+      const minutesSincePark = (nowSec - Number(lastTrip.end_timestamp)) / 60;
+      const hoursSincePark = minutesSincePark / 60;
+      const lastSoc = Number(lastTrip.end_soc) || 100;
+      const isPostParkFastWindow = minutesSincePark >= 0 && minutesSincePark <= 20 && min % 3 === 0;
+      const isHalfHourIdleCheck = min === 0 || min === 30;
+      if (hoursSincePark < 14 && lastSoc < 100 && (isPostParkFastWindow || isHalfHourIdleCheck)) {
+        const tVin = normVin(lastTrip.vin);
+        const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev${tVin ? `?vin=${encodeURIComponent(tVin)}` : ""}`);
+        const mg = await getMgClientForWebhook(env, dummyUrl);
+        if (mg) {
+          const telem = await fetchCarTelemetry(mg.client, tVin || mg.vin);
+          await syncChargingSessionState(env, dummyUrl, telem, "cron_idle", tVin || mg.vin);
         }
       }
-    } catch (_) {
     }
+  } catch (_) {
   }
 }
 var multi_worker_default = {
