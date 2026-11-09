@@ -1109,6 +1109,18 @@ async function initD1(db: any) {
       }
     }
   } catch (_) {}
+  // Repair 07 Nov 2026 charging session start_time to actual 11:12 PM IST plug-in time (1794073320) & restore zeroed durations/peak_power
+  try {
+    await db.prepare(
+      "UPDATE charging_sessions SET start_time = 1794073320, active_duration_seconds = 30632, peak_power_kw = 3.3 WHERE id = 'chg_1794074431890_5kct' AND start_time = 1794074431"
+    ).run();
+    await db.prepare(
+      "UPDATE charging_sessions SET active_duration_seconds = MAX(0, end_time - start_time) WHERE status = 'completed' AND end_time IS NOT NULL AND end_time > start_time AND (active_duration_seconds IS NULL OR active_duration_seconds = 0)"
+    ).run();
+    await db.prepare(
+      "UPDATE charging_sessions SET peak_power_kw = 3.3 WHERE status = 'completed' AND (peak_power_kw IS NULL OR peak_power_kw = 0)"
+    ).run();
+  } catch (_) {}
   if (d1InitErrors.length === 0) {
     d1Initialized = true;
   }
@@ -2080,6 +2092,8 @@ async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<{
   powerKw: number;
   rangeKm: number;
   chargeType: 'AC' | 'DC';
+  chargeTimeElapsedSec: number;
+  bmsStartTime: number | null;
   status: any;
 }> {
   if (vin && !client.vin) client.vin = vin;
@@ -2100,6 +2114,23 @@ async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<{
   const powerKw = calcKw > 0 ? calcKw : (isCharging ? 3.3 : 0);
   const chargeType: 'AC' | 'DC' = (powerKw > 11 || ch?.charging_type === 2) ? 'DC' : 'AC';
   const rangeKm = Number(ch?.range_km ?? status.range_km) || 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rawElapsed = Number(ch?.charge_time_elapsed_s) || 0;
+  const rawStartTime = Number(ch?.start_time) || 0;
+  const elapsedFromStart =
+    rawStartTime > 1700000000 && nowSec >= rawStartTime && (nowSec - rawStartTime) < 86400
+      ? nowSec - rawStartTime
+      : 0;
+  const chargeTimeElapsedSec =
+    rawElapsed > 0 && rawElapsed < 86400
+      ? Math.max(rawElapsed, elapsedFromStart)
+      : elapsedFromStart;
+  const bmsStartTime =
+    rawStartTime > 1700000000 && nowSec >= rawStartTime && (nowSec - rawStartTime) < 86400
+      ? rawStartTime
+      : chargeTimeElapsedSec > 0
+      ? nowSec - chargeTimeElapsedSec
+      : null;
   return {
     odometer,
     soc,
@@ -2113,6 +2144,8 @@ async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<{
     powerKw,
     rangeKm,
     chargeType,
+    chargeTimeElapsedSec,
+    bmsStartTime,
     status,
   };
 }
@@ -2228,29 +2261,44 @@ async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any
     try {
       await env.DB.prepare(`
         UPDATE charging_sessions SET
-          status = ?,
-          end_time = ?,
-          end_soc = ?,
-          soc_added = ?,
-          kwh_added = ?,
-          energy_used_kwh = ?,
-          charging_loss_kwh = ?,
-          charge_type = ?,
-          peak_power_kw = ?,
-          last_power_kw = ?,
-          outage_count = ?,
-          paused_at = ?,
-          active_duration_seconds = ?,
-          last_poll_time = ?
+          status = COALESCE(?, status),
+          start_time = COALESCE(?, start_time),
+          end_time = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(?, end_time) END,
+          start_soc = COALESCE(?, start_soc),
+          end_soc = COALESCE(?, end_soc),
+          soc_added = COALESCE(?, soc_added),
+          kwh_added = COALESCE(?, kwh_added),
+          energy_used_kwh = COALESCE(?, energy_used_kwh),
+          charging_loss_kwh = COALESCE(?, charging_loss_kwh),
+          charge_type = COALESCE(?, charge_type),
+          peak_power_kw = COALESCE(?, peak_power_kw),
+          last_power_kw = COALESCE(?, last_power_kw),
+          outage_count = COALESCE(?, outage_count),
+          paused_at = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(?, paused_at) END,
+          active_duration_seconds = COALESCE(?, active_duration_seconds),
+          last_poll_time = COALESCE(?, last_poll_time),
+          date = COALESCE(?, date)
         WHERE id = ?
       `).bind(
-        updates.status, updates.end_time || null, updates.end_soc,
-        updates.soc_added || 0, updates.kwh_added || 0,
-        updates.energy_used_kwh || 0, updates.charging_loss_kwh || 0,
-        updates.charge_type || 'AC', updates.peak_power_kw || 0,
-        updates.last_power_kw || 0, updates.outage_count || 0,
-        updates.paused_at || null, updates.active_duration_seconds || 0,
-        updates.last_poll_time || Math.floor(Date.now() / 1000),
+        updates.status ?? null,
+        updates.start_time ?? null,
+        updates.end_time === null ? 1 : 0,
+        updates.end_time ?? null,
+        updates.start_soc ?? null,
+        updates.end_soc ?? null,
+        updates.soc_added ?? null,
+        updates.kwh_added ?? null,
+        updates.energy_used_kwh ?? null,
+        updates.charging_loss_kwh ?? null,
+        updates.charge_type ?? null,
+        updates.peak_power_kw ?? null,
+        updates.last_power_kw ?? null,
+        updates.outage_count ?? null,
+        updates.paused_at === null ? 1 : 0,
+        updates.paused_at ?? null,
+        updates.active_duration_seconds ?? null,
+        updates.last_poll_time ?? Math.floor(Date.now() / 1000),
+        updates.date ?? null,
         sessionId
       ).run();
     } catch (err) {
@@ -2360,29 +2408,62 @@ async function syncChargingSessionState(
     }
 
     // SCENARIO 1 & 2: Start brand new charging session
+    // Backdate start_time and initialize active_duration_seconds from the vehicle BMS elapsed time
+    // (charge_time_elapsed_s / start_time) when discovered by the 30-min idle cron poll!
     const lastTrip = await d1GetLastCompletedTrip(env, v);
     let startSoc = liveTelem.soc;
-    if (
-      lastTrip &&
-      lastTrip.end_soc != null &&
-      Math.abs(liveTelem.odometer - (Number(lastTrip.end_odometer_km) || liveTelem.odometer)) < 0.3
-    ) {
+    const isSameOdoAsLastTrip =
+      Boolean(
+        lastTrip &&
+        Math.abs(liveTelem.odometer - (Number(lastTrip.end_odometer_km) || liveTelem.odometer)) < 0.3
+      );
+    if (isSameOdoAsLastTrip && lastTrip.end_soc != null) {
       startSoc = Math.min(liveTelem.soc, Number(lastTrip.end_soc));
     }
 
+    let bmsElapsedSec = Math.max(0, Math.min(86400, Number(liveTelem.chargeTimeElapsedSec) || 0));
+    if (
+      isSameOdoAsLastTrip &&
+      lastTrip.end_timestamp &&
+      Number(lastTrip.end_timestamp) <= nowSec
+    ) {
+      const maxSincePark = Math.max(0, nowSec - Number(lastTrip.end_timestamp));
+      if (bmsElapsedSec > maxSincePark) {
+        bmsElapsedSec = maxSincePark;
+      }
+    }
+
+    const actualStartTime = nowSec - bmsElapsedSec;
     const chargeType: 'AC' | 'DC' = (liveTelem.powerKw > 11 || liveTelem.chargeType === 'DC') ? 'DC' : 'AC';
+    const effFactor = chargeType === 'DC' ? 0.94 : 0.88;
+    const prePollWallKwh = Number(((liveTelem.powerKw * (bmsElapsedSec / 3600))).toFixed(3));
+
+    // If startSoc wasn't anchored by a prior trip at the same odometer, back-calculate the SOC added during bmsElapsedSec
+    if (startSoc >= liveTelem.soc && bmsElapsedSec >= 120) {
+      const estPackKwhAdded = prePollWallKwh * effFactor;
+      const estSocAdded = Math.round((estPackKwhAdded / 38.0) * 100);
+      if (estSocAdded > 0) {
+        startSoc = Math.max(0, liveTelem.soc - estSocAdded);
+      }
+    }
+
+    const initialSocAdded = Math.max(0, liveTelem.soc - startSoc);
+    const initialKwhAdded = Number(((initialSocAdded / 100) * 38.0).toFixed(2));
+    const initialEnergyUsed = Math.max(prePollWallKwh, Number((initialKwhAdded / effFactor).toFixed(2)));
+    const initialLossKwh = Math.max(0, Number((initialEnergyUsed - initialKwhAdded).toFixed(2)));
+
     const newSession = {
       id: 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       vin: v || null,
       status: 'ongoing',
-      start_time: nowSec,
+      start_time: actualStartTime,
       end_time: null,
       start_soc: startSoc,
       end_soc: liveTelem.soc,
-      soc_added: Math.max(0, liveTelem.soc - startSoc),
-      kwh_added: Number((((Math.max(0, liveTelem.soc - startSoc)) / 100) * 38.0).toFixed(2)),
-      energy_used_kwh: 0,
-      charging_loss_kwh: 0,
+      soc_added: initialSocAdded,
+      kwh_added: initialKwhAdded,
+      energy_used_kwh: initialEnergyUsed,
+      charging_loss_kwh: initialLossKwh,
       charge_type: chargeType,
       peak_power_kw: liveTelem.powerKw,
       last_power_kw: liveTelem.powerKw,
@@ -2390,16 +2471,17 @@ async function syncChargingSessionState(
       start_range_km: liveTelem.rangeKm,
       outage_count: 0,
       paused_at: null,
-      active_duration_seconds: 0,
+      active_duration_seconds: bmsElapsedSec,
       last_poll_time: nowSec,
-      date: istDateString(nowSec),
+      date: istDateString(actualStartTime),
     };
 
     await d1CreateChargingSession(env, newSession);
 
     // NOTIFICATIONS ENGINE: Charging Started
     const title = `⚡ Charging Started (${chargeType})`;
-    const body = `Started at ${startSoc}% (${liveTelem.rangeKm} km) • Drawing ${liveTelem.powerKw} kW`;
+    const startedTimeSuffix = bmsElapsedSec >= 120 ? ` at ${formatClockTime(actualStartTime)}` : '';
+    const body = `Started${startedTimeSuffix} at ${startSoc}% (${liveTelem.rangeKm} km) • Drawing ${liveTelem.powerKw} kW`;
     await dispatchTripNotification(url, title, body, 'electric_plug,zap', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -2408,7 +2490,7 @@ async function syncChargingSessionState(
       title,
       message: body,
       timestamp: nowSec,
-      date: istDateString(nowSec),
+      date: istDateString(actualStartTime),
       is_read: 0,
       metadata: JSON.stringify(newSession),
     });
@@ -2426,7 +2508,11 @@ async function syncChargingSessionState(
 
   // SCENARIO 5: Car drove away (live.odo > start_odo) OR CarPlay trip started OR test_end
   if (odoDiff >= 0.2 || triggerSource === 'trip_start' || triggerSource === 'test_end') {
-    const activeSec = Number(activeSession.active_duration_seconds) || 0;
+    const wallDurationSec = Math.max(0, nowSec - (Number(activeSession.start_time) || nowSec));
+    const activeSec = Math.max(
+      Number(activeSession.active_duration_seconds) || 0,
+      (Number(activeSession.outage_count) || 0) === 0 ? wallDurationSec : 0
+    );
     const socAdded = Math.max(0, currentSoc - startSoc);
 
     // SCENARIO 8: False Trigger / Brief Plug Test (< 1% added & active_duration < 180s)
@@ -2450,7 +2536,9 @@ async function syncChargingSessionState(
       kwh_added: kwhAdded,
       energy_used_kwh: grossEnergyUsed,
       charging_loss_kwh: lossKwh,
+      peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
       last_power_kw: 0,
+      active_duration_seconds: activeSec,
       last_poll_time: nowSec,
     };
     await d1UpdateChargingSession(env, activeSession.id, completedUpdates);
@@ -2476,7 +2564,11 @@ async function syncChargingSessionState(
 
   // SCENARIO 6: Full Charge Auto-Shutoff (100% or >=99% & charger stopped)
   if (!liveTelem.isCharging && currentSoc >= 99) {
-    const activeSec = Number(activeSession.active_duration_seconds) || 0;
+    const wallDurationSec = Math.max(0, nowSec - (Number(activeSession.start_time) || nowSec));
+    const activeSec = Math.max(
+      Number(activeSession.active_duration_seconds) || 0,
+      (Number(activeSession.outage_count) || 0) === 0 ? wallDurationSec : 0
+    );
     const endSoc = 100;
     const socAdded = Math.max(0, endSoc - startSoc);
     const kwhAdded = Number(((socAdded / 100) * 38.0).toFixed(2));
@@ -2493,7 +2585,9 @@ async function syncChargingSessionState(
       kwh_added: kwhAdded,
       energy_used_kwh: grossEnergyUsed,
       charging_loss_kwh: lossKwh,
+      peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
       last_power_kw: 0,
+      active_duration_seconds: activeSec,
       last_poll_time: nowSec,
     };
     await d1UpdateChargingSession(env, activeSession.id, completedUpdates);
@@ -2579,7 +2673,23 @@ async function syncChargingSessionState(
 
     const lastPoll = Number(activeSession.last_poll_time) || nowSec;
     const deltaSec = Math.max(0, Math.min(3600, nowSec - lastPoll));
-    const activeSec = (Number(activeSession.active_duration_seconds) || 0) + (activeSession.status === 'ongoing' ? deltaSec : 0);
+    let activeSec = (Number(activeSession.active_duration_seconds) || 0) + (activeSession.status === 'ongoing' ? deltaSec : 0);
+    let updatedStartTime: number | undefined = undefined;
+    let updatedDate: string | undefined = undefined;
+
+    const bmsElapsed = Math.max(0, Math.min(86400, Number(liveTelem.chargeTimeElapsedSec) || 0));
+    if (outageCount === 0 && bmsElapsed > 0) {
+      if (bmsElapsed > activeSec) {
+        activeSec = bmsElapsed;
+      }
+      const bmsDerivedStart = nowSec - bmsElapsed;
+      const curStart = Number(activeSession.start_time) || nowSec;
+      if (bmsDerivedStart < curStart - 60) {
+        updatedStartTime = bmsDerivedStart;
+        updatedDate = istDateString(bmsDerivedStart);
+      }
+    }
+
     const deltaHours = deltaSec / 3600;
     const stepKwh = liveTelem.powerKw * deltaHours;
     const integratedKwh = Number(((Number(activeSession.energy_used_kwh) || 0) + stepKwh).toFixed(3));
@@ -2591,7 +2701,7 @@ async function syncChargingSessionState(
     const peakKw = Math.max(Number(activeSession.peak_power_kw) || 0, liveTelem.powerKw);
     const chargeType = (peakKw > 11 || liveTelem.chargeType === 'DC') ? 'DC' : 'AC';
 
-    const updates = {
+    const updates: any = {
       status: 'ongoing',
       end_soc: currentSoc,
       soc_added: socAdded,
@@ -2606,6 +2716,10 @@ async function syncChargingSessionState(
       paused_at: null,
       last_poll_time: nowSec,
     };
+    if (updatedStartTime !== undefined) {
+      updates.start_time = updatedStartTime;
+      updates.date = updatedDate;
+    }
     await d1UpdateChargingSession(env, activeSession.id, updates);
 
     if (wasPaused) {
@@ -2971,13 +3085,15 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       telem = await fetchCarTelemetry(mg.client, mg.vin).catch(() => null);
     }
     const nowSec = Math.floor(Date.now() / 1000);
+    const bmsElapsed = Math.max(0, Number(telem?.chargeTimeElapsedSec) || 0);
+    const actualStartSec = bmsElapsed > 0 && bmsElapsed <= 48 * 3600 ? (nowSec - bmsElapsed) : nowSec;
     const chargeId = 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
-    const dateStr = istDateString(nowSec);
+    const dateStr = istDateString(actualStartSec);
     const charge = {
       id: chargeId,
       vin: normVin(mg?.vin || reqVin) || null,
       date: dateStr,
-      start_timestamp: nowSec,
+      start_timestamp: actualStartSec,
       start_soc: telem?.soc != null ? Number(telem.soc) : 0,
       charger_type: 'AC Fast',
       peak_kw: 3.3,
