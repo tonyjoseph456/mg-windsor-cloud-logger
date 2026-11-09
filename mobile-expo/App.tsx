@@ -792,6 +792,191 @@ const TripCalendar = ({
 );
 
 
+const LIVE_ACTIVITY_KEY = 'mg_live_activity_enabled';
+
+let liveActivityAudioInstance: any = null;
+let silentAudioBlobUrl: string | null = null;
+
+function getOrCreateSilentAudioUrl(): string {
+  if (silentAudioBlobUrl) return silentAudioBlobUrl;
+  if (typeof window === 'undefined' || typeof Blob === 'undefined') return '';
+
+  const sampleRate = 8000;
+  const numSeconds = 4;
+  const numSamples = sampleRate * numSeconds;
+  const buffer = new ArrayBuffer(44 + numSamples);
+  const view = new DataView(buffer);
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // Mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate, true);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true); // 8-bit
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples, true);
+
+  const bytes = new Uint8Array(buffer, 44);
+  bytes.fill(128); // 8-bit PCM silence
+
+  try {
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    silentAudioBlobUrl = URL.createObjectURL(blob);
+    return silentAudioBlobUrl;
+  } catch {
+    return '';
+  }
+}
+
+function startLiveActivityAudio(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const AudioCtor: any = (window as any).Audio;
+    if (!AudioCtor) return false;
+
+    const url = getOrCreateSilentAudioUrl();
+    if (!url) return false;
+
+    if (!liveActivityAudioInstance) {
+      const audio = new AudioCtor(url);
+      audio.loop = true;
+      audio.autoplay = true;
+      audio.setAttribute('playsinline', '');
+      audio.setAttribute('webkit-playsinline', '');
+      audio.volume = 1.0;
+      liveActivityAudioInstance = audio;
+    }
+
+    const p = liveActivityAudioInstance.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {});
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopLiveActivityAudio() {
+  try {
+    if (liveActivityAudioInstance) {
+      liveActivityAudioInstance.pause();
+      liveActivityAudioInstance.currentTime = 0;
+    }
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (nav && nav.mediaSession) {
+      nav.mediaSession.playbackState = 'none';
+    }
+  } catch {}
+}
+
+if (typeof window !== 'undefined') {
+  const primeLiveActivityAudio = () => {
+    try {
+      if (!liveActivityAudioInstance) {
+        const AudioCtor = (window as any).Audio;
+        const url = getOrCreateSilentAudioUrl();
+        if (AudioCtor && url) {
+          const a = new AudioCtor(url);
+          a.loop = true;
+          a.volume = 1.0;
+          a.setAttribute('playsinline', '');
+          a.setAttribute('webkit-playsinline', '');
+          liveActivityAudioInstance = a;
+        }
+      }
+    } catch {}
+    window.removeEventListener('click', primeLiveActivityAudio);
+    window.removeEventListener('touchstart', primeLiveActivityAudio);
+  };
+  window.addEventListener('click', primeLiveActivityAudio, { passive: true, once: true });
+  window.addEventListener('touchstart', primeLiveActivityAudio, { passive: true, once: true });
+}
+
+function generateLiveActivityArtwork(
+  soc: number,
+  isCharging: boolean,
+  headline: string,
+  subline: string
+): string {
+  if (typeof document === 'undefined') return '';
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+
+    const bg = ctx.createLinearGradient(0, 0, 0, 512);
+    bg.addColorStop(0, '#0F172A');
+    bg.addColorStop(1, '#020617');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 512, 512);
+
+    const centerX = 256;
+    const centerY = 210;
+    const radius = 135;
+
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+    ctx.strokeStyle = '#1E293B';
+    ctx.lineWidth = 18;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    const startAngle = -Math.PI / 2;
+    const clampedSoc = Math.min(100, Math.max(0, soc));
+    const endAngle = startAngle + (clampedSoc / 100) * 2 * Math.PI;
+
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+    ctx.strokeStyle = isCharging ? '#10B981' : clampedSoc <= 20 ? '#EF4444' : '#38BDF8';
+    ctx.lineWidth = 18;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    ctx.fillStyle = '#EF4444';
+    ctx.font = 'bold 22px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('MG WINDSOR EV', centerX, centerY - 65);
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 92px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillText(`${Math.round(clampedSoc)}%`, centerX, centerY + 8);
+
+    ctx.fillStyle = isCharging ? '#34D399' : '#38BDF8';
+    ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillText(headline.toUpperCase(), centerX, centerY + 70);
+
+    ctx.strokeStyle = '#1E293B';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(50, 390);
+    ctx.lineTo(462, 390);
+    ctx.stroke();
+
+    ctx.fillStyle = '#94A3B8';
+    ctx.font = '600 22px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillText(subline, centerX, 435);
+
+    return canvas.toDataURL('image/png');
+  } catch {
+    return '';
+  }
+}
+
 interface PersistedSession {
   phone: string;
   password: string;
@@ -1041,6 +1226,175 @@ export default function App() {
       setBanner((prev) => (prev?.text === text ? null : prev));
     }, 4500);
   };
+
+  // iOS Lock Screen & Dynamic Island "Now Playing" Silent Audio Loop State (While Charging)
+  const [isLiveActivityActive, setIsLiveActivityActive] = useState<boolean>(false);
+  const isLiveActivityActiveRef = useRef<boolean>(false);
+  const refreshVehicleTelemetryRef = useRef<(() => Promise<any>) | null>(null);
+  const wasChargingRef = useRef<boolean>(false);
+
+  const updateLiveActivityNow = useCallback(() => {
+    if (!isLiveActivityActiveRef.current) return;
+    const nav: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (!nav || !nav.mediaSession) return;
+    const MediaMetadataCtor: any = typeof window !== 'undefined' ? (window as any).MediaMetadata : null;
+    if (!MediaMetadataCtor) return;
+
+    const rawVeh = snapshot?.vehicle;
+    const dispName = normalizeVehicleDisplayName(rawVeh?.name, rawVeh?.series);
+    const st: any = snapshot?.status || {};
+    const ch: any = st.charge || null;
+    const b: any = st.basic_vehicle_status;
+    const ongoingD1 = d1ChargingSessions.find((s) => s.status === 'ongoing' || s.status === 'paused');
+
+    const rawSoc =
+      ch?.soc !== undefined && ch?.soc !== null
+        ? ch.soc
+        : ongoingD1?.end_soc !== undefined && ongoingD1?.end_soc !== null
+        ? ongoingD1.end_soc
+        : st.fuel_level !== undefined && st.fuel_level !== null
+        ? st.fuel_level
+        : null;
+    const cSoc = rawSoc !== null ? Math.min(100, Math.max(0, Number(rawSoc))) : 0;
+    const rKm = Number(ch?.range_km ?? st.range_km ?? Math.round((cSoc / 100) * 330));
+    const chKw =
+      ch && ch.is_charging && ch.charging_current
+        ? Number(((ch.charging_voltage * ch.charging_current) / 1000).toFixed(2))
+        : Number(ongoingD1?.last_power_kw || ongoingD1?.peak_power_kw || activeCharge?.maxChargingSpeedKw || 0);
+
+    const soc = Number(ch?.battery_percentage ?? b?.battery_percentage ?? cSoc);
+    const estRange = Number(rKm || ch?.distance_to_empty_km || b?.extended_data2 || Math.round((soc / 100) * 330));
+    const isCharging = Boolean(ch?.is_charging || b?.is_charging || activeCharge || ongoingD1);
+    const odoKm = Number(ch?.odometer_km ?? st.odometer_km ?? ongoingD1?.start_odometer_km ?? 0);
+    const isLocked = Boolean(st.locked ?? b?.is_locked);
+    const interiorTemp = st.interior_temperature ?? b?.interior_temperature ?? null;
+
+    let title = `🚗 ${dispName || 'Windsor EV'} • ${Math.round(soc)}% (${estRange} km)`;
+    let artist = `${isLocked ? '🔒 Locked' : '🔓 Unlocked'} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'} • ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''}`;
+    let headline = `${estRange} KM RANGE • ${isLocked ? 'LOCKED' : 'UNLOCKED'}`;
+    let subline = `Odo: ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'}`;
+
+    if (isCharging) {
+      const timeRemainingMin = ch?.charge_time_remaining_min ?? ch?.remaining_charge_time_min ?? null;
+      const timeRemainingStr =
+        timeRemainingMin && timeRemainingMin > 0
+          ? ` • ${Math.floor(timeRemainingMin / 60)}h ${timeRemainingMin % 60}m left`
+          : '';
+      const cat =
+        chKw > 11 || ongoingD1?.charge_type === 'DC'
+          ? 'DC Fast'
+          : chKw > 3.7 || ch?.charging_gun_status
+          ? '7.4 kW AC'
+          : '3.3 kW AC';
+      const addedKwh =
+        ongoingD1?.kwh_added ??
+        activeCharge?.energyAddedToPackKwh ??
+        (ongoingD1?.start_soc ? Number((((soc - ongoingD1.start_soc) / 100) * 38).toFixed(1)) : 0);
+      const addedStr = addedKwh > 0 ? `+${addedKwh} kWh • ` : '';
+      title = `⚡ ${Math.round(soc)}% (${estRange} km) • Charging`;
+      artist = `${addedStr}${cat} (${chKw > 0 ? chKw.toFixed(1) + ' kW' : 'Active'})${timeRemainingStr}`;
+      headline = `⚡ CHARGING ${chKw > 0 ? chKw.toFixed(1) + ' kW' : cat}`;
+      subline = `${addedStr}${cat}${timeRemainingStr} • ${estRange} km`;
+    }
+
+    const album = 'MG Windsor EV • Lock Screen Charging Monitor (Tap ⏭️ to Refresh)';
+    const artworkUrl = generateLiveActivityArtwork(soc, isCharging, headline, subline);
+
+    try {
+      nav.mediaSession.metadata = new MediaMetadataCtor({
+        title,
+        artist,
+        album,
+        artwork: artworkUrl ? [{ src: artworkUrl, sizes: '512x512', type: 'image/png' }] : [],
+      });
+      nav.mediaSession.playbackState = 'playing';
+
+      nav.mediaSession.setActionHandler('nexttrack', () => {
+        refreshVehicleTelemetryRef.current?.();
+      });
+      nav.mediaSession.setActionHandler('previoustrack', () => {
+        refreshVehicleTelemetryRef.current?.();
+      });
+      nav.mediaSession.setActionHandler('play', () => {
+        startLiveActivityAudio();
+      });
+      nav.mediaSession.setActionHandler('pause', () => {
+        stopLiveActivityAudio();
+      });
+    } catch (err) {
+      console.warn('Error setting mediaSession:', err);
+    }
+  }, [snapshot, activeCharge, d1ChargingSessions]);
+
+  const handleToggleLiveActivity = () => {
+    if (!isLiveActivityActive) {
+      const ok = startLiveActivityAudio();
+      if (ok) {
+        setIsLiveActivityActive(true);
+        isLiveActivityActiveRef.current = true;
+        SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'true').catch(() => {});
+        setTimeout(() => {
+          updateLiveActivityNow();
+        }, 100);
+        showBanner('ok', '📱 iOS Lock Screen Charging Live Activity started! Lock your iPhone to view.');
+      } else {
+        Alert.alert(
+          'iOS Lock Screen Live Activity',
+          'Available in the iOS Home Screen PWA / Safari browser.'
+        );
+      }
+    } else {
+      stopLiveActivityAudio();
+      setIsLiveActivityActive(false);
+      isLiveActivityActiveRef.current = false;
+      SecureStore.setItemAsync(LIVE_ACTIVITY_KEY, 'false').catch(() => {});
+      showBanner('ok', 'Lock Screen Live Activity stopped.');
+    }
+  };
+
+  useEffect(() => {
+    if (isLiveActivityActive) {
+      updateLiveActivityNow();
+    }
+  }, [isLiveActivityActive, updateLiveActivityNow]);
+
+  // Auto-start iOS Lock Screen silent audio loop when charging starts, and auto-stop when charging ends
+  useEffect(() => {
+    const ongoingD1 = d1ChargingSessions.some((s) => s.status === 'ongoing');
+    const currentlyCharging = Boolean(
+      snapshot?.status?.charge?.is_charging || activeCharge || ongoingD1
+    );
+    if (currentlyCharging && !isLiveActivityActiveRef.current) {
+      const ok = startLiveActivityAudio();
+      if (ok) {
+        setIsLiveActivityActive(true);
+        isLiveActivityActiveRef.current = true;
+        setTimeout(() => updateLiveActivityNow(), 120);
+      }
+    } else if (!currentlyCharging && wasChargingRef.current && isLiveActivityActiveRef.current) {
+      stopLiveActivityAudio();
+      setIsLiveActivityActive(false);
+      isLiveActivityActiveRef.current = false;
+    }
+    wasChargingRef.current = currentlyCharging;
+  }, [snapshot?.status?.charge?.is_charging, activeCharge, d1ChargingSessions, updateLiveActivityNow]);
+
+  // While Lock Screen Live Activity is active during charging, refresh D1 charging state every 60s (0 extra 12V wakeups!)
+  useEffect(() => {
+    if (!isLiveActivityActive) return;
+    const interval = setInterval(() => {
+      refreshD1ChargingHistory(false).catch(() => {});
+      fetchD1Charges('all')
+        .then((d1Charges) => {
+          if (Array.isArray(d1Charges)) {
+            setChargeLogs(d1Charges);
+            chargeLogsRef.current = d1Charges;
+          }
+        })
+        .catch(() => {});
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [isLiveActivityActive]);
 
   // Native iOS (APNs Web Push) & Android (FCM Web Push) State
   const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false);
@@ -1644,6 +1998,7 @@ export default function App() {
     const useVin = sessionOverride?.vin ?? vin;
 
     setIsSyncing(true);
+    refreshVehicleTelemetryRef.current = () => refreshVehicleTelemetry();
     try {
       const client =
         existingClient ||
@@ -2341,7 +2696,24 @@ export default function App() {
                   )}
                 </View>
 
-
+                {/* 1-Tap iOS Lock Screen Charging Live Activity Toggle Pill */}
+                <TouchableOpacity
+                  style={[
+                    styles.liveActivityPill,
+                    isLiveActivityActive && styles.liveActivityPillActive,
+                  ]}
+                  onPress={handleToggleLiveActivity}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.liveActivityPillText,
+                      isLiveActivityActive && styles.liveActivityPillTextActive,
+                    ]}
+                  >
+                    {isLiveActivityActive ? '🟢 Lock Screen: ON' : '📱 Lock Screen: OFF'}
+                  </Text>
+                </TouchableOpacity>
               </View>
 
               <View style={styles.heroRow}>
@@ -2848,6 +3220,62 @@ export default function App() {
                   unplugged or asleep). Pull down to refresh.
                 </Text>
               )}
+
+              {/* iOS Lock Screen & Dynamic Island "Now Playing" Silent Audio Loop Control */}
+              <View
+                style={{
+                  marginTop: 14,
+                  padding: 12,
+                  backgroundColor: '#0A0E17',
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: isLiveActivityActive ? '#10B98160' : '#1E293B',
+                }}
+              >
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                      📱 iOS Lock Screen Charging Widget
+                    </Text>
+                    <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 2 }}>
+                      Silent audio loop keeps live battery %, kW &amp; range on your iPhone Lock Screen &amp; Dynamic Island while charging (tap ⏭️ on Lock Screen to sync)
+                    </Text>
+                  </View>
+                  <View
+                    style={{
+                      backgroundColor: isLiveActivityActive ? '#064E3B' : '#1E293B',
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                      borderRadius: 6,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: isLiveActivityActive ? '#34D399' : '#94A3B8',
+                        fontSize: 10,
+                        fontWeight: '800',
+                      }}
+                    >
+                      {isLiveActivityActive ? '● LIVE ON LOCK SCREEN' : 'AUTO ON CHARGE'}
+                    </Text>
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.liveActivityToggleBtn,
+                    isLiveActivityActive && styles.liveActivityToggleBtnActive,
+                    { marginBottom: 0 },
+                  ]}
+                  onPress={handleToggleLiveActivity}
+                >
+                  <Text style={styles.liveActivityToggleBtnText}>
+                    {isLiveActivityActive
+                      ? '⏹️ Stop iOS Lock Screen Live Activity'
+                      : '▶️ Start iOS Lock Screen Charging Live Activity'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* ACTIVE CHARGING SESSION (All 11 Telemetry Metrics Live) */}
