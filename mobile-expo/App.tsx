@@ -53,6 +53,7 @@ import {
   deduplicateChargeList,
   isValidChargeRecord,
   BACKEND_URL,
+  setActiveD1Vin,
   sheetUrl,
   fetchD1Trips,
   fetchD1TripDates,
@@ -819,6 +820,11 @@ export default function App() {
   const [pin, setPin] = useState('');
   const [vin, setVin] = useState('');
 
+  useEffect(() => {
+    const currentVin = snapshot?.vehicle?.vin || vin;
+    setActiveD1Vin(currentVin || '');
+  }, [vin, snapshot?.vehicle?.vin]);
+
   // Telemetry state
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
@@ -1200,6 +1206,7 @@ export default function App() {
             setPassword(saved.password);
             setPin(saved.pin || '');
             setVin(saved.vin || '');
+            setActiveD1Vin(saved.vin || '');
             setIsAuthenticated(true);
 
             const client = new MgIndiaClient({
@@ -1610,6 +1617,7 @@ export default function App() {
       activeVehicle.name = normalizeVehicleDisplayName(activeVehicle.name, activeVehicle.series);
       const activeVin = activeVehicle.vin;
       setVin(activeVin);
+      setActiveD1Vin(activeVin);
       clientRef.current = client;
 
       // Save persistent session in iPhone Keychain immediately so user stays logged in!
@@ -1661,6 +1669,13 @@ export default function App() {
             setPassword('');
             setPin('');
             setVin('');
+            setActiveD1Vin('');
+            setTrips([]);
+            tripsRef.current = [];
+            setChargeLogs([]);
+            chargeLogsRef.current = [];
+            setD1ChargingSessions([]);
+            setD1Notifications([]);
             setIsAuthenticated(false);
           },
         },
@@ -3473,7 +3488,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/start?format=text`,
+                          `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                           'CarPlay Start Trip URL'
                         )
                       }
@@ -3486,13 +3501,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/start?format=text`,
+                        `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                         'CarPlay Start Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/start?format=text`}
+                      {`${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL (with notification text)</Text>
                   </TouchableOpacity>
@@ -3507,7 +3522,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/stop?format=text`,
+                          `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                           'CarPlay Stop Trip URL'
                         )
                       }
@@ -3520,13 +3535,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/stop?format=text`,
+                        `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                         'CarPlay Stop Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/stop?format=text`}
+                      {`${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL (with complete trip metrics)</Text>
                   </TouchableOpacity>
@@ -3687,7 +3702,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                           'Silent Unlock URL'
                         )
                       }
@@ -3700,13 +3715,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                         'Silent Unlock URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
+                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
                   </TouchableOpacity>
@@ -3721,7 +3736,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                           'Silent Lock URL'
                         )
                       }
@@ -3734,13 +3749,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                         'Silent Lock URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
+                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
                   </TouchableOpacity>
@@ -3755,7 +3770,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                           'Silent Climate AC URL'
                         )
                       }
@@ -3768,13 +3783,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                         'Silent Climate AC On URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
+                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
                   </TouchableOpacity>
@@ -3789,7 +3804,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                           'Silent Climate AC Off URL'
                         )
                       }
@@ -3802,13 +3817,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
+                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
                         'Silent Climate AC Off URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.tonyjoseph456.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
+                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
                   </TouchableOpacity>
@@ -3823,7 +3838,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/start?format=text`,
+                          `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                           'CarPlay Start Trip URL'
                         )
                       }
@@ -3836,13 +3851,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/start?format=text`,
+                        `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                         'CarPlay Start Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/start?format=text`}
+                      {`${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL (with notification text)</Text>
                   </TouchableOpacity>
@@ -3857,7 +3872,7 @@ export default function App() {
                       activeOpacity={0.7}
                       onPress={() =>
                         copyToClipboard(
-                          `${BACKEND_URL}/api/trip/stop?format=text`,
+                          `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                           'CarPlay Stop Trip URL'
                         )
                       }
@@ -3870,13 +3885,13 @@ export default function App() {
                     activeOpacity={0.7}
                     onPress={() =>
                       copyToClipboard(
-                        `${BACKEND_URL}/api/trip/stop?format=text`,
+                        `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
                         'CarPlay Stop Trip URL'
                       )
                     }
                   >
                     <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/stop?format=text`}
+                      {`${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
                     </Text>
                     <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL (with complete trip metrics)</Text>
                   </TouchableOpacity>

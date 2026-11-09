@@ -440,7 +440,7 @@ export class MgIndiaClient {
       (navigator as any).product !== 'ReactNative';
     this.proxyBaseUrl =
       options.proxyBaseUrl ||
-      (isBrowser ? 'https://mg-windsor-webhook.tonyjoseph456.workers.dev' : null);
+      (isBrowser ? 'https://mg-windsor-webhook.mg-ismart.workers.dev' : null);
   }
 
   get hasPin(): boolean {

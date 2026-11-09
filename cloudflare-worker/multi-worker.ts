@@ -961,6 +961,7 @@ let d1InitErrors: string[] = [];
 const D1_TABLE_SCHEMAS = [
   `CREATE TABLE IF NOT EXISTS trips (
     id TEXT PRIMARY KEY,
+    vin TEXT,
     date TEXT NOT NULL,
     start_timestamp INTEGER NOT NULL,
     end_timestamp INTEGER,
@@ -991,6 +992,7 @@ const D1_TABLE_SCHEMAS = [
   `CREATE INDEX IF NOT EXISTS idx_trips_status ON trips(status)`,
   `CREATE TABLE IF NOT EXISTS charges (
     id TEXT PRIMARY KEY,
+    vin TEXT,
     date TEXT NOT NULL,
     start_timestamp INTEGER NOT NULL,
     end_timestamp INTEGER,
@@ -1007,6 +1009,7 @@ const D1_TABLE_SCHEMAS = [
   `CREATE INDEX IF NOT EXISTS idx_charges_date ON charges(date)`,
   `CREATE TABLE IF NOT EXISTS charging_sessions (
     id TEXT PRIMARY KEY,
+    vin TEXT,
     status TEXT NOT NULL,
     start_time INTEGER NOT NULL,
     end_time INTEGER,
@@ -1033,6 +1036,7 @@ const D1_TABLE_SCHEMAS = [
   `CREATE INDEX IF NOT EXISTS idx_charging_sessions_date ON charging_sessions(date)`,
   `CREATE TABLE IF NOT EXISTS notifications (
     id TEXT PRIMARY KEY,
+    vin TEXT,
     type TEXT NOT NULL,
     title TEXT NOT NULL,
     message TEXT NOT NULL,
@@ -1051,6 +1055,10 @@ const D1_TABLE_SCHEMAS = [
   )`
 ];
 
+function normVin(v?: string | null): string {
+  return (v || '').trim().toUpperCase();
+}
+
 async function initD1(db: any) {
   if (d1Initialized || !db || typeof db.prepare !== 'function') return;
   d1InitErrors = [];
@@ -1066,6 +1074,11 @@ async function initD1(db: any) {
   try {
     await db.prepare('ALTER TABLE notifications ADD COLUMN is_read INTEGER DEFAULT 0').run();
   } catch (_) {}
+  for (const tbl of ['trips', 'charges', 'charging_sessions', 'notifications']) {
+    try {
+      await db.prepare(`ALTER TABLE ${tbl} ADD COLUMN vin TEXT`).run();
+    } catch (_) {}
+  }
   const tripCols = [
     'start_lat REAL',
     'start_lng REAL',
@@ -1081,6 +1094,21 @@ async function initD1(db: any) {
       await db.prepare(`ALTER TABLE trips ADD COLUMN ${col}`).run();
     } catch (_) {}
   }
+  // Backfill any pre-existing single-user rows (where vin IS NULL) to the primary owner's VIN from mg_active_session
+  try {
+    const sessRow: any = await db.prepare("SELECT value FROM kv_store WHERE key = 'mg_active_session'").first();
+    if (sessRow?.value) {
+      const parsed = JSON.parse(sessRow.value);
+      const primaryVin = normVin(parsed?.vin);
+      if (primaryVin) {
+        for (const tbl of ['trips', 'charges', 'charging_sessions', 'notifications']) {
+          try {
+            await db.prepare(`UPDATE ${tbl} SET vin = ? WHERE vin IS NULL OR vin = ''`).bind(primaryVin).run();
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
   if (d1InitErrors.length === 0) {
     d1Initialized = true;
   }
@@ -1225,24 +1253,25 @@ async function dispatchTripNotification(url: URL | null, title: string, bodyText
   }
 }
 
-// D1 and KV Dual Storage Helpers
+// D1 and KV Dual Storage Helpers (with Multi-User VIN Isolation)
 async function d1InsertTrip(env: Env, trip: any) {
+  const v = normVin(trip.vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
       try {
         await env.DB.prepare(`
           INSERT OR REPLACE INTO trips (
-            id, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
+            id, vin, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
             start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh,
             efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh,
             start_lat, start_lng, end_lat, end_lng,
             start_cabin_temp_c, end_cabin_temp_c, start_exterior_temp_c, end_exterior_temp_c,
             status
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
-          trip.id, trip.date, trip.start_timestamp, trip.end_timestamp || null, trip.duration_seconds || null,
+          trip.id, v || null, trip.date, trip.start_timestamp, trip.end_timestamp || null, trip.duration_seconds || null,
           trip.distance_km != null ? Number(trip.distance_km) : null,
           trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
           trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
@@ -1290,36 +1319,38 @@ async function d1InsertTrip(env: Env, trip: any) {
     try {
       const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
       const filtered = trips.filter((t: any) => t.id !== trip.id);
-      filtered.unshift(trip);
+      filtered.unshift({ ...trip, vin: v || trip.vin });
       await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(filtered.slice(0, 300)));
       if (trip.status === 'ongoing') {
-        await env.TRIP_KV.put('d1_fallback:active_trip', JSON.stringify(trip));
+        await env.TRIP_KV.put(v ? `d1_fallback:active_trip:${v}` : 'd1_fallback:active_trip', JSON.stringify({ ...trip, vin: v || trip.vin }));
       }
     } catch (_) {}
   }
 }
 
-async function d1BatchSyncTrips(env: Env, rawTrips: any[]): Promise<number> {
+async function d1BatchSyncTrips(env: Env, rawTrips: any[], defaultVin?: string | null): Promise<number> {
   if (!Array.isArray(rawTrips) || rawTrips.length === 0) return 0;
   let count = 0;
+  const fallbackVin = normVin(defaultVin);
   if (env.DB) {
     await initD1(env.DB);
     for (const trip of rawTrips) {
       try {
         const id = trip.id || ('trip_' + (trip.start_timestamp || Math.floor(Date.now() / 1000)) + '_' + Math.random().toString(36).substring(2, 6));
         const date = trip.date || (trip.start_timestamp ? istDateString(Number(trip.start_timestamp)) : istDateString(Math.floor(Date.now() / 1000)));
+        const v = normVin(trip.vin) || fallbackVin || null;
         try {
           await env.DB.prepare(`
             INSERT OR REPLACE INTO trips (
-              id, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
+              id, vin, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
               start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh,
               efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh,
               start_lat, start_lng, end_lat, end_lng,
               start_cabin_temp_c, end_cabin_temp_c, start_exterior_temp_c, end_exterior_temp_c,
               status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
-            id, date, Number(trip.start_timestamp) || 0,
+            id, v, date, Number(trip.start_timestamp) || 0,
             trip.end_timestamp ? Number(trip.end_timestamp) : null,
             trip.duration_seconds ? Number(trip.duration_seconds) : null,
             trip.distance_km != null ? Number(trip.distance_km) : null,
@@ -1383,6 +1414,7 @@ async function d1BatchSyncTrips(env: Env, rawTrips: any[]): Promise<number> {
         if (t?.id) {
           map.set(t.id, {
             ...t,
+            vin: normVin(t.vin) || fallbackVin || undefined,
             date: t.date || (t.start_timestamp ? istDateString(Number(t.start_timestamp)) : ''),
             status: t.status || 'completed',
           });
@@ -1411,17 +1443,28 @@ async function d1DeleteTrip(env: Env, tripId: string) {
   }
 }
 
-async function d1ClearTrips(env: Env) {
+async function d1ClearTrips(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare('DELETE FROM trips').run();
+      if (v) {
+        await env.DB.prepare('DELETE FROM trips WHERE vin = ?').bind(v).run();
+      } else {
+        await env.DB.prepare('DELETE FROM trips').run();
+      }
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
-      await env.TRIP_KV.delete('d1_fallback:trips');
-      await env.TRIP_KV.delete('d1_fallback:active_trip');
+      if (v) {
+        const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+        await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips.filter((t: any) => normVin(t.vin) !== v)));
+        await env.TRIP_KV.delete(`d1_fallback:active_trip:${v}`);
+      } else {
+        await env.TRIP_KV.delete('d1_fallback:trips');
+        await env.TRIP_KV.delete('d1_fallback:active_trip');
+      }
     } catch (_) {}
   }
 }
@@ -1492,39 +1535,60 @@ async function d1UpdateTrip(env: Env, tripId: string, updates: any) {
       const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
       const idx = trips.findIndex((t: any) => t.id === tripId);
       if (idx !== -1) {
+        const v = normVin(trips[idx].vin);
         trips[idx] = { ...trips[idx], ...updates, status: 'completed' };
         await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips.slice(0, 200)));
+        if (v) await env.TRIP_KV.delete(`d1_fallback:active_trip:${v}`);
       }
       await env.TRIP_KV.delete('d1_fallback:active_trip');
     } catch (_) {}
   }
 }
 
-async function d1GetActiveTrip(env: Env) {
+async function d1GetActiveTrip(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' ORDER BY start_timestamp DESC LIMIT 1").first();
-      if (row) return row;
+      if (v) {
+        const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY start_timestamp DESC LIMIT 1").bind(v).first();
+        if (row) return row;
+      } else {
+        const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' ORDER BY start_timestamp DESC LIMIT 1").first();
+        if (row) return row;
+      }
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
+      if (v) {
+        const activeV = await env.TRIP_KV.get(`d1_fallback:active_trip:${v}`, 'json');
+        if (activeV) return activeV;
+      }
       const active = await env.TRIP_KV.get('d1_fallback:active_trip', 'json');
-      if (active) return active;
+      if (active && (!v || !active.vin || normVin(active.vin) === v)) return active;
       const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
-      return trips.find((t: any) => t.status === 'ongoing') || null;
+      return trips.find((t: any) => t.status === 'ongoing' && (!v || !t.vin || normVin(t.vin) === v)) || null;
     } catch (_) {}
   }
   return null;
 }
 
-async function d1GetTrips(env: Env, date?: string | null) {
+async function d1GetTrips(env: Env, date?: string | null, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
       if (!date || date === 'all') {
+        if (v) {
+          const res = await env.DB.prepare("SELECT * FROM trips WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
+          return res.results || [];
+        }
         const res = await env.DB.prepare("SELECT * FROM trips ORDER BY start_timestamp DESC LIMIT 150").all();
+        return res.results || [];
+      }
+      if (v) {
+        const res = await env.DB.prepare("SELECT * FROM trips WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
         return res.results || [];
       }
       const res = await env.DB.prepare("SELECT * FROM trips WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
@@ -1533,7 +1597,8 @@ async function d1GetTrips(env: Env, date?: string | null) {
   }
   if (env.TRIP_KV) {
     try {
-      const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+      let trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+      if (v) trips = trips.filter((t: any) => normVin(t.vin) === v);
       if (!date || date === 'all') return trips;
       return trips.filter((t: any) => t.date === date);
     } catch (_) {}
@@ -1541,17 +1606,23 @@ async function d1GetTrips(env: Env, date?: string | null) {
   return [];
 }
 
-async function d1GetTripDates(env: Env) {
+async function d1GetTripDates(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
+      if (v) {
+        const res = await env.DB.prepare("SELECT DISTINCT date FROM trips WHERE vin = ? ORDER BY date DESC").bind(v).all();
+        return (res.results || []).map((r: any) => r.date).filter(Boolean);
+      }
       const res = await env.DB.prepare("SELECT DISTINCT date FROM trips ORDER BY date DESC").all();
       return (res.results || []).map((r: any) => r.date).filter(Boolean);
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
-      const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+      let trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+      if (v) trips = trips.filter((t: any) => normVin(t.vin) === v);
       return Array.from(new Set(trips.map((t: any) => t.date).filter(Boolean)));
     } catch (_) {}
   }
@@ -1560,14 +1631,15 @@ async function d1GetTripDates(env: Env) {
 
 // Charges D1 & KV helpers
 async function d1InsertCharge(env: Env, charge: any) {
+  const v = normVin(charge.vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
       await env.DB.prepare(`
-        INSERT OR REPLACE INTO charges (id, date, start_timestamp, end_timestamp, duration_seconds, start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO charges (id, vin, date, start_timestamp, end_timestamp, duration_seconds, start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
-        charge.id, charge.date, charge.start_timestamp, charge.end_timestamp || null, charge.duration_seconds || null,
+        charge.id, v || null, charge.date, charge.start_timestamp, charge.end_timestamp || null, charge.duration_seconds || null,
         charge.start_soc != null ? Number(charge.start_soc) : null,
         charge.end_soc != null ? Number(charge.end_soc) : null,
         charge.energy_added_kwh != null ? Number(charge.energy_added_kwh) : null,
@@ -1584,31 +1656,33 @@ async function d1InsertCharge(env: Env, charge: any) {
     try {
       const charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
       const filtered = charges.filter((c: any) => c.id !== charge.id);
-      filtered.unshift(charge);
+      filtered.unshift({ ...charge, vin: v || charge.vin });
       await env.TRIP_KV.put('d1_fallback:charges', JSON.stringify(filtered.slice(0, 300)));
       if (charge.status === 'charging') {
-        await env.TRIP_KV.put('d1_fallback:active_charge', JSON.stringify(charge));
+        await env.TRIP_KV.put('d1_fallback:active_charge', JSON.stringify({ ...charge, vin: v || charge.vin }));
       }
     } catch (_) {}
   }
 }
 
-async function d1BatchSyncCharges(env: Env, rawCharges: any[]): Promise<number> {
+async function d1BatchSyncCharges(env: Env, rawCharges: any[], defaultVin?: string | null): Promise<number> {
   if (!Array.isArray(rawCharges) || rawCharges.length === 0) return 0;
   let count = 0;
+  const fallbackVin = normVin(defaultVin);
   if (env.DB) {
     await initD1(env.DB);
     for (const charge of rawCharges) {
       try {
         const id = charge.id || ('chg_' + (charge.start_timestamp || Math.floor(Date.now() / 1000)) + '_' + Math.random().toString(36).substring(2, 6));
         const date = charge.date || (charge.start_timestamp ? istDateString(Number(charge.start_timestamp)) : istDateString(Math.floor(Date.now() / 1000)));
+        const v = normVin(charge.vin) || fallbackVin || null;
         await env.DB.prepare(`
           INSERT OR REPLACE INTO charges (
-            id, date, start_timestamp, end_timestamp, duration_seconds,
+            id, vin, date, start_timestamp, end_timestamp, duration_seconds,
             start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
-          id, date, Number(charge.start_timestamp) || 0,
+          id, v, date, Number(charge.start_timestamp) || 0,
           charge.end_timestamp ? Number(charge.end_timestamp) : null,
           charge.duration_seconds ? Number(charge.duration_seconds) : null,
           charge.start_soc != null ? Number(charge.start_soc) : null,
@@ -1636,6 +1710,7 @@ async function d1BatchSyncCharges(env: Env, rawCharges: any[]): Promise<number> 
         if (c?.id) {
           map.set(c.id, {
             ...c,
+            vin: normVin(c.vin) || fallbackVin || undefined,
             date: c.date || (c.start_timestamp ? istDateString(Number(c.start_timestamp)) : ''),
             status: c.status || 'completed',
           });
@@ -1654,6 +1729,7 @@ async function d1DeleteCharge(env: Env, chargeId: string) {
     await initD1(env.DB);
     try {
       await env.DB.prepare('DELETE FROM charges WHERE id = ?').bind(chargeId).run();
+      await env.DB.prepare('DELETE FROM charging_sessions WHERE id = ?').bind(chargeId).run();
     } catch (_) {}
   }
   if (env.TRIP_KV) {
@@ -1664,17 +1740,27 @@ async function d1DeleteCharge(env: Env, chargeId: string) {
   }
 }
 
-async function d1ClearCharges(env: Env) {
+async function d1ClearCharges(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare('DELETE FROM charges').run();
+      if (v) {
+        await env.DB.prepare('DELETE FROM charges WHERE vin = ?').bind(v).run();
+      } else {
+        await env.DB.prepare('DELETE FROM charges').run();
+      }
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
-      await env.TRIP_KV.delete('d1_fallback:charges');
-      await env.TRIP_KV.delete('d1_fallback:active_charge');
+      if (v) {
+        const charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+        await env.TRIP_KV.put('d1_fallback:charges', JSON.stringify(charges.filter((c: any) => normVin(c.vin) !== v)));
+      } else {
+        await env.TRIP_KV.delete('d1_fallback:charges');
+        await env.TRIP_KV.delete('d1_fallback:active_charge');
+      }
     } catch (_) {}
   }
 }
@@ -1713,31 +1799,46 @@ async function d1UpdateCharge(env: Env, chargeId: string, updates: any) {
   }
 }
 
-async function d1GetActiveCharge(env: Env) {
+async function d1GetActiveCharge(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      const row = await env.DB.prepare("SELECT * FROM charges WHERE status = 'charging' ORDER BY start_timestamp DESC LIMIT 1").first();
-      if (row) return row;
+      if (v) {
+        const row = await env.DB.prepare("SELECT * FROM charges WHERE status = 'charging' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY start_timestamp DESC LIMIT 1").bind(v).first();
+        if (row) return row;
+      } else {
+        const row = await env.DB.prepare("SELECT * FROM charges WHERE status = 'charging' ORDER BY start_timestamp DESC LIMIT 1").first();
+        if (row) return row;
+      }
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
       const active = await env.TRIP_KV.get('d1_fallback:active_charge', 'json');
-      if (active) return active;
+      if (active && (!v || !active.vin || normVin(active.vin) === v)) return active;
       const charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
-      return charges.find((c: any) => c.status === 'charging') || null;
+      return charges.find((c: any) => c.status === 'charging' && (!v || !c.vin || normVin(c.vin) === v)) || null;
     } catch (_) {}
   }
   return null;
 }
 
-async function d1GetCharges(env: Env, date?: string | null) {
+async function d1GetCharges(env: Env, date?: string | null, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
       if (!date || date === 'all') {
+        if (v) {
+          const res = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
+          return res.results || [];
+        }
         const res = await env.DB.prepare("SELECT * FROM charges ORDER BY start_timestamp DESC LIMIT 150").all();
+        return res.results || [];
+      }
+      if (v) {
+        const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
         return res.results || [];
       }
       const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
@@ -1746,7 +1847,8 @@ async function d1GetCharges(env: Env, date?: string | null) {
   }
   if (env.TRIP_KV) {
     try {
-      const charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+      let charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+      if (v) charges = charges.filter((c: any) => normVin(c.vin) === v);
       if (!date || date === 'all') return charges;
       return charges.filter((c: any) => c.date === date);
     } catch (_) {}
@@ -1754,42 +1856,57 @@ async function d1GetCharges(env: Env, date?: string | null) {
   return [];
 }
 
-async function d1GetChargeDates(env: Env) {
+async function d1GetChargeDates(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      const res = await env.DB.prepare("SELECT DISTINCT date FROM charges ORDER BY date DESC").all();
-      return (res.results || []).map((r: any) => r.date).filter(Boolean);
+      if (v) {
+        const resA = await env.DB.prepare("SELECT DISTINCT date FROM charging_sessions WHERE vin = ? ORDER BY date DESC").bind(v).all();
+        const resB = await env.DB.prepare("SELECT DISTINCT date FROM charges WHERE vin = ? ORDER BY date DESC").bind(v).all();
+        const set = new Set<string>([
+          ...(resA.results || []).map((r: any) => r.date),
+          ...(resB.results || []).map((r: any) => r.date),
+        ].filter(Boolean));
+        return Array.from(set).sort().reverse();
+      }
+      const resA = await env.DB.prepare("SELECT DISTINCT date FROM charging_sessions ORDER BY date DESC").all();
+      const resB = await env.DB.prepare("SELECT DISTINCT date FROM charges ORDER BY date DESC").all();
+      const set = new Set<string>([
+        ...(resA.results || []).map((r: any) => r.date),
+        ...(resB.results || []).map((r: any) => r.date),
+      ].filter(Boolean));
+      return Array.from(set).sort().reverse();
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
-      const charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+      let charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+      if (v) charges = charges.filter((c: any) => normVin(c.vin) === v);
       return Array.from(new Set(charges.map((c: any) => c.date).filter(Boolean)));
     } catch (_) {}
   }
   return [];
 }
 
-
 // Notifications D1 & KV helpers
 async function d1InsertNotification(env: Env, notif: any) {
+  const v = normVin(notif.vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
       await env.DB.prepare(`
-        INSERT INTO notifications (id, type, title, message, timestamp, date, is_read, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO notifications (id, vin, type, title, message, timestamp, date, is_read, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
-        notif.id, notif.type, notif.title, notif.message,
+        notif.id, v || null, notif.type, notif.title, notif.message,
         notif.timestamp, notif.date, notif.is_read || 0, notif.metadata || ''
       ).run();
       return;
     } catch (err: any) {
-      console.warn('d1InsertNotification primary error, trying fallback without is_read:', err?.message || err);
+      console.warn('d1InsertNotification primary error, trying fallback:', err?.message || err);
     }
 
-    // Resilient fallback in case existing notifications table doesn't have is_read column:
     try {
       await env.DB.prepare(`
         INSERT INTO notifications (id, type, title, message, timestamp, date, metadata)
@@ -1806,39 +1923,55 @@ async function d1InsertNotification(env: Env, notif: any) {
   if (env.TRIP_KV) {
     try {
       const list = (await env.TRIP_KV.get('d1_fallback:notifications', 'json')) || [];
-      list.unshift(notif);
+      list.unshift({ ...notif, vin: v || notif.vin });
       await env.TRIP_KV.put('d1_fallback:notifications', JSON.stringify(list.slice(0, 100)));
     } catch (_) {}
   }
 }
 
-async function d1GetNotifications(env: Env, limit = 50) {
+async function d1GetNotifications(env: Env, limit = 50, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
+      if (v) {
+        const res = await env.DB.prepare('SELECT * FROM notifications WHERE vin = ? ORDER BY timestamp DESC LIMIT ?').bind(v, limit).all();
+        return res.results || [];
+      }
       const res = await env.DB.prepare('SELECT * FROM notifications ORDER BY timestamp DESC LIMIT ?').bind(limit).all();
       return res.results || [];
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
-      const list = (await env.TRIP_KV.get('d1_fallback:notifications', 'json')) || [];
+      let list = (await env.TRIP_KV.get('d1_fallback:notifications', 'json')) || [];
+      if (v) list = list.filter((n: any) => normVin(n.vin) === v);
       return list.slice(0, limit);
     } catch (_) {}
   }
   return [];
 }
 
-async function d1ClearNotifications(env: Env) {
+async function d1ClearNotifications(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare('DELETE FROM notifications').run();
+      if (v) {
+        await env.DB.prepare('DELETE FROM notifications WHERE vin = ?').bind(v).run();
+      } else {
+        await env.DB.prepare('DELETE FROM notifications').run();
+      }
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
-      await env.TRIP_KV.delete('d1_fallback:notifications');
+      if (v) {
+        const list = (await env.TRIP_KV.get('d1_fallback:notifications', 'json')) || [];
+        await env.TRIP_KV.put('d1_fallback:notifications', JSON.stringify(list.filter((n: any) => normVin(n.vin) !== v)));
+      } else {
+        await env.TRIP_KV.delete('d1_fallback:notifications');
+      }
     } catch (_) {}
   }
 }
@@ -1846,8 +1979,34 @@ async function d1ClearNotifications(env: Env) {
 async function getMgClientForWebhook(env: Env, url: URL): Promise<{ client: MgIndiaClient; vin?: string } | null> {
   const token = (url.searchParams.get('token') || url.searchParams.get('key') || '').trim();
   const userId = (url.searchParams.get('userId') || url.searchParams.get('id') || '').trim();
+  const reqVin = normVin(url.searchParams.get('vin'));
+  const reqPhone = (url.searchParams.get('phone') || '').replace(/\D/g, '');
 
-  // 1. Try multi-user stored session in KV
+  // 1. Try per-VIN or per-Phone session stored in D1/KV (for Multi-User support)
+  if (reqVin) {
+    try {
+      const vinSession = await d1KvGet(env, `mg_session:${reqVin}`);
+      if (vinSession?.token && vinSession?.uid) {
+        const client = new MgIndiaClient({ phone: vinSession.phone || '9999999999', password: '', vin: vinSession.vin || reqVin });
+        client.uid = vinSession.uid;
+        client.token = vinSession.token;
+        return { client, vin: normVin(vinSession.vin) || reqVin };
+      }
+    } catch (_) {}
+  }
+  if (reqPhone && !url.searchParams.get('password') && !url.searchParams.get('pin')) {
+    try {
+      const phoneSession = await d1KvGet(env, `mg_session_phone:${reqPhone}`);
+      if (phoneSession?.token && phoneSession?.uid) {
+        const client = new MgIndiaClient({ phone: phoneSession.phone || reqPhone, password: '', vin: phoneSession.vin });
+        client.uid = phoneSession.uid;
+        client.token = phoneSession.token;
+        return { client, vin: normVin(phoneSession.vin) || undefined };
+      }
+    } catch (_) {}
+  }
+
+  // 2. Try multi-user stored session in KV by userId / token
   if (env.TRIP_KV) {
     let targetId = userId;
     if (!targetId && token) {
@@ -1862,32 +2021,10 @@ async function getMgClientForWebhook(env: Env, url: URL): Promise<{ client: MgIn
           const client = new MgIndiaClient({ phone: u.mg.phone || '9999999999', password: '', vin: u.mg.vin });
           client.uid = u.mg.uid;
           client.token = u.mg.token;
-          return { client, vin: u.mg.vin };
+          return { client, vin: normVin(u.mg.vin) || undefined };
         }
       }
     }
-  }
-
-  // Try last active session stored in D1 or KV
-  try {
-    const lastSession = await d1KvGet(env, 'mg_active_session');
-    if (lastSession?.token && lastSession?.uid) {
-      const client = new MgIndiaClient({ phone: lastSession.phone || '9999999999', password: '', vin: lastSession.vin });
-      client.uid = lastSession.uid;
-      client.token = lastSession.token;
-      return { client, vin: lastSession.vin };
-    }
-  } catch (_) {}
-
-  // 2. Try single-user environment variables (if configured in Cloudflare)
-  if (env.MG_PHONE && (env.MG_PASSWORD || env.MG_PIN)) {
-    const client = new MgIndiaClient({
-      phone: env.MG_PHONE,
-      password: env.MG_PASSWORD || '',
-      vin: env.MG_VIN,
-      pinHash: env.MG_PIN && /^\d{4}$/.test(env.MG_PIN) ? hashControlPin(env.MG_PIN) : undefined,
-    });
-    return { client, vin: env.MG_VIN };
   }
 
   // 3. Try query parameters (?phone=...&password=...&vin=...)
@@ -1902,7 +2039,29 @@ async function getMgClientForWebhook(env: Env, url: URL): Promise<{ client: MgIn
       vin: qVin || undefined,
       pinHash: qPin && /^\d{4}$/.test(qPin) ? hashControlPin(qPin) : undefined,
     });
-    return { client, vin: qVin || undefined };
+    return { client, vin: normVin(qVin) || undefined };
+  }
+
+  // 4. Try last active session stored in D1 or KV
+  try {
+    const lastSession = await d1KvGet(env, 'mg_active_session');
+    if (lastSession?.token && lastSession?.uid) {
+      const client = new MgIndiaClient({ phone: lastSession.phone || '9999999999', password: '', vin: lastSession.vin });
+      client.uid = lastSession.uid;
+      client.token = lastSession.token;
+      return { client, vin: normVin(lastSession.vin) || undefined };
+    }
+  } catch (_) {}
+
+  // 5. Try single-user environment variables (if configured in Cloudflare)
+  if (env.MG_PHONE && (env.MG_PASSWORD || env.MG_PIN)) {
+    const client = new MgIndiaClient({
+      phone: env.MG_PHONE,
+      password: env.MG_PASSWORD || '',
+      vin: env.MG_VIN,
+      pinHash: env.MG_PIN && /^\d{4}$/.test(env.MG_PIN) ? hashControlPin(env.MG_PIN) : undefined,
+    });
+    return { client, vin: normVin(env.MG_VIN) || undefined };
   }
 
   return null;
@@ -1959,64 +2118,90 @@ async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<{
 }
 
 // ---------------------------------------------------------------- Charging Session Tracking Helpers (Cloudflare D1)
-async function d1GetActiveChargingSession(env: Env): Promise<any | null> {
+async function d1GetActiveChargingSession(env: Env, vin?: string | null): Promise<any | null> {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      const row = await env.DB.prepare(
-        "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') ORDER BY start_time DESC LIMIT 1"
-      ).first();
-      if (row) return row;
+      if (v) {
+        const row = await env.DB.prepare(
+          "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY start_time DESC LIMIT 1"
+        ).bind(v).first();
+        if (row) return row;
+      } else {
+        const row = await env.DB.prepare(
+          "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') ORDER BY start_time DESC LIMIT 1"
+        ).first();
+        if (row) return row;
+      }
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
-      return await env.TRIP_KV.get('d1_fallback:active_charging_session', 'json');
+      const act = await env.TRIP_KV.get('d1_fallback:active_charging_session', 'json');
+      if (act && (!v || !act.vin || normVin(act.vin) === v)) return act;
     } catch (_) {}
   }
   return null;
 }
 
-async function d1GetLastCompletedChargingSession(env: Env): Promise<any | null> {
+async function d1GetLastCompletedChargingSession(env: Env, vin?: string | null): Promise<any | null> {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      const row = await env.DB.prepare(
-        "SELECT * FROM charging_sessions WHERE status = 'completed' ORDER BY end_time DESC LIMIT 1"
-      ).first();
-      if (row) return row;
+      if (v) {
+        const row = await env.DB.prepare(
+          "SELECT * FROM charging_sessions WHERE status = 'completed' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY end_time DESC LIMIT 1"
+        ).bind(v).first();
+        if (row) return row;
+      } else {
+        const row = await env.DB.prepare(
+          "SELECT * FROM charging_sessions WHERE status = 'completed' ORDER BY end_time DESC LIMIT 1"
+        ).first();
+        if (row) return row;
+      }
     } catch (_) {}
   }
   return null;
 }
 
-async function d1GetLastCompletedTrip(env: Env): Promise<any | null> {
+async function d1GetLastCompletedTrip(env: Env, vin?: string | null): Promise<any | null> {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      const row = await env.DB.prepare(
-        "SELECT * FROM trips WHERE status = 'completed' ORDER BY end_timestamp DESC LIMIT 1"
-      ).first();
-      if (row) return row;
+      if (v) {
+        const row = await env.DB.prepare(
+          "SELECT * FROM trips WHERE status = 'completed' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY end_timestamp DESC LIMIT 1"
+        ).bind(v).first();
+        if (row) return row;
+      } else {
+        const row = await env.DB.prepare(
+          "SELECT * FROM trips WHERE status = 'completed' ORDER BY end_timestamp DESC LIMIT 1"
+        ).first();
+        if (row) return row;
+      }
     } catch (_) {}
   }
   return null;
 }
 
 async function d1CreateChargingSession(env: Env, session: any) {
+  const v = normVin(session.vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
       await env.DB.prepare(`
         INSERT INTO charging_sessions (
-          id, status, start_time, end_time, start_soc, end_soc,
+          id, vin, status, start_time, end_time, start_soc, end_soc,
           soc_added, kwh_added, energy_used_kwh, charging_loss_kwh,
           charge_type, peak_power_kw, last_power_kw, start_odometer_km,
           start_range_km, outage_count, paused_at, active_duration_seconds,
           last_poll_time, date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
-        session.id, session.status, session.start_time, session.end_time || null,
+        session.id, v || null, session.status, session.start_time, session.end_time || null,
         session.start_soc, session.end_soc || session.start_soc,
         session.soc_added || 0, session.kwh_added || 0,
         session.energy_used_kwh || 0, session.charging_loss_kwh || 0,
@@ -2032,7 +2217,7 @@ async function d1CreateChargingSession(env: Env, session: any) {
   }
   if (env.TRIP_KV) {
     try {
-      await env.TRIP_KV.put('d1_fallback:active_charging_session', JSON.stringify(session));
+      await env.TRIP_KV.put('d1_fallback:active_charging_session', JSON.stringify({ ...session, vin: v || session.vin }));
     } catch (_) {}
   }
 }
@@ -2098,10 +2283,17 @@ async function d1DeleteChargingSession(env: Env, sessionId: string) {
   }
 }
 
-async function d1GetChargingHistory(env: Env, limit = 50) {
+async function d1GetChargingHistory(env: Env, limit = 50, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
+      if (v) {
+        const res = await env.DB.prepare(
+          'SELECT * FROM charging_sessions WHERE vin = ? ORDER BY start_time DESC LIMIT ?'
+        ).bind(v, limit).all();
+        return res.results || [];
+      }
       const res = await env.DB.prepare(
         'SELECT * FROM charging_sessions ORDER BY start_time DESC LIMIT ?'
       ).bind(limit).all();
@@ -2111,11 +2303,16 @@ async function d1GetChargingHistory(env: Env, limit = 50) {
   return [];
 }
 
-async function d1ClearChargingHistory(env: Env) {
+async function d1ClearChargingHistory(env: Env, vin?: string | null) {
+  const v = normVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare('DELETE FROM charging_sessions').run();
+      if (v) {
+        await env.DB.prepare('DELETE FROM charging_sessions WHERE vin = ?').bind(v).run();
+      } else {
+        await env.DB.prepare('DELETE FROM charging_sessions').run();
+      }
     } catch (_) {}
   }
   if (env.TRIP_KV) {
@@ -2130,9 +2327,11 @@ async function syncChargingSessionState(
   env: Env,
   url: URL,
   liveTelem: any,
-  triggerSource: string = 'poll'
+  triggerSource: string = 'poll',
+  vin?: string | null
 ): Promise<any> {
-  const activeSession = await d1GetActiveChargingSession(env);
+  const v = normVin(vin || url.searchParams.get('vin'));
+  const activeSession = await d1GetActiveChargingSession(env, v);
   const nowSec = Math.floor(Date.now() / 1000);
 
   // If no active charging session in D1
@@ -2142,7 +2341,7 @@ async function syncChargingSessionState(
     }
 
     // SCENARIO 4 RESUMPTION: Check if this is a resumption of a session that ended < 6h ago at exact same odo
-    const lastSession = await d1GetLastCompletedChargingSession(env);
+    const lastSession = await d1GetLastCompletedChargingSession(env, v);
     if (
       lastSession &&
       lastSession.end_time &&
@@ -2161,8 +2360,7 @@ async function syncChargingSessionState(
     }
 
     // SCENARIO 1 & 2: Start brand new charging session
-    // Strictly isolate from trip logic: read-only check on lastTrip.end_soc and end_odometer_km
-    const lastTrip = await d1GetLastCompletedTrip(env);
+    const lastTrip = await d1GetLastCompletedTrip(env, v);
     let startSoc = liveTelem.soc;
     if (
       lastTrip &&
@@ -2175,6 +2373,7 @@ async function syncChargingSessionState(
     const chargeType: 'AC' | 'DC' = (liveTelem.powerKw > 11 || liveTelem.chargeType === 'DC') ? 'DC' : 'AC';
     const newSession = {
       id: 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: v || null,
       status: 'ongoing',
       start_time: nowSec,
       end_time: null,
@@ -2204,6 +2403,7 @@ async function syncChargingSessionState(
     await dispatchTripNotification(url, title, body, 'electric_plug,zap', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: v || null,
       type: 'charge_start',
       title,
       message: body,
@@ -2217,6 +2417,7 @@ async function syncChargingSessionState(
   }
 
   // Active session exists (either 'ongoing' or 'paused')
+  const sessionVin = normVin(activeSession.vin) || v || null;
   const startOdo = Number(activeSession.start_odometer_km) || liveTelem.odometer;
   const odoDiff = Math.max(0, Number((liveTelem.odometer - startOdo).toFixed(1)));
   const startSoc = Number(activeSession.start_soc) || 0;
@@ -2260,6 +2461,7 @@ async function syncChargingSessionState(
     await dispatchTripNotification(url, title, body, 'battery,white_check_mark', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: sessionVin,
       type: 'charge_end',
       title,
       message: body,
@@ -2302,6 +2504,7 @@ async function syncChargingSessionState(
     await dispatchTripNotification(url, title, body, 'battery,sparkles', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: sessionVin,
       type: 'charge_end',
       title,
       message: body,
@@ -2330,6 +2533,7 @@ async function syncChargingSessionState(
       await dispatchTripNotification(url, pauseTitle, pauseBody, 'warning,electric_plug', env);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        vin: sessionVin,
         type: 'charge_paused',
         title: pauseTitle,
         message: pauseBody,
@@ -2343,7 +2547,6 @@ async function syncChargingSessionState(
     } else if (activeSession.status === 'paused') {
       const pausedSec = nowSec - (Number(activeSession.paused_at) || nowSec);
       if (pausedSec > 28800) { // Paused > 8 hours -> finalize
-        const activeSec = Number(activeSession.active_duration_seconds) || 0;
         const socAdded = Math.max(0, currentSoc - startSoc);
         const kwhAdded = Number(((socAdded / 100) * 38.0).toFixed(2));
         const effFactor = (activeSession.charge_type === 'DC') ? 0.94 : 0.88;
@@ -2411,6 +2614,7 @@ async function syncChargingSessionState(
       await dispatchTripNotification(url, resumeTitle, resumeBody, 'electric_plug,zap', env);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        vin: sessionVin,
         type: 'charge_resumed',
         title: resumeTitle,
         message: resumeBody,
@@ -2470,6 +2674,8 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     } catch (_) {}
   }
 
+  const reqVin = normVin(url.searchParams.get('vin') || body?.vin);
+
   // ----------------------------------------------------------- Apple CarPlay & Cloudflare D1 Endpoints
   // Start Trip (CarPlay Connects trigger)
   if (path === '/api/trip/start') {
@@ -2477,8 +2683,9 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     if (!mg) {
       return json({ success: false, error: 'MG vehicle session not found. Please log in from the web app first.' }, 400);
     }
+    const activeVin = normVin(mg.vin || reqVin);
     try {
-      const telem = await fetchCarTelemetry(mg.client, mg.vin);
+      const telem = await fetchCarTelemetry(mg.client, activeVin || undefined);
       const startLocation = await resolveLocation(telem.lat, telem.lng);
       const nowSec = Math.floor(Date.now() / 1000);
       const tripId = 'trip_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
@@ -2486,6 +2693,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
       const trip = {
         id: tripId,
+        vin: activeVin || null,
         date: dateStr,
         start_timestamp: nowSec,
         start_odometer_km: telem.odometer,
@@ -2503,7 +2711,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
       // SCENARIO 5: Car unplugged early and driven away -> finalize any ongoing/paused charging session
       try {
-        await syncChargingSessionState(env, url, telem, 'trip_start');
+        await syncChargingSessionState(env, url, telem, 'trip_start', activeVin);
       } catch (_) {}
 
       const title = '🚗 MG Windsor EV • Trip Started';
@@ -2518,6 +2726,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       await dispatchTripNotification(url, title, notificationText, 'car,electric_plug', env);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        vin: activeVin || null,
         type: 'trip_start',
         title,
         message: notificationText,
@@ -2550,7 +2759,9 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
   // Stop Trip (CarPlay Disconnects trigger)
   if (path === '/api/trip/stop') {
-    const ongoingTrip = await d1GetActiveTrip(env);
+    const mg = await getMgClientForWebhook(env, url);
+    const activeVin = normVin(reqVin || mg?.vin);
+    const ongoingTrip = await d1GetActiveTrip(env, activeVin);
     if (!ongoingTrip) {
       const emptyTitle = 'ℹ️ MG Windsor EV • No Active Trip';
       const emptyMsg = 'No ongoing trip was recorded in Cloudflare D1 to stop.\n(Make sure CarPlay Connects ran first, and D1 database is bound).';
@@ -2560,10 +2771,10 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       return new Response(`${emptyTitle}\n\n${emptyMsg}`, { headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS }, status: 200 });
     }
 
-    const mg = await getMgClientForWebhook(env, url);
+    const tripVin = normVin(ongoingTrip.vin) || activeVin || null;
     let telem: any = null;
     if (mg) {
-      telem = await fetchCarTelemetry(mg.client, mg.vin).catch(() => null);
+      telem = await fetchCarTelemetry(mg.client, tripVin || mg.vin).catch(() => null);
     }
 
     const startOdo = Number(ongoingTrip.start_odometer_km) || 0;
@@ -2576,7 +2787,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     if (mg && (finalOdo < startOdo || (finalOdo === startOdo && durationSec > 60))) {
       await new Promise((r) => setTimeout(r, 2500));
       try {
-        const refreshed = await fetchCarTelemetry(mg.client, mg.vin);
+        const refreshed = await fetchCarTelemetry(mg.client, tripVin || mg.vin);
         if (refreshed && Number(refreshed.odometer) >= startOdo) {
           telem = refreshed;
           finalOdo = Number(refreshed.odometer);
@@ -2594,13 +2805,12 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const socDiff = Math.max(0, startSoc - endSoc);
 
     // Stationary / Idle Session Detection:
-    // If the car didn't actually drive (< 0.2 km, e.g. sitting in car for 5 mins in driveway),
-    // remove the ongoing trip from D1/KV so trip history stays clean, and notify user accordingly.
     if (distanceKm < 0.2) {
       if (env.DB) {
         await env.DB.prepare('DELETE FROM trips WHERE id = ?').bind(ongoingTrip.id).run().catch(() => {});
       }
       if (env.TRIP_KV) {
+        if (tripVin) await env.TRIP_KV.delete(`d1_fallback:active_trip:${tripVin}`).catch(() => {});
         await env.TRIP_KV.delete('d1_fallback:active_trip').catch(() => {});
         try {
           const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
@@ -2619,6 +2829,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       await dispatchTripNotification(url, idleTitle, idleText, 'information_source', env);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        vin: tripVin,
         type: 'trip_idle',
         title: idleTitle,
         message: idleText,
@@ -2669,10 +2880,10 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
     await d1UpdateTrip(env, ongoingTrip.id, updates);
 
-    // SCENARIO 1: Immediate Plug-In After Trip (Strictly isolated: trip row already saved above)
+    // SCENARIO 1: Immediate Plug-In After Trip
     if (telem?.isCharging) {
       try {
-        await syncChargingSessionState(env, url, telem, 'trip_stop');
+        await syncChargingSessionState(env, url, telem, 'trip_stop', tripVin);
       } catch (_) {}
     }
 
@@ -2694,6 +2905,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy', env);
     await d1InsertNotification(env, {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: tripVin,
       type: 'trip_stop',
       title,
       message: notificationText,
@@ -2717,17 +2929,17 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     });
   }
 
-  // Get Trips for UI (by date or all)
+  // Get Trips for UI (by date or all, filtered by VIN when provided)
   if (path === '/api/trips') {
     const date = url.searchParams.get('date');
-    const trips = await d1GetTrips(env, date);
+    const trips = await d1GetTrips(env, date, reqVin);
     return json({ success: true, trips });
   }
 
   // Batch Sync Trips from Local App to D1
   if (path === '/api/trips/sync') {
     const rawTrips = body?.trips || [];
-    const count = await d1BatchSyncTrips(env, rawTrips);
+    const count = await d1BatchSyncTrips(env, rawTrips, reqVin);
     return json({ success: true, count, message: `Synced ${count} trip(s) to Cloudflare D1` });
   }
 
@@ -2739,15 +2951,15 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     return json({ success: true, message: 'Trip deleted from Cloudflare D1' });
   }
 
-  // Clear all Trips from D1
+  // Clear all Trips from D1 (scoped to VIN if provided)
   if (path === '/api/trips/clear') {
-    await d1ClearTrips(env);
+    await d1ClearTrips(env, reqVin);
     return json({ success: true, message: 'All trips permanently cleared from Cloudflare D1' });
   }
 
   // Get Trip Distinct Dates for Calendar Picker
   if (path === '/api/trip/dates') {
-    const dates = await d1GetTripDates(env);
+    const dates = await d1GetTripDates(env, reqVin);
     return json({ success: true, dates });
   }
 
@@ -2763,6 +2975,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const dateStr = istDateString(nowSec);
     const charge = {
       id: chargeId,
+      vin: normVin(mg?.vin || reqVin) || null,
       date: dateStr,
       start_timestamp: nowSec,
       start_soc: telem?.soc != null ? Number(telem.soc) : 0,
@@ -2777,7 +2990,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
   // Stop Charging
   if (path === '/api/charge/stop') {
-    const ongoingCharge = await d1GetActiveCharge(env);
+    const ongoingCharge = await d1GetActiveCharge(env, reqVin);
     if (!ongoingCharge) {
       return json({ success: false, message: 'No active charging session found to stop' }, 404);
     }
@@ -2809,7 +3022,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   // Get Notifications from D1
   if (path === '/api/notifications') {
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
-    const notifs = await d1GetNotifications(env, limit);
+    const notifs = await d1GetNotifications(env, limit, reqVin);
     return json({ success: true, notifications: notifs });
   }
 
@@ -2818,6 +3031,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const nowSec = Math.floor(Date.now() / 1000);
     const notif = {
       id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: reqVin || null,
       type: 'test',
       title: '🧪 MG Windsor EV • Test Notification',
       message: `Verified D1 Studio insertion at ${formatClockTime(nowSec)}. System is fully operational!`,
@@ -2827,13 +3041,13 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       metadata: JSON.stringify({ test: true, time: new Date().toISOString() }),
     };
     await d1InsertNotification(env, notif);
-    const notifs = await d1GetNotifications(env, 10);
+    const notifs = await d1GetNotifications(env, 10, reqVin);
     return json({ success: true, message: 'Test notification written to D1', count: notifs.length, notification: notif, recent: notifs });
   }
 
   // Clear Notifications from D1
   if (path === '/api/notifications/clear') {
-    await d1ClearNotifications(env);
+    await d1ClearNotifications(env, reqVin);
     return json({ success: true, message: 'Notification history cleared' });
   }
 
@@ -2841,32 +3055,32 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   if (path === '/api/charging-history') {
     const isRefresh = url.searchParams.get('refresh') === 'true';
     if (isRefresh) {
-      const activeSession = await d1GetActiveChargingSession(env);
+      const activeSession = await d1GetActiveChargingSession(env, reqVin);
       if (activeSession) {
         try {
           const mg = await getMgClientForWebhook(env, url);
           if (mg) {
             const telem = await fetchCarTelemetry(mg.client, mg.vin);
-            await syncChargingSessionState(env, url, telem, 'user_refresh');
+            await syncChargingSessionState(env, url, telem, 'user_refresh', reqVin || mg.vin);
           }
         } catch (_) {}
       }
     }
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
-    const sessions = await d1GetChargingHistory(env, limit);
+    const sessions = await d1GetChargingHistory(env, limit, reqVin);
     return json({ success: true, sessions, charges: sessions });
   }
 
   // Clear Charging History
   if (path === '/api/charging-history/clear') {
-    await d1ClearChargingHistory(env);
-    await d1ClearCharges(env).catch(() => {});
+    await d1ClearChargingHistory(env, reqVin);
+    await d1ClearCharges(env, reqVin).catch(() => {});
     return json({ success: true, message: 'All charging sessions permanently cleared from Cloudflare D1' });
   }
 
   // Get active session status directly for PWA banner
   if (path === '/api/charging/active') {
-    const active = await d1GetActiveChargingSession(env);
+    const active = await d1GetActiveChargingSession(env, reqVin);
     return json({ success: true, activeSession: active });
   }
 
@@ -2885,7 +3099,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       chargeType: qKw > 11 ? 'DC' : 'AC',
       rangeKm: Math.round((qSoc / 100) * 331),
     };
-    const session = await syncChargingSessionState(env, url, dummyTelem, 'test_start');
+    const session = await syncChargingSessionState(env, url, dummyTelem, 'test_start', reqVin);
     return json({
       success: true,
       message: '⚡ Test charging session started in Cloudflare D1!',
@@ -2896,7 +3110,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
   // TEST ENDPOINT: End simulated charging session in D1
   if (path === '/api/charging/test-end') {
-    const active = await d1GetActiveChargingSession(env);
+    const active = await d1GetActiveChargingSession(env, reqVin);
     if (!active) {
       return json({
         success: false,
@@ -2916,12 +3130,11 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       chargeType: active.charge_type || 'AC',
       rangeKm: Math.round((qSoc / 100) * 331),
     };
-    // Advance active duration by 45 minutes for realistic energy math
     const fakeDeltaSec = 2700;
     active.active_duration_seconds = (Number(active.active_duration_seconds) || 0) + fakeDeltaSec;
     await d1UpdateChargingSession(env, active.id, { active_duration_seconds: active.active_duration_seconds });
 
-    const session = await syncChargingSessionState(env, url, dummyTelem, 'test_end');
+    const session = await syncChargingSessionState(env, url, dummyTelem, 'test_end', reqVin);
     return json({
       success: true,
       message: '🔋 Test charging session completed and saved to D1!',
@@ -2940,18 +3153,18 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   // Get Charges for UI (by date or all)
   if (path === '/api/charges') {
     const date = url.searchParams.get('date');
-    const sessions = await d1GetChargingHistory(env, 100);
+    const sessions = await d1GetChargingHistory(env, 100, reqVin);
     if (sessions && sessions.length > 0) {
       return json({ success: true, charges: sessions, sessions });
     }
-    const charges = await d1GetCharges(env, date);
+    const charges = await d1GetCharges(env, date, reqVin);
     return json({ success: true, charges, sessions: charges });
   }
 
   // Batch Sync Charges from Local App to D1
   if (path === '/api/charges/sync') {
     const rawCharges = body?.charges || [];
-    const count = await d1BatchSyncCharges(env, rawCharges);
+    const count = await d1BatchSyncCharges(env, rawCharges, reqVin);
     return json({ success: true, count, message: `Synced ${count} charge(s) to Cloudflare D1` });
   }
 
@@ -2965,34 +3178,44 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
   // Clear all Charges from D1
   if (path === '/api/charges/clear') {
-    await d1ClearCharges(env);
+    await d1ClearCharges(env, reqVin);
     return json({ success: true, message: 'All charges permanently cleared from Cloudflare D1' });
   }
 
   // Get Charge Distinct Dates for Calendar Picker
   if (path === '/api/charge/dates') {
-    const dates = await d1GetChargeDates(env);
+    const dates = await d1GetChargeDates(env, reqVin);
     return json({ success: true, dates });
   }
 
-  // Register car credentials & tokens (saved to KV for CarPlay automation without passwords)
+  // Register car credentials & tokens (saved to KV per-VIN and per-Phone for Multi-User CarPlay automation)
   if (path === '/api/register-car' || path === '/api/update-token') {
     if (!body?.uid || !body?.token) return json({ error: 'uid and token required' }, 400);
 
-    await d1KvPut(env, 'mg_active_session', {
+    const cleanVin = normVin(body.vin);
+    const cleanPhone = String(body.phone || '').replace(/\D/g, '');
+    const sessionObj = {
       uid: body.uid,
       token: body.token,
-      vin: body.vin,
-      phone: body.phone,
+      vin: cleanVin || body.vin,
+      phone: cleanPhone || body.phone,
       updatedAt: Math.floor(Date.now() / 1000),
-    });
+    };
+
+    await d1KvPut(env, 'mg_active_session', sessionObj);
+    if (cleanVin) {
+      await d1KvPut(env, `mg_session:${cleanVin}`, sessionObj);
+    }
+    if (cleanPhone) {
+      await d1KvPut(env, `mg_session_phone:${cleanPhone}`, sessionObj);
+    }
     if (body.token) {
       await d1KvPut(env, 'carplay_token:' + body.token, body.uid || 'default');
     }
 
     const u = await authUser(env, url, body);
     if (u) {
-      u.mg = { uid: body.uid, token: body.token, vin: body.vin || u.mg?.vin, phone: body.phone || u.mg?.phone };
+      u.mg = { uid: body.uid, token: body.token, vin: cleanVin || u.mg?.vin, phone: cleanPhone || u.mg?.phone };
       u.mgStatus = 'ok';
       u.mgFailures = 0;
       u.guardUntilSec = 0;
@@ -3337,11 +3560,12 @@ async function runCron(env: Env): Promise<void> {
 
     if (shouldPoll) {
       try {
-        const dummyUrl = new URL('https://mg-windsor-webhook.workers.dev');
+        const sVin = normVin(activeSession.vin);
+        const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev${sVin ? `?vin=${encodeURIComponent(sVin)}` : ''}`);
         const mg = await getMgClientForWebhook(env, dummyUrl);
         if (mg) {
-          const telem = await fetchCarTelemetry(mg.client, mg.vin);
-          await syncChargingSessionState(env, dummyUrl, telem, 'cron');
+          const telem = await fetchCarTelemetry(mg.client, sVin || mg.vin);
+          await syncChargingSessionState(env, dummyUrl, telem, 'cron', sVin || mg.vin);
         }
       } catch (_) {
         // SCENARIO 10: MG Server Timeout / Cellular drop - 0 D1 changes, never treat timeout as false!
@@ -3359,12 +3583,13 @@ async function runCron(env: Env): Promise<void> {
         const hoursSincePark = (nowSec - Number(lastTrip.end_timestamp)) / 3600;
         const lastSoc = Number(lastTrip.end_soc) || 100;
         if (hoursSincePark < 14 && lastSoc < 100) {
-          const dummyUrl = new URL('https://mg-windsor-webhook.workers.dev');
+          const tVin = normVin(lastTrip.vin);
+          const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev${tVin ? `?vin=${encodeURIComponent(tVin)}` : ''}`);
           const mg = await getMgClientForWebhook(env, dummyUrl);
           if (mg) {
-            const telem = await fetchCarTelemetry(mg.client, mg.vin);
+            const telem = await fetchCarTelemetry(mg.client, tVin || mg.vin);
             if (telem.isCharging) {
-              await syncChargingSessionState(env, dummyUrl, telem, 'cron_idle');
+              await syncChargingSessionState(env, dummyUrl, telem, 'cron_idle', tVin || mg.vin);
             }
           }
         }

@@ -103,7 +103,7 @@ export async function startGoogleOAuth(clientId?: string): Promise<{
   const redirectUri =
     Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin
       ? `${window.location.origin}/oauth-callback`
-      : 'https://mg-windsor-webhook.tonyjoseph456.workers.dev/oauth-callback';
+      : 'https://mg-windsor-webhook.mg-ismart.workers.dev/oauth-callback';
 
   const scope = [
     'https://www.googleapis.com/auth/drive.file',
@@ -702,7 +702,7 @@ export async function syncChargingLogsToGoogleSheet(
 // ---------------------------------------------------------------------------
 // Multi-user background backend (Cloudflare Worker). Stores TOKENS only.
 // ---------------------------------------------------------------------------
-export const BACKEND_URL = 'https://mg-windsor-webhook.tonyjoseph456.workers.dev';
+export const BACKEND_URL = 'https://mg-windsor-webhook.mg-ismart.workers.dev';
 
 export interface BackendConfig {
   userId: string;

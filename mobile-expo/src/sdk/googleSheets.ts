@@ -103,7 +103,7 @@ export async function startGoogleOAuth(clientId?: string): Promise<{
   const redirectUri =
     Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin
       ? `${window.location.origin}/oauth-callback`
-      : 'https://mg-windsor-webhook.tonyjoseph456.workers.dev/oauth-callback';
+      : 'https://mg-windsor-webhook.mg-ismart.workers.dev/oauth-callback';
 
   const scope = [
     'https://www.googleapis.com/auth/drive.file',
@@ -702,7 +702,15 @@ export async function syncChargingLogsToGoogleSheet(
 // ---------------------------------------------------------------------------
 // Multi-user background backend (Cloudflare Worker). Stores TOKENS only.
 // ---------------------------------------------------------------------------
-export const BACKEND_URL = 'https://mg-windsor-webhook.tonyjoseph456.workers.dev';
+export const BACKEND_URL = 'https://mg-windsor-webhook.mg-ismart.workers.dev';
+
+let _activeD1Vin: string = '';
+export function setActiveD1Vin(vin?: string | null): void {
+  _activeD1Vin = (vin || '').trim().toUpperCase();
+}
+export function getActiveD1Vin(): string {
+  return _activeD1Vin;
+}
 
 export interface BackendConfig {
   userId: string;
@@ -951,9 +959,14 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
   };
 }
 
-export async function fetchD1Trips(date?: string): Promise<TripRecord[]> {
+export async function fetchD1Trips(date?: string, vinOverride?: string): Promise<TripRecord[]> {
   try {
-    const url = `${BACKEND_URL}/api/trips${date && date !== 'all' ? `?date=${encodeURIComponent(date)}` : ''}`;
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const params = new URLSearchParams();
+    if (date && date !== 'all') params.set('date', date);
+    if (vin) params.set('vin', vin);
+    const qs = params.toString();
+    const url = `${BACKEND_URL}/api/trips${qs ? `?${qs}` : ''}`;
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = await res.json();
@@ -966,11 +979,13 @@ export async function fetchD1Trips(date?: string): Promise<TripRecord[]> {
   return [];
 }
 
-export async function syncTripsToD1(trips: TripRecord[]): Promise<boolean> {
+export async function syncTripsToD1(trips: TripRecord[], vinOverride?: string): Promise<boolean> {
   if (!Array.isArray(trips) || trips.length === 0) return true;
   try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
     const payload = trips.map((t) => ({
       id: t.id,
+      vin: vin || undefined,
       start_timestamp: t.startTimestampSec,
       end_timestamp: t.endTimestampSec,
       duration_seconds: t.durationSeconds,
@@ -995,10 +1010,10 @@ export async function syncTripsToD1(trips: TripRecord[]): Promise<boolean> {
       end_exterior_temp_c: t.endExteriorTempC ?? t.exteriorTempC ?? null,
       status: t.status === 'driving' ? 'ongoing' : 'completed',
     }));
-    const res = await fetch(`${BACKEND_URL}/api/trips/sync`, {
+    const res = await fetch(`${BACKEND_URL}/api/trips/sync${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ trips: payload }),
+      body: JSON.stringify({ vin: vin || undefined, trips: payload }),
     });
     if (!res.ok) return false;
     const data = await res.json();
@@ -1009,12 +1024,13 @@ export async function syncTripsToD1(trips: TripRecord[]): Promise<boolean> {
   }
 }
 
-export async function deleteD1Trip(tripId: string): Promise<boolean> {
+export async function deleteD1Trip(tripId: string, vinOverride?: string): Promise<boolean> {
   try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/trips/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: tripId }),
+      body: JSON.stringify({ id: tripId, vin: vin || undefined }),
     });
     if (!res.ok) return false;
     const data = await res.json();
@@ -1025,11 +1041,13 @@ export async function deleteD1Trip(tripId: string): Promise<boolean> {
   }
 }
 
-export async function clearD1Trips(): Promise<boolean> {
+export async function clearD1Trips(vinOverride?: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/trips/clear`, {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/trips/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return false;
     const data = await res.json();
@@ -1040,11 +1058,13 @@ export async function clearD1Trips(): Promise<boolean> {
   }
 }
 
-export async function syncChargesToD1(charges: ChargeLogRecord[]): Promise<boolean> {
+export async function syncChargesToD1(charges: ChargeLogRecord[], vinOverride?: string): Promise<boolean> {
   if (!Array.isArray(charges) || charges.length === 0) return true;
   try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
     const payload = charges.map((c) => ({
       id: c.id,
+      vin: vin || undefined,
       start_timestamp: c.startTimestampSec,
       end_timestamp: c.endTimestampSec,
       duration_seconds: c.durationSeconds,
@@ -1056,10 +1076,10 @@ export async function syncChargesToD1(charges: ChargeLogRecord[]): Promise<boole
       odometer_km: c.odometerKm,
       status: c.status,
     }));
-    const res = await fetch(`${BACKEND_URL}/api/charges/sync`, {
+    const res = await fetch(`${BACKEND_URL}/api/charges/sync${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ charges: payload }),
+      body: JSON.stringify({ vin: vin || undefined, charges: payload }),
     });
     if (!res.ok) return false;
     const data = await res.json();
@@ -1070,12 +1090,13 @@ export async function syncChargesToD1(charges: ChargeLogRecord[]): Promise<boole
   }
 }
 
-export async function deleteD1Charge(chargeId: string): Promise<boolean> {
+export async function deleteD1Charge(chargeId: string, vinOverride?: string): Promise<boolean> {
   try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/charges/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: chargeId }),
+      body: JSON.stringify({ id: chargeId, vin: vin || undefined }),
     });
     if (!res.ok) return false;
     const data = await res.json();
@@ -1086,11 +1107,13 @@ export async function deleteD1Charge(chargeId: string): Promise<boolean> {
   }
 }
 
-export async function clearD1Charges(): Promise<boolean> {
+export async function clearD1Charges(vinOverride?: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/charges/clear`, {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/charges/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return false;
     const data = await res.json();
@@ -1101,9 +1124,10 @@ export async function clearD1Charges(): Promise<boolean> {
   }
 }
 
-export async function fetchD1TripDates(): Promise<string[]> {
+export async function fetchD1TripDates(vinOverride?: string): Promise<string[]> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/trip/dates`);
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/trip/dates${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`);
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.dates)) {
@@ -1117,6 +1141,7 @@ export async function fetchD1TripDates(): Promise<string[]> {
 
 export interface ChargingSessionRecord {
   id: string;
+  vin?: string;
   status: 'ongoing' | 'paused' | 'completed';
   start_time: number;
   end_time?: number | null;
@@ -1138,9 +1163,14 @@ export interface ChargingSessionRecord {
   created_at?: string;
 }
 
-export async function fetchChargingHistory(refresh = false): Promise<ChargingSessionRecord[]> {
+export async function fetchChargingHistory(refresh = false, vinOverride?: string): Promise<ChargingSessionRecord[]> {
   try {
-    const url = `${BACKEND_URL}/api/charging-history${refresh ? '?refresh=true' : ''}`;
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', 'true');
+    if (vin) params.set('vin', vin);
+    const qs = params.toString();
+    const url = `${BACKEND_URL}/api/charging-history${qs ? `?${qs}` : ''}`;
     const res = await fetch(url, { headers: { 'Cache-Control': 'no-store' } });
     if (!res.ok) return [];
     const data = await res.json();
@@ -1153,11 +1183,13 @@ export async function fetchChargingHistory(refresh = false): Promise<ChargingSes
   return [];
 }
 
-export async function clearChargingHistory(): Promise<boolean> {
+export async function clearChargingHistory(vinOverride?: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/charging-history/clear`, {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/charging-history/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return false;
     const data = await res.json();
@@ -1168,9 +1200,14 @@ export async function clearChargingHistory(): Promise<boolean> {
   }
 }
 
-export async function fetchD1Charges(date?: string): Promise<ChargeLogRecord[]> {
+export async function fetchD1Charges(date?: string, vinOverride?: string): Promise<ChargeLogRecord[]> {
   try {
-    const url = `${BACKEND_URL}/api/charging-history${date && date !== 'all' ? `?date=${encodeURIComponent(date)}` : ''}`;
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const params = new URLSearchParams();
+    if (date && date !== 'all') params.set('date', date);
+    if (vin) params.set('vin', vin);
+    const qs = params.toString();
+    const url = `${BACKEND_URL}/api/charging-history${qs ? `?${qs}` : ''}`;
     const res = await fetch(url, { headers: { 'Cache-Control': 'no-store' } });
     if (!res.ok) return [];
     const data = await res.json();
@@ -1184,9 +1221,10 @@ export async function fetchD1Charges(date?: string): Promise<ChargeLogRecord[]> 
   return [];
 }
 
-export async function fetchD1ChargeDates(): Promise<string[]> {
+export async function fetchD1ChargeDates(vinOverride?: string): Promise<string[]> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/charge/dates`);
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/charge/dates${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`);
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.dates)) {
@@ -1200,6 +1238,7 @@ export async function fetchD1ChargeDates(): Promise<string[]> {
 
 export async function registerCarSession(car: { uid: string; token: string; vin?: string; phone?: string }): Promise<boolean> {
   try {
+    if (car.vin) setActiveD1Vin(car.vin);
     const res = await fetch(`${BACKEND_URL}/api/register-car`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1213,6 +1252,7 @@ export async function registerCarSession(car: { uid: string; token: string; vin?
 
 export interface AppNotificationRecord {
   id: string;
+  vin?: string;
   type: 'trip_start' | 'trip_stop' | 'trip_idle' | 'charge_start' | 'charge_stop';
   title: string;
   message: string;
@@ -1222,9 +1262,10 @@ export interface AppNotificationRecord {
   created_at?: string;
 }
 
-export async function fetchD1Notifications(limit = 50): Promise<AppNotificationRecord[]> {
+export async function fetchD1Notifications(limit = 50, vinOverride?: string): Promise<AppNotificationRecord[]> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/notifications?limit=${limit}`);
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/notifications?limit=${limit}${vin ? `&vin=${encodeURIComponent(vin)}` : ''}`);
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.notifications)) {
@@ -1236,18 +1277,16 @@ export async function fetchD1Notifications(limit = 50): Promise<AppNotificationR
   return [];
 }
 
-export async function clearD1Notifications(): Promise<boolean> {
+export async function clearD1Notifications(vinOverride?: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/notifications/clear`, {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/notifications/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: vin || undefined }),
     });
     return res.ok;
   } catch {
     return false;
   }
 }
-
-
-
-
