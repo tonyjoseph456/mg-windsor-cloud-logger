@@ -9879,9 +9879,6 @@ async function initD1(db) {
     await db.prepare(
       "UPDATE charging_sessions SET peak_power_kw = 3.3 WHERE status = 'completed' AND (peak_power_kw IS NULL OR peak_power_kw = 0)"
     ).run();
-    await db.prepare(
-      `INSERT OR IGNORE INTO kv_store (key, value) VALUES ('ntfy_topic:MZ72D5CEB8H014788', '"windsor-9842"'), ('ntfy_topic', '"windsor-9842"')`
-    ).run();
   } catch (_) {
   }
   if (d1InitErrors.length === 0) {
@@ -9978,80 +9975,48 @@ function formatClockTime(sec) {
   h = h % 12 || 12;
   return `${String(h).padStart(2, "0")}:${m} ${ampm}`;
 }
+async function getPushSubscriptionsForVin(env, vin) {
+  const v = normVin(vin || env.MG_VIN);
+  const key = v ? `push_subs:${v}` : "push_subs:default";
+  const raw = await d1KvGet(env, key);
+  const subs = Array.isArray(raw) ? raw : [];
+  if (subs.length === 0 && v) {
+    const fallback = await d1KvGet(env, "push_subs:default");
+    if (Array.isArray(fallback) && fallback.length > 0) {
+      return { key: "push_subs:default", subs: fallback };
+    }
+  }
+  return { key, subs };
+}
 async function dispatchTripNotification(url, title, bodyText, tags = "car", env, vin) {
-  let ntfyTopic = url ? (url.searchParams.get("ntfy") || url.searchParams.get("topic") || "").trim() : "";
-  let pushwardKey = url ? (url.searchParams.get("pushward") || "").trim() : "";
-  const v = normVin(vin || (url ? url.searchParams.get("vin") : null));
-  if (env) {
-    if (url && (url.searchParams.get("ntfy") || url.searchParams.get("topic")) && ntfyTopic) {
-      if (v) await d1KvPut(env, `ntfy_topic:${v}`, ntfyTopic);
-      await d1KvPut(env, "ntfy_topic", ntfyTopic);
-    }
-    if (url && url.searchParams.get("pushward") && pushwardKey) {
-      if (v) await d1KvPut(env, `pushward_key:${v}`, pushwardKey);
-      await d1KvPut(env, "pushward_key", pushwardKey);
-    }
-    if (!ntfyTopic && v) {
-      const savedVin = await d1KvGet(env, `ntfy_topic:${v}`);
-      if (savedVin) ntfyTopic = String(savedVin).trim();
-    }
-    if (!ntfyTopic && env.NTFY_TOPIC) {
-      ntfyTopic = String(env.NTFY_TOPIC || "").trim();
-    }
-    if (!ntfyTopic && (!v || v === normVin(env.MG_VIN))) {
-      const saved = await d1KvGet(env, "ntfy_topic");
-      if (saved) ntfyTopic = String(saved).trim();
-    }
-    if (!pushwardKey && v) {
-      const savedVin = await d1KvGet(env, `pushward_key:${v}`);
-      if (savedVin) pushwardKey = String(savedVin).trim();
-    }
-    if (!pushwardKey && env.PUSHWARD_KEY) {
-      pushwardKey = String(env.PUSHWARD_KEY || "").trim();
-    }
-    if (!pushwardKey && (!v || v === normVin(env.MG_VIN))) {
-      const saved = await d1KvGet(env, "pushward_key");
-      if (saved) pushwardKey = String(saved).trim();
-    }
-  }
-  const result = { ntfyTopic: ntfyTopic || null, ntfyStatus: null, ntfyBody: null, ntfyError: null };
-  if (ntfyTopic) {
-    const tagList = tags ? String(tags).split(",").map((t) => t.trim()).filter(Boolean) : ["car"];
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2500);
-    try {
-      const res = await fetch("https://ntfy.sh", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "User-Agent": "MGWindsorEV-CarPlay/1.0"
-        },
-        body: JSON.stringify({
-          topic: ntfyTopic,
+  const v = normVin(vin || (url ? url.searchParams.get("vin") : null) || env?.MG_VIN);
+  const result = { vin: v || null, sent: 0, total: 0, results: [] };
+  if (!env) return result;
+  try {
+    const { key, subs } = await getPushSubscriptionsForVin(env, v);
+    result.total = subs.length;
+    if (subs.length === 0) return result;
+    const expiredEndpoints = /* @__PURE__ */ new Set();
+    const pushResults = await Promise.all(
+      subs.map(async (sub) => {
+        const r = await sendPushToSubscription(sub, {
           title,
-          message: bodyText,
-          priority: 4,
-          tags: tagList
-        }),
-        signal: controller.signal
-      });
-      result.ntfyStatus = res.status;
-      result.ntfyBody = await res.text().catch(() => "");
-    } catch (e) {
-      result.ntfyError = e?.message || String(e);
-    } finally {
-      clearTimeout(timer);
+          body: bodyText,
+          tag: tags || "windsor-alert",
+          data: { vin: v, url: "/" }
+        });
+        if (r.expired) expiredEndpoints.add(sub.endpoint);
+        return { endpoint: sub.endpoint.slice(0, 48) + "...", ok: r.ok, status: r.status };
+      })
+    );
+    result.results = pushResults;
+    result.sent = pushResults.filter((r) => r.ok).length;
+    if (expiredEndpoints.size > 0) {
+      const remaining = subs.filter((s) => !expiredEndpoints.has(s.endpoint));
+      await d1KvPut(env, key, remaining);
     }
-  }
-  if (pushwardKey) {
-    try {
-      await fetch("https://api.pushward.com/push", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: pushwardKey, title, body: bodyText })
-      });
-    } catch (_) {
-    }
+  } catch (e) {
+    result.error = e?.message || String(e);
   }
   return result;
 }
@@ -11507,8 +11472,11 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
 }
 async function handleApi(env, request, url) {
   const path = url.pathname;
-  if (path.startsWith("/api/push") || path.startsWith("/api/widget")) {
-    return json({ success: false, message: "Push notifications and widgets disabled" });
+  if (path === "/api/push-vapid-public-key") {
+    return json({ success: true, publicKey: VAPID_PUB_B64URL });
+  }
+  if (path.startsWith("/api/widget")) {
+    return json({ success: false, message: "Widgets disabled" });
   }
   if (path === "/api/diagnostic" || path === "/api/health") {
     let dbStatus = "missing";
@@ -11546,6 +11514,72 @@ async function handleApi(env, request, url) {
     }
   }
   const reqVin = normVin(url.searchParams.get("vin") || body?.vin);
+  if (path === "/api/push-subscribe") {
+    const sub = body?.subscription;
+    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+      return json({ success: false, error: "Invalid PushSubscription object" }, 400);
+    }
+    const targetVin = reqVin || normVin(env.MG_VIN) || null;
+    const key = targetVin ? `push_subs:${targetVin}` : "push_subs:default";
+    const existingRaw = await d1KvGet(env, key);
+    const existing = Array.isArray(existingRaw) ? existingRaw : [];
+    const newEntry = {
+      endpoint: String(sub.endpoint),
+      keys: {
+        p256dh: String(sub.keys.p256dh),
+        auth: String(sub.keys.auth)
+      },
+      userAgent: String(body?.userAgent || request.headers.get("user-agent") || ""),
+      addedSec: Math.floor(Date.now() / 1e3)
+    };
+    const filtered = existing.filter((s) => s.endpoint !== newEntry.endpoint);
+    filtered.push(newEntry);
+    await d1KvPut(env, key, filtered);
+    if (targetVin && (!env.MG_VIN || targetVin === normVin(env.MG_VIN))) {
+      await d1KvPut(env, "push_subs:default", filtered);
+    }
+    const welcomeRes = await sendPushToSubscription(newEntry, {
+      title: "\u{1F514} MG Windsor EV \u2022 Push Alerts Active",
+      body: `Native push notifications are now active on this device${targetVin ? ` for VIN ${targetVin}` : ""}. You will receive Trip & Charging alerts automatically!`,
+      tag: "windsor-welcome",
+      data: { vin: targetVin, url: "/" }
+    });
+    return json({
+      success: true,
+      vin: targetVin,
+      devicesCount: filtered.length,
+      welcomeSent: welcomeRes.ok,
+      welcomeStatus: welcomeRes.status
+    });
+  }
+  if (path === "/api/push-unsubscribe") {
+    const endpoint = String(body?.endpoint || url.searchParams.get("endpoint") || "").trim();
+    const targetVin = reqVin || normVin(env.MG_VIN) || null;
+    const key = targetVin ? `push_subs:${targetVin}` : "push_subs:default";
+    const existingRaw = await d1KvGet(env, key);
+    const existing = Array.isArray(existingRaw) ? existingRaw : [];
+    const remaining = endpoint ? existing.filter((s) => s.endpoint !== endpoint) : [];
+    await d1KvPut(env, key, remaining);
+    return json({ success: true, devicesCount: remaining.length });
+  }
+  if (path === "/api/push-test") {
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const title = "\u{1F697} MG Windsor EV \u2022 Live Push Test";
+    const message = `Native Web Push delivered at ${formatClockTime(nowSec)}! Trip Start, Trip End & Charging alerts are ready.`;
+    const pushResult = await dispatchTripNotification(url, title, message, "windsor-test", env, reqVin);
+    if (!pushResult.total) {
+      return json({
+        success: false,
+        error: 'No push subscription registered for this vehicle yet. Tap "Enable Push Notifications" in the app first.',
+        pushResult
+      }, 400);
+    }
+    return json({
+      success: pushResult.sent > 0,
+      message: pushResult.sent > 0 ? `Delivered to ${pushResult.sent} device(s)` : "Push endpoint returned an error",
+      pushResult
+    });
+  }
   if (path === "/api/trip/start") {
     const mg = await getMgClientForWebhook(env, url);
     if (!mg) {

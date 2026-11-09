@@ -1036,6 +1036,175 @@ export default function App() {
     }, 4500);
   };
 
+  // Native iOS (APNs Web Push) & Android (FCM Web Push) State
+  const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false);
+  const [isPushBusy, setIsPushBusy] = useState<boolean>(false);
+  const [pushPermission, setPushPermission] = useState<string>(
+    Platform.OS === 'web' && typeof Notification !== 'undefined' ? Notification.permission : 'default'
+  );
+
+  useEffect(() => {
+    const activeVinVal = (snapshot?.vehicle?.vin || vin || '').trim().toUpperCase();
+    if (
+      Platform.OS === 'web' &&
+      typeof window !== 'undefined' &&
+      'serviceWorker' in navigator &&
+      'PushManager' in window
+    ) {
+      if (typeof Notification !== 'undefined') {
+        setPushPermission(Notification.permission);
+      }
+      navigator.serviceWorker.ready
+        .then(async (reg) => {
+          try {
+            const sub = await reg.pushManager.getSubscription();
+            setIsPushSubscribed(Boolean(sub));
+            if (sub && activeVinVal) {
+              const subJson = sub.toJSON();
+              await fetch(`${BACKEND_URL}/api/push-subscribe`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  vin: activeVinVal,
+                  subscription: {
+                    endpoint: sub.endpoint,
+                    keys: {
+                      p256dh: subJson.keys?.p256dh,
+                      auth: subJson.keys?.auth,
+                    },
+                  },
+                  userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+                }),
+              }).catch(() => {});
+            }
+          } catch (_) {}
+        })
+        .catch(() => {});
+    }
+  }, [vin, snapshot?.vehicle?.vin]);
+
+  const handleEnablePush = async () => {
+    if (
+      Platform.OS !== 'web' ||
+      (typeof window !== 'undefined' && (!('serviceWorker' in navigator) || !('PushManager' in window)))
+    ) {
+      Alert.alert(
+        'Open from Home Screen',
+        'On iOS 16.4+, tap the Safari Share button ➔ "Add to Home Screen", then open MG iSMART from your Home Screen to enable native Apple Push Notifications.'
+      );
+      return;
+    }
+
+    const activeVinVal = (snapshot?.vehicle?.vin || vin || '').trim().toUpperCase();
+    try {
+      setIsPushBusy(true);
+      if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+        Alert.alert(
+          'Notifications Blocked',
+          'Notification permission is blocked in your iOS / browser settings. Please allow notifications for MG iSMART in Settings ➔ Notifications.'
+        );
+        return;
+      }
+
+      const perm = await Notification.requestPermission();
+      setPushPermission(perm);
+      if (perm !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow notifications when prompted so Trip and Charging alerts can appear on your Lock Screen.');
+        return;
+      }
+
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        let pubKey = VAPID_PUB_B64URL;
+        try {
+          const r = await fetch(`${BACKEND_URL}/api/push-vapid-public-key`);
+          const d = await r.json();
+          if (d?.publicKey) pubKey = d.publicKey;
+        } catch (_) {}
+
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(pubKey) as any,
+        });
+      }
+
+      const subJson = sub.toJSON();
+      const res = await fetch(`${BACKEND_URL}/api/push-subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vin: activeVinVal,
+          subscription: {
+            endpoint: sub.endpoint,
+            keys: {
+              p256dh: subJson.keys?.p256dh,
+              auth: subJson.keys?.auth,
+            },
+          },
+          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok || !d.success) {
+        throw new Error(d.error || 'Failed to register push subscription with Cloudflare Worker');
+      }
+      setIsPushSubscribed(true);
+      showBanner('ok', '🔔 Push notifications active! Check your Lock Screen for the welcome alert.');
+    } catch (e) {
+      Alert.alert('Push Setup Error', (e as Error).message);
+    } finally {
+      setIsPushBusy(false);
+    }
+  };
+
+  const handleDisablePush = async () => {
+    const activeVinVal = (snapshot?.vehicle?.vin || vin || '').trim().toUpperCase();
+    try {
+      setIsPushBusy(true);
+      if (Platform.OS === 'web' && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          const endpoint = sub.endpoint;
+          await sub.unsubscribe().catch(() => {});
+          await fetch(`${BACKEND_URL}/api/push-unsubscribe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vin: activeVinVal, endpoint }),
+          }).catch(() => {});
+        }
+      }
+      setIsPushSubscribed(false);
+      showBanner('ok', 'Push notifications disabled on this device.');
+    } catch (e) {
+      Alert.alert('Error', (e as Error).message);
+    } finally {
+      setIsPushBusy(false);
+    }
+  };
+
+  const handleSendTestPush = async () => {
+    const activeVinVal = (snapshot?.vehicle?.vin || vin || '').trim().toUpperCase();
+    try {
+      setIsPushBusy(true);
+      const res = await fetch(`${BACKEND_URL}/api/push-test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vin: activeVinVal }),
+      });
+      const d = await res.json();
+      if (!res.ok || !d.success) {
+        throw new Error(d.error || 'Failed to send test push notification');
+      }
+      showBanner('ok', '🧪 Test push sent! Check your Lock Screen / Notification Center.');
+    } catch (e) {
+      Alert.alert('Test Push Failed', (e as Error).message);
+    } finally {
+      setIsPushBusy(false);
+    }
+  };
+
 
 
   const copyToClipboard = async (text: string, label: string) => {
@@ -3552,6 +3721,99 @@ export default function App() {
                     🛡️ <Text style={{ fontWeight: '700' }}>12V Battery Guarantee:</Text> Webhooks query vehicle telemetry only at the exact moments CarPlay connects (car is driving) and disconnects (car is parking). No background polling loops run while the car is asleep.
                   </Text>
                 </View>
+              </View>
+            </AccountSectionCard>
+
+            {/* CARD: Native iOS (APNs) & Android (FCM) Web Push Notifications */}
+            <AccountSectionCard
+              title="Push Notifications (iOS APNs & Android FCM)"
+              icon="📲"
+              badge={isPushSubscribed ? '● Active' : pushPermission === 'denied' ? '● Blocked' : '● Tap to Enable'}
+              badgeBg={isPushSubscribed ? '#064E3B' : pushPermission === 'denied' ? '#7F1D1D' : '#1E293B'}
+              badgeColor={isPushSubscribed ? '#34D399' : pushPermission === 'denied' ? '#FCA5A5' : '#38BDF8'}
+              preview={isPushSubscribed ? 'Native Lock Screen alerts active for Trips & Charging' : 'Enable native iOS / Android Lock Screen alerts'}
+              subtitle="Receives native W3C Web Push notifications via Apple Push Notification service (web.push.apple.com) on iOS and Firebase Cloud Messaging (FCM) on Android whenever a Trip starts, a Trip completes, or a Charging session starts, pauses, or finishes."
+            >
+              <View style={{ gap: 8 }}>
+                <InfoRow
+                  label="Device Push Status"
+                  value={
+                    isPushSubscribed
+                      ? 'Active on this device'
+                      : pushPermission === 'denied'
+                      ? 'Blocked in browser / iOS settings'
+                      : 'Not enabled yet'
+                  }
+                />
+                <InfoRow
+                  label="Push Gateway"
+                  value="Apple APNs (iOS) / Google FCM (Android)"
+                />
+                <InfoRow
+                  label="Linked Vehicle VIN"
+                  value={displayVin || 'Active Session'}
+                />
+
+                {Platform.OS === 'web' &&
+                typeof window !== 'undefined' &&
+                /iPhone|iPad|iPod/.test(navigator.userAgent) &&
+                !(window.navigator as any).standalone ? (
+                  <View
+                    style={{
+                      backgroundColor: '#1E293B',
+                      padding: 12,
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      borderColor: '#334155',
+                      marginVertical: 4,
+                    }}
+                  >
+                    <Text style={{ color: '#F59E0B', fontWeight: '700', fontSize: 12, marginBottom: 4 }}>
+                      📱 Open from iPhone Home Screen
+                    </Text>
+                    <Text style={{ color: '#CBD5E1', fontSize: 11, lineHeight: 16 }}>
+                      On iOS, Apple requires PWAs to be opened from the Home Screen to receive push notifications. Tap Safari Share{' '}
+                      <Text style={{ color: '#38BDF8', fontWeight: '700' }}>⎋ ➔ Add to Home Screen</Text>, then open MG iSMART from your Home Screen and tap Enable below.
+                    </Text>
+                  </View>
+                ) : null}
+
+                {!isPushSubscribed ? (
+                  <TouchableOpacity
+                    style={[styles.loginBtn, { backgroundColor: '#10B981', paddingVertical: 14, marginTop: 4 }]}
+                    onPress={handleEnablePush}
+                    disabled={isPushBusy}
+                  >
+                    {isPushBusy ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : (
+                      <Text style={[styles.loginBtnText, { fontSize: 13, fontWeight: '800' }]}>
+                        🔔 Enable Push Notifications on This Device
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                ) : (
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                    <TouchableOpacity
+                      style={[styles.shareImageBtn, { backgroundColor: '#0284C7', flex: 1, marginTop: 0 }]}
+                      onPress={handleSendTestPush}
+                      disabled={isPushBusy}
+                    >
+                      {isPushBusy ? (
+                        <ActivityIndicator size="small" color="#FFF" />
+                      ) : (
+                        <Text style={styles.shareImageBtnText}>🧪 Send Test Push</Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.shareImageBtn, { backgroundColor: '#1E293B', flex: 1, marginTop: 0 }]}
+                      onPress={handleDisablePush}
+                      disabled={isPushBusy}
+                    >
+                      <Text style={[styles.shareImageBtnText, { color: '#EF4444' }]}>🔕 Disable Alerts</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
             </AccountSectionCard>
 
