@@ -1260,6 +1260,8 @@ async function dispatchTripNotification(url: URL | null, title: string, bodyText
     const tagList = tags
       ? String(tags).split(',').map((t) => t.trim()).filter(Boolean)
       : ['car'];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
     try {
       const res = await fetch('https://ntfy.sh', {
         method: 'POST',
@@ -1274,26 +1276,14 @@ async function dispatchTripNotification(url: URL | null, title: string, bodyText
           priority: 4,
           tags: tagList,
         }),
+        signal: controller.signal,
       });
       result.ntfyStatus = res.status;
       result.ntfyBody = await res.text().catch(() => '');
-      if (!res.ok) {
-        const b64Title = `=?UTF-8?B?${btoa(unescape(encodeURIComponent(title)))}?=`;
-        const res2 = await fetch(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
-          method: 'POST',
-          headers: {
-            'Title': b64Title,
-            'Tags': tagList.join(','),
-            'Priority': '4',
-            'User-Agent': 'MGWindsorEV-CarPlay/1.0',
-          },
-          body: bodyText,
-        });
-        result.ntfyFallbackStatus = res2.status;
-        result.ntfyFallbackBody = await res2.text().catch(() => '');
-      }
     } catch (e: any) {
       result.ntfyError = e?.message || String(e);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
