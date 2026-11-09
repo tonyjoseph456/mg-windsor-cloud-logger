@@ -10016,14 +10016,19 @@ async function dispatchTripNotification(url, title, bodyText, tags = "car", env,
   }
   if (ntfyTopic) {
     try {
-      await fetch(`https://ntfy.sh/${encodeURIComponent(ntfyTopic)}`, {
+      const tagList = tags ? String(tags).split(",").map((t) => t.trim()).filter(Boolean) : ["car"];
+      await fetch("https://ntfy.sh", {
         method: "POST",
         headers: {
-          "Title": title,
-          "Tags": tags,
-          "Priority": "high"
+          "Content-Type": "application/json; charset=utf-8"
         },
-        body: bodyText
+        body: JSON.stringify({
+          topic: ntfyTopic,
+          title,
+          message: bodyText,
+          priority: 4,
+          tags: tagList
+        })
       });
     } catch (_) {
     }
@@ -11857,9 +11862,10 @@ ${notificationText}`, {
       is_read: 0,
       metadata: JSON.stringify({ test: true, time: (/* @__PURE__ */ new Date()).toISOString() })
     };
+    await dispatchTripNotification(url, notif.title, notif.message, "test_tube,car", env, reqVin);
     await d1InsertNotification(env, notif);
     const notifs = await d1GetNotifications(env, 10, reqVin);
-    return json({ success: true, message: "Test notification written to D1", count: notifs.length, notification: notif, recent: notifs });
+    return json({ success: true, message: "Test notification dispatched to ntfy & written to D1", count: notifs.length, notification: notif, recent: notifs });
   }
   if (path === "/api/notifications/clear") {
     await d1ClearNotifications(env, reqVin);
