@@ -850,9 +850,15 @@ export default function App() {
   const [d1TripDates, setD1TripDates] = useState<string[]>([]);
   const [d1ChargeDates, setD1ChargeDates] = useState<string[]>([]);
 
-  // Query D1 trips and distinct dates whenever Trips tab or date filter changes
+  // Monthly Driving & Charging Analytics Selector State (Account Tab)
+  const [analyticsYear, setAnalyticsYear] = useState<number>(() => new Date().getFullYear());
+  const [analyticsMonth, setAnalyticsMonth] = useState<string>(() =>
+    String(new Date().getMonth() + 1).padStart(2, '0')
+  );
+
+  // Query D1 trips and distinct dates whenever Trips or Account tab is opened
   useEffect(() => {
-    if (tab === 'trips') {
+    if (tab === 'trips' || tab === 'account') {
       fetchD1TripDates().then((dates) => {
         if (dates && dates.length > 0) setD1TripDates(dates);
       }).catch(() => {});
@@ -895,9 +901,9 @@ export default function App() {
   const [selectedChargeDate, setSelectedChargeDate] = useState<string>(() => getTodayDateKey());
   const [showChargeCalendar, setShowChargeCalendar] = useState<boolean>(false);
 
-  // Query D1 charges and distinct dates whenever Charge tab or date filter changes
+  // Query D1 charges and distinct dates whenever Charge or Account tab is opened
   useEffect(() => {
-    if (tab === 'charge') {
+    if (tab === 'charge' || tab === 'account') {
       fetchD1ChargeDates().then((dates) => {
         if (dates && dates.length > 0) setD1ChargeDates(dates);
       }).catch(() => {});
@@ -3007,6 +3013,106 @@ export default function App() {
                 </TouchableOpacity>
                 </View>
 
+                {/* Daily / Selected Date Total Charging Energy Summary */}
+                {(() => {
+                  const summaryCharges =
+                    selectedChargeDate === 'all'
+                      ? chargeLogs.filter((c) => getChargeDateKey(c) === todayKey)
+                      : displayedCharges;
+                  const summaryLabel =
+                    selectedChargeDate === 'all' || selectedChargeDate === todayKey
+                      ? 'Today'
+                      : formatDisplayDateKey(selectedChargeDate);
+                  const totalPackKwh = Number(
+                    summaryCharges
+                      .reduce((acc, c) => {
+                        const added =
+                          Number(c.energyAddedToPackKwh) > 0
+                            ? Number(c.energyAddedToPackKwh)
+                            : Math.max(0, ((Number(c.endSoc) - Number(c.startSoc)) / 100) * 38.0);
+                        return acc + added;
+                      }, 0)
+                      .toFixed(2)
+                  );
+                  const totalWallKwh = Number(
+                    summaryCharges
+                      .reduce((acc, c) => {
+                        const added =
+                          Number(c.energyAddedToPackKwh) > 0
+                            ? Number(c.energyAddedToPackKwh)
+                            : Math.max(0, ((Number(c.endSoc) - Number(c.startSoc)) / 100) * 38.0);
+                        const wall =
+                          Number(c.energyConsumedKwh) > 0
+                            ? Number(c.energyConsumedKwh)
+                            : Number((added / 0.88).toFixed(2));
+                        return acc + wall;
+                      }, 0)
+                      .toFixed(2)
+                  );
+                  const totalLossKwh = Math.max(0, Number((totalWallKwh - totalPackKwh).toFixed(2)));
+                  const lossPct =
+                    totalWallKwh > 0 ? Number(((totalLossKwh / totalWallKwh) * 100).toFixed(1)) : 0;
+
+                  return (
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        gap: 8,
+                        marginTop: 12,
+                        backgroundColor: '#0A0E17',
+                        padding: 10,
+                        borderRadius: 14,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                      }}
+                    >
+                      <View
+                        style={{
+                          flex: 1,
+                          backgroundColor: '#0F172A',
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: '#1E293B',
+                        }}
+                      >
+                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                          ENERGY ADDED TO PACK ({summaryLabel.toUpperCase()})
+                        </Text>
+                        <Text style={{ color: '#34D399', fontSize: 15, fontWeight: '900', marginTop: 3 }}>
+                          +{totalPackKwh} kWh
+                        </Text>
+                        <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
+                          {summaryCharges.length} {summaryCharges.length === 1 ? 'session' : 'sessions'} logged
+                        </Text>
+                      </View>
+
+                      <View
+                        style={{
+                          flex: 1,
+                          backgroundColor: '#0F172A',
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: '#1E293B',
+                        }}
+                      >
+                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                          TOTAL ENERGY USED ({summaryLabel.toUpperCase()})
+                        </Text>
+                        <Text style={{ color: '#38BDF8', fontSize: 15, fontWeight: '900', marginTop: 3 }}>
+                          {totalWallKwh} kWh
+                        </Text>
+                        <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
+                          {totalWallKwh > 0 ? `Wall Input • Loss: ${totalLossKwh} kWh (${lossPct}%)` : 'Wall / Charger Energy'}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })()}
+
                 {/* Interactive Inline Calendar (shown when user taps date button) */}
                 {showChargeCalendar && (
                   <HistoryCalendar
@@ -3542,6 +3648,651 @@ export default function App() {
                 <Text style={styles.logoutBtnText}>Log Out of MG iSMART</Text>
               </TouchableOpacity>
             </AccountSectionCard>
+
+            {/* CARD 2: MONTHLY DRIVING & CHARGING ANALYTICS */}
+            {(() => {
+              const MONTHS_LIST = [
+                { num: '01', short: 'Jan', full: 'January' },
+                { num: '02', short: 'Feb', full: 'February' },
+                { num: '03', short: 'Mar', full: 'March' },
+                { num: '04', short: 'Apr', full: 'April' },
+                { num: '05', short: 'May', full: 'May' },
+                { num: '06', short: 'Jun', full: 'June' },
+                { num: '07', short: 'Jul', full: 'July' },
+                { num: '08', short: 'Aug', full: 'August' },
+                { num: '09', short: 'Sep', full: 'September' },
+                { num: '10', short: 'Oct', full: 'October' },
+                { num: '11', short: 'Nov', full: 'November' },
+                { num: '12', short: 'Dec', full: 'December' },
+              ];
+
+              const classifySessionSpeed = (c: ChargeLogRecord): '3.3' | '7.4' | 'dc' => {
+                const cat = (c.chargerCategory || '').toUpperCase();
+                const kw = Number(c.maxChargingSpeedKw) || 0;
+                if (cat.includes('DC') || kw > 11) return 'dc';
+                if (cat.includes('7.4') || cat.includes('7.2') || (kw > 3.7 && kw <= 11)) return '7.4';
+                return '3.3';
+              };
+
+              const getSessionPackKwh = (c: ChargeLogRecord): number =>
+                Number(c.energyAddedToPackKwh) > 0
+                  ? Number(c.energyAddedToPackKwh)
+                  : Math.max(0, ((Number(c.endSoc) - Number(c.startSoc)) / 100) * 38.0);
+
+              const getSessionWallKwh = (c: ChargeLogRecord): number => {
+                const added = getSessionPackKwh(c);
+                return Number(c.energyConsumedKwh) > 0
+                  ? Number(c.energyConsumedKwh)
+                  : Number((added / 0.88).toFixed(2));
+              };
+
+              const getTripEnergyKwh = (t: TripRecord): number =>
+                Number(t.energyUsedKwh) > 0
+                  ? Number(t.energyUsedKwh)
+                  : Math.max(
+                      0,
+                      ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH
+                    );
+
+              const computeStatsForFilter = (prefix: string) => {
+                const mTrips = trips.filter((t) => getTripDateKey(t).startsWith(prefix));
+                const mCharges = chargeLogs.filter((c) => getChargeDateKey(c).startsWith(prefix));
+
+                const totalDistKm = Number(
+                  mTrips.reduce((s, t) => s + (Number(t.distanceKm) || 0), 0).toFixed(1)
+                );
+                const totalDriveEnergyKwh = Number(
+                  mTrips.reduce((s, t) => s + getTripEnergyKwh(t), 0).toFixed(2)
+                );
+                const totalDriveDurSec = mTrips.reduce(
+                  (s, t) => s + (Number(t.durationSeconds) || 0),
+                  0
+                );
+                const avgDriveEff =
+                  totalDistKm > 0 && totalDriveEnergyKwh > 0
+                    ? Number((totalDistKm / totalDriveEnergyKwh).toFixed(2))
+                    : 0;
+
+                let count33 = 0;
+                let packKwh33 = 0;
+                let wallKwh33 = 0;
+
+                let count74 = 0;
+                let packKwh74 = 0;
+                let wallKwh74 = 0;
+
+                let countDc = 0;
+                let packKwhDc = 0;
+                let wallKwhDc = 0;
+
+                for (const c of mCharges) {
+                  const sp = classifySessionSpeed(c);
+                  const pk = getSessionPackKwh(c);
+                  const wl = getSessionWallKwh(c);
+                  if (sp === 'dc') {
+                    countDc += 1;
+                    packKwhDc += pk;
+                    wallKwhDc += wl;
+                  } else if (sp === '7.4') {
+                    count74 += 1;
+                    packKwh74 += pk;
+                    wallKwh74 += wl;
+                  } else {
+                    count33 += 1;
+                    packKwh33 += pk;
+                    wallKwh33 += wl;
+                  }
+                }
+
+                const totalChargeCount = mCharges.length;
+                const totalPackKwh = Number((packKwh33 + packKwh74 + packKwhDc).toFixed(2));
+                const totalWallKwh = Number((wallKwh33 + wallKwh74 + wallKwhDc).toFixed(2));
+                const totalLossKwh = Math.max(0, Number((totalWallKwh - totalPackKwh).toFixed(2)));
+
+                return {
+                  tripCount: mTrips.length,
+                  totalDistKm,
+                  totalDriveEnergyKwh,
+                  totalDriveDurSec,
+                  avgDriveEff,
+                  totalChargeCount,
+                  totalPackKwh,
+                  totalWallKwh,
+                  totalLossKwh,
+                  count33,
+                  packKwh33: Number(packKwh33.toFixed(2)),
+                  wallKwh33: Number(wallKwh33.toFixed(2)),
+                  count74,
+                  packKwh74: Number(packKwh74.toFixed(2)),
+                  wallKwh74: Number(wallKwh74.toFixed(2)),
+                  countDc,
+                  packKwhDc: Number(packKwhDc.toFixed(2)),
+                  wallKwhDc: Number(wallKwhDc.toFixed(2)),
+                };
+              };
+
+              const selectedPrefix =
+                analyticsMonth === 'all' ? `${analyticsYear}-` : `${analyticsYear}-${analyticsMonth}`;
+              const selectedMonthObj = MONTHS_LIST.find((m) => m.num === analyticsMonth);
+              const periodLabel =
+                analyticsMonth === 'all'
+                  ? `Full Year ${analyticsYear}`
+                  : `${selectedMonthObj?.full || ''} ${analyticsYear}`;
+
+              const stats = computeStatsForFilter(selectedPrefix);
+              const monthlyBreakdown = MONTHS_LIST.map((m) => ({
+                ...m,
+                data: computeStatsForFilter(`${analyticsYear}-${m.num}`),
+              }));
+
+              return (
+                <AccountSectionCard
+                  title="Monthly Driving & Charging Analytics"
+                  icon="📊"
+                  badge={
+                    analyticsMonth === 'all'
+                      ? `${analyticsYear}`
+                      : `${selectedMonthObj?.short || ''} ${analyticsYear}`
+                  }
+                  badgeBg="#064E3B"
+                  badgeColor="#34D399"
+                  preview={`${stats.totalDistKm} km driven • ${stats.totalDriveEnergyKwh} kWh used • ${stats.totalChargeCount} charges (+${stats.totalPackKwh} kWh)`}
+                  subtitle="View total distance travelled, total energy used by the car, and charging sessions & energy broken down by 3.3 kW AC, 7.4 kW AC, and DC Fast charging for any month."
+                >
+                  {/* Year Navigation Header */}
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      backgroundColor: '#0A0E17',
+                      paddingHorizontal: 10,
+                      paddingVertical: 8,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: '#1E293B',
+                      marginBottom: 10,
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <TouchableOpacity
+                        style={[styles.calendarNavBtn, { paddingHorizontal: 10, paddingVertical: 5 }]}
+                        onPress={() => setAnalyticsYear((y) => y - 1)}
+                      >
+                        <Text style={styles.calendarNavText}>◀</Text>
+                      </TouchableOpacity>
+                      <Text style={{ color: '#F8FAFC', fontSize: 15, fontWeight: '900' }}>
+                        {analyticsYear}
+                      </Text>
+                      <TouchableOpacity
+                        style={[styles.calendarNavBtn, { paddingHorizontal: 10, paddingVertical: 5 }]}
+                        onPress={() => setAnalyticsYear((y) => y + 1)}
+                      >
+                        <Text style={styles.calendarNavText}>▶</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <TouchableOpacity
+                        style={[
+                          styles.calendarTodayBtn,
+                          analyticsMonth === 'all' && styles.calendarTodayBtnActive,
+                        ]}
+                        onPress={() => setAnalyticsMonth('all')}
+                      >
+                        <Text
+                          style={[
+                            styles.calendarTodayBtnText,
+                            analyticsMonth === 'all' && styles.calendarTodayBtnTextActive,
+                          ]}
+                        >
+                          Full Year
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.calendarTodayBtn}
+                        onPress={() => {
+                          const now = new Date();
+                          setAnalyticsYear(now.getFullYear());
+                          setAnalyticsMonth(String(now.getMonth() + 1).padStart(2, '0'));
+                        }}
+                      >
+                        <Text style={styles.calendarTodayBtnText}>This Month</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {/* 12-Month Selector Grid */}
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      flexWrap: 'wrap',
+                      gap: 6,
+                      marginBottom: 14,
+                    }}
+                  >
+                    {monthlyBreakdown.map((m) => {
+                      const isSel = analyticsMonth === m.num;
+                      const hasActivity = m.data.tripCount > 0 || m.data.totalChargeCount > 0;
+                      return (
+                        <TouchableOpacity
+                          key={m.num}
+                          onPress={() => setAnalyticsMonth(m.num)}
+                          activeOpacity={0.75}
+                          style={{
+                            width: '23%',
+                            flexGrow: 1,
+                            backgroundColor: isSel ? '#0284C728' : '#0A0E17',
+                            borderWidth: 1,
+                            borderColor: isSel ? '#38BDF8' : hasActivity ? '#1E293B' : '#0F172A',
+                            borderRadius: 10,
+                            paddingVertical: 7,
+                            paddingHorizontal: 6,
+                            alignItems: 'center',
+                          }}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Text
+                              style={{
+                                color: isSel ? '#38BDF8' : hasActivity ? '#F8FAFC' : '#64748B',
+                                fontSize: 12,
+                                fontWeight: isSel ? '900' : '700',
+                              }}
+                            >
+                              {m.short}
+                            </Text>
+                            {hasActivity && (
+                              <View
+                                style={{
+                                  width: 5,
+                                  height: 5,
+                                  borderRadius: 3,
+                                  backgroundColor: isSel ? '#38BDF8' : '#34D399',
+                                }}
+                              />
+                            )}
+                          </View>
+                          <Text
+                            style={{
+                              color: isSel ? '#BAE6FD' : hasActivity ? '#94A3B8' : '#475569',
+                              fontSize: 9,
+                              marginTop: 2,
+                            }}
+                            numberOfLines={1}
+                          >
+                            {m.data.totalDistKm > 0
+                              ? `${m.data.totalDistKm} km`
+                              : m.data.totalChargeCount > 0
+                              ? `${m.data.totalChargeCount} chg`
+                              : '--'}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {/* Selected Period Header */}
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 8,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: '#94A3B8',
+                        fontSize: 10,
+                        fontWeight: '800',
+                        letterSpacing: 0.6,
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      🚗 Driving & Energy Summary — {periodLabel}
+                    </Text>
+                    <Text style={{ color: '#38BDF8', fontSize: 10, fontWeight: '700' }}>
+                      {stats.tripCount} {stats.tripCount === 1 ? 'Trip' : 'Trips'} •{' '}
+                      {formatDurationHm(stats.totalDriveDurSec)}
+                    </Text>
+                  </View>
+
+                  {/* Driving Distance & Car Energy Used Cards */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+                    <View
+                      style={{
+                        flex: 1,
+                        backgroundColor: '#0A0E17',
+                        padding: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                      }}
+                    >
+                      <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                        TOTAL DISTANCE TRAVELLED
+                      </Text>
+                      <Text style={{ color: '#34D399', fontSize: 18, fontWeight: '900', marginTop: 4 }}>
+                        {stats.totalDistKm.toLocaleString()} km
+                      </Text>
+                      <Text style={{ color: '#94A3B8', fontSize: 10, marginTop: 2 }}>
+                        {stats.tripCount} {stats.tripCount === 1 ? 'trip' : 'trips'} in {periodLabel}
+                      </Text>
+                    </View>
+
+                    <View
+                      style={{
+                        flex: 1,
+                        backgroundColor: '#0A0E17',
+                        padding: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                      }}
+                    >
+                      <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                        TOTAL ENERGY USED BY CAR
+                      </Text>
+                      <Text style={{ color: '#38BDF8', fontSize: 18, fontWeight: '900', marginTop: 4 }}>
+                        {stats.totalDriveEnergyKwh} kWh
+                      </Text>
+                      <Text style={{ color: '#94A3B8', fontSize: 10, marginTop: 2 }}>
+                        {stats.avgDriveEff > 0
+                          ? `Avg Efficiency: ${stats.avgDriveEff} km/kWh`
+                          : 'BMS Driving Energy'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Charging Speed Breakdown Header */}
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 8,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: '#94A3B8',
+                        fontSize: 10,
+                        fontWeight: '800',
+                        letterSpacing: 0.6,
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      ⚡ Charging Breakdown by Speed — {periodLabel}
+                    </Text>
+                    <Text style={{ color: '#34D399', fontSize: 10, fontWeight: '700' }}>
+                      {stats.totalChargeCount} {stats.totalChargeCount === 1 ? 'Charge' : 'Charges'}
+                    </Text>
+                  </View>
+
+                  {/* Total Charging Energy Row */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+                    <View
+                      style={{
+                        flex: 1,
+                        backgroundColor: '#0A0E17',
+                        padding: 10,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                      }}
+                    >
+                      <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                        TOTAL ENERGY ADDED (PACK)
+                      </Text>
+                      <Text style={{ color: '#34D399', fontSize: 16, fontWeight: '900', marginTop: 3 }}>
+                        +{stats.totalPackKwh} kWh
+                      </Text>
+                      <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
+                        Across {stats.totalChargeCount} charging{' '}
+                        {stats.totalChargeCount === 1 ? 'session' : 'sessions'}
+                      </Text>
+                    </View>
+
+                    <View
+                      style={{
+                        flex: 1,
+                        backgroundColor: '#0A0E17',
+                        padding: 10,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                      }}
+                    >
+                      <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                        TOTAL WALL ENERGY (CHARGING)
+                      </Text>
+                      <Text style={{ color: '#FACC15', fontSize: 16, fontWeight: '900', marginTop: 3 }}>
+                        {stats.totalWallKwh} kWh
+                      </Text>
+                      <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
+                        Loss: {stats.totalLossKwh} kWh
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* 3 Charging Speed Cards: 3.3 kW AC, 7.4 kW AC, DC Fast */}
+                  <View style={{ gap: 8, marginBottom: 14 }}>
+                    {/* 3.3 kW AC */}
+                    <View
+                      style={{
+                        backgroundColor: '#0A0E17',
+                        padding: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={{ fontSize: 14 }}>🔌</Text>
+                          <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                            3.3 kW AC Charges
+                          </Text>
+                        </View>
+                        <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 3 }}>
+                          Wall Energy: <Text style={{ color: '#CBD5E1', fontWeight: '700' }}>{stats.wallKwh33} kWh</Text> • Pack Added:{' '}
+                          <Text style={{ color: '#34D399', fontWeight: '700' }}>+{stats.packKwh33} kWh</Text>
+                        </Text>
+                      </View>
+                      <View
+                        style={{
+                          backgroundColor: '#0F172A',
+                          paddingHorizontal: 12,
+                          paddingVertical: 6,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: '#1E293B',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{ color: '#38BDF8', fontSize: 16, fontWeight: '900' }}>
+                          {stats.count33}
+                        </Text>
+                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '700' }}>
+                          {stats.count33 === 1 ? 'CHARGE' : 'CHARGES'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* 7.4 kW AC */}
+                    <View
+                      style={{
+                        backgroundColor: '#0A0E17',
+                        padding: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={{ fontSize: 14 }}>⚡</Text>
+                          <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                            7.4 kW AC Charges
+                          </Text>
+                        </View>
+                        <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 3 }}>
+                          Wall Energy: <Text style={{ color: '#CBD5E1', fontWeight: '700' }}>{stats.wallKwh74} kWh</Text> • Pack Added:{' '}
+                          <Text style={{ color: '#34D399', fontWeight: '700' }}>+{stats.packKwh74} kWh</Text>
+                        </Text>
+                      </View>
+                      <View
+                        style={{
+                          backgroundColor: '#0F172A',
+                          paddingHorizontal: 12,
+                          paddingVertical: 6,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: '#1E293B',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{ color: '#A78BFA', fontSize: 16, fontWeight: '900' }}>
+                          {stats.count74}
+                        </Text>
+                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '700' }}>
+                          {stats.count74 === 1 ? 'CHARGE' : 'CHARGES'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* DC Fast */}
+                    <View
+                      style={{
+                        backgroundColor: '#0A0E17',
+                        padding: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={{ fontSize: 14 }}>🚀</Text>
+                          <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                            DC Fast Charges
+                          </Text>
+                        </View>
+                        <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 3 }}>
+                          Wall Energy: <Text style={{ color: '#CBD5E1', fontWeight: '700' }}>{stats.wallKwhDc} kWh</Text> • Pack Added:{' '}
+                          <Text style={{ color: '#34D399', fontWeight: '700' }}>+{stats.packKwhDc} kWh</Text>
+                        </Text>
+                      </View>
+                      <View
+                        style={{
+                          backgroundColor: '#0F172A',
+                          paddingHorizontal: 12,
+                          paddingVertical: 6,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: '#1E293B',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{ color: '#F59E0B', fontSize: 16, fontWeight: '900' }}>
+                          {stats.countDc}
+                        </Text>
+                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '700' }}>
+                          {stats.countDc === 1 ? 'CHARGE' : 'CHARGES'}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Month-by-Month Summary List for Selected Year */}
+                  <View
+                    style={{
+                      backgroundColor: '#0A0E17',
+                      padding: 12,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: '#1E293B',
+                      gap: 8,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: '#94A3B8',
+                        fontSize: 10,
+                        fontWeight: '800',
+                        letterSpacing: 0.6,
+                        textTransform: 'uppercase',
+                        marginBottom: 2,
+                      }}
+                    >
+                      🗓️ Month-by-Month Summary ({analyticsYear})
+                    </Text>
+
+                    {monthlyBreakdown.map((m) => {
+                      const d = m.data;
+                      const isSel = analyticsMonth === m.num;
+                      const hasAny = d.tripCount > 0 || d.totalChargeCount > 0;
+                      return (
+                        <TouchableOpacity
+                          key={m.num}
+                          onPress={() => setAnalyticsMonth(m.num)}
+                          activeOpacity={0.75}
+                          style={{
+                            flexDirection: 'row',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            paddingVertical: 8,
+                            paddingHorizontal: 10,
+                            borderRadius: 8,
+                            backgroundColor: isSel ? '#0284C720' : '#0F172A',
+                            borderWidth: 1,
+                            borderColor: isSel ? '#38BDF860' : '#1E293B',
+                          }}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={{
+                                color: isSel ? '#38BDF8' : hasAny ? '#F8FAFC' : '#64748B',
+                                fontSize: 12,
+                                fontWeight: '800',
+                              }}
+                            >
+                              {m.full} {analyticsYear}
+                            </Text>
+                            <Text style={{ color: '#64748B', fontSize: 10, marginTop: 2 }}>
+                              3.3kW: {d.count33} ({d.wallKwh33} kWh) • 7.4kW: {d.count74} ({d.wallKwh74} kWh) • DC: {d.countDc} ({d.wallKwhDc} kWh)
+                            </Text>
+                          </View>
+                          <View style={{ alignItems: 'flex-end' }}>
+                            <Text
+                              style={{
+                                color: d.totalDistKm > 0 ? '#34D399' : '#64748B',
+                                fontSize: 12,
+                                fontWeight: '800',
+                              }}
+                            >
+                              {d.totalDistKm} km • {d.totalDriveEnergyKwh} kWh
+                            </Text>
+                            <Text style={{ color: '#38BDF8', fontSize: 10, marginTop: 2 }}>
+                              ⚡ +{d.totalPackKwh} kWh ({d.totalWallKwh} kWh wall)
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </AccountSectionCard>
+              );
+            })()}
 
             {/* GOOGLE DRIVE & GOOGLE SHEETS BACKUP */}
             {googleConfig?.accessToken && (
