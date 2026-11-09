@@ -5,3 +5,4 @@ export * from './crypto';
 export * from './models';
 export * from './tap';
 export * from './googleSheets';
+export * from './tripPlanner';

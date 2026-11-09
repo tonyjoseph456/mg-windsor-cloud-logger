@@ -73,6 +73,7 @@ import {
   fetchD1Notifications,
   clearD1Notifications,
 } from './src/sdk';
+import { TripPlannerCard } from './src/TripPlannerCard';
 
 type TabId = 'home' | 'charge' | 'trips' | 'account';
 
@@ -3619,9 +3620,18 @@ export default function App() {
           </>
         )}
 
-        {/* TAB 3: TRIPS (10-Point Automatic + Live Road-Trip Logger) */}
+        {/* TAB 3: TRIPS (EV Route & Charger Planner + 10-Point Automatic & Live Road-Trip Logger) */}
         {tab === 'trips' && (
           <>
+            {/* EV Route & Charger Planner (Ported from irshadm/volta-android) */}
+            <TripPlannerCard
+              currentSoc={clampedSoc}
+              currentLat={status.gps?.latitude ?? null}
+              currentLng={status.gps?.longitude ?? null}
+              usableCapacityKwh={derivedFullCapacityKwh ?? nominalCapacityKwh}
+              onShowBanner={showBanner}
+            />
+
             {/* Live Road-Trip Mode & AC Setting Controls (Way 2) */}
             <View style={styles.card}>
               <View
@@ -5347,6 +5357,83 @@ export default function App() {
                   3. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For CarPlay Trip Notifications:</Text> Shortcuts app → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Automation</Text> tab → &quot;+&quot; → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>CarPlay</Text> → Connects (or Disconnects) → Run Immediately (Notify When Run OFF) → Add Action &quot;Get Contents of URL&quot; → Paste Start (or Stop) URL → Add Action <Text style={{ color: '#38BDF8', fontWeight: '700' }}>&quot;Show Notification&quot;</Text> (Text: Contents of URL) → Done!{'\n'}
                   4. First run: Tap &quot;Allow&quot; on the one-time privacy popup. It executes silently with zero 12V battery drain!
                 </Text>
+              </View>
+            </AccountSectionCard>
+
+            {/* CARD 6: Open-Source Credits & Acknowledgements */}
+            <AccountSectionCard
+              title="Open-Source Credits & Acknowledgements"
+              icon="🙏"
+              badge="Apache 2.0 / MIT"
+              badgeBg="#1E293B"
+              badgeColor="#38BDF8"
+              preview="Irshad Melethil (Volta Android) & John Lazarus (mg-ismart-india-client)"
+              subtitle="Built upon open-source research and EV engineering from the Indian MG EV community."
+            >
+              <View style={{ gap: 10 }}>
+                <View
+                  style={{
+                    backgroundColor: '#0A0E17',
+                    padding: 12,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: '#1E293B',
+                  }}
+                >
+                  <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                    🗺️ EV Trip Planner &amp; Terrain Physics Engine
+                  </Text>
+                  <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 4, lineHeight: 16 }}>
+                    Ported from <Text style={{ color: '#34D399', fontWeight: '700' }}>Volta (irshadm/volta-android)</Text> by{' '}
+                    <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Irshad Melethil</Text> (Apache License 2.0) — including the terrain-aware physics EnergyModel (flat speed efficiency + potential energy climb &amp; regen), 20m hysteresis elevation filter, Dijkstra time-optimal DC stop planner, charger confidence scoring, and 25 km backup charger selection.
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <TouchableOpacity
+                      style={[styles.copyPillBtn, { backgroundColor: '#0284C725', borderColor: '#38BDF8' }]}
+                      onPress={() => Linking.openURL('https://github.com/irshadm/volta-android')}
+                    >
+                      <Text style={[styles.copyPillBtnText, { color: '#38BDF8' }]}>
+                        🔗 GitHub: irshadm/volta-android
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.copyPillBtn, { backgroundColor: '#064E3B40', borderColor: '#34D399' }]}
+                      onPress={() => Linking.openURL('https://irshadm.dev/volta/')}
+                    >
+                      <Text style={[styles.copyPillBtnText, { color: '#34D399' }]}>
+                        🌐 irshadm.dev/volta
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View
+                  style={{
+                    backgroundColor: '#0A0E17',
+                    padding: 12,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: '#1E293B',
+                  }}
+                >
+                  <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                    📡 MG i-SMART India ASN.1 UPER Protocol
+                  </Text>
+                  <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 4, lineHeight: 16 }}>
+                    Ported from <Text style={{ color: '#38BDF8', fontWeight: '700' }}>john-lazarus/mg-ismart-india-client</Text> by{' '}
+                    <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>John Lazarus</Text>, who reverse-engineered the MG India i-SMART ASN.1 UPER binary frames and TAP gateway signatures.
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <TouchableOpacity
+                      style={[styles.copyPillBtn, { backgroundColor: '#0284C725', borderColor: '#38BDF8' }]}
+                      onPress={() => Linking.openURL('https://github.com/john-lazarus/mg-ismart-india-client')}
+                    >
+                      <Text style={[styles.copyPillBtnText, { color: '#38BDF8' }]}>
+                        🔗 GitHub: john-lazarus/mg-ismart-india-client
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
               </View>
             </AccountSectionCard>
           </>

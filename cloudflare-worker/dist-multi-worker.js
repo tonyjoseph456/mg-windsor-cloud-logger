@@ -11640,6 +11640,212 @@ async function handleApi(env, request, url) {
       pushResult
     });
   }
+  if (path === "/api/planner/google-verify-key") {
+    const apiKey = String(body?.apiKey || "").trim();
+    if (!apiKey) return json({ ok: false, message: "API key is empty" }, 400);
+    try {
+      const elevRes = await fetch(
+        `https://maps.googleapis.com/maps/api/elevation/json?locations=10.0261,76.3125&key=${encodeURIComponent(apiKey)}`
+      );
+      const elevJson = await elevRes.json();
+      if (elevJson.status && elevJson.status !== "OK") {
+        return json({
+          ok: false,
+          message: `Elevation API: ${elevJson.error_message || elevJson.status}. Enable "Maps Elevation API", "Routes API", and "Places API (New)" in Google Cloud Console.`
+        });
+      }
+      return json({
+        ok: true,
+        message: "Google Maps Platform API Key verified! Live Traffic, Elevation & CCS2 Plug Availability enabled."
+      });
+    } catch (e) {
+      return json({ ok: false, message: e.message }, 500);
+    }
+  }
+  if (path === "/api/planner/google-autocomplete") {
+    const apiKey = String(body?.apiKey || "").trim();
+    const input = String(body?.input || "").trim();
+    const near = body?.near;
+    if (!apiKey || !input) return json({ suggestions: [] });
+    try {
+      const reqBody = {
+        input,
+        includedRegionCodes: ["in"]
+      };
+      if (near && near.lat && near.lng) {
+        reqBody.locationBias = {
+          circle: {
+            center: { latitude: Number(near.lat), longitude: Number(near.lng) },
+            radius: 5e4
+          }
+        };
+      }
+      const res = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey
+        },
+        body: JSON.stringify(reqBody)
+      });
+      const data = await res.json();
+      const suggestions = (data.suggestions || []).map((s) => s.placePrediction).filter(Boolean).map((p) => ({
+        placeId: p.placeId,
+        title: p.structuredFormat?.mainText?.text || p.text?.text || input,
+        subtitle: p.structuredFormat?.secondaryText?.text || "",
+        distanceM: p.distanceMeters ? Number(p.distanceMeters) : void 0
+      }));
+      return json({ ok: true, suggestions });
+    } catch (e) {
+      return json({ ok: false, suggestions: [], error: e.message });
+    }
+  }
+  if (path === "/api/planner/google-place-details") {
+    const apiKey = String(body?.apiKey || "").trim();
+    const placeId = String(body?.placeId || "").trim();
+    if (!apiKey || !placeId) return json({ error: "apiKey and placeId required" }, 400);
+    try {
+      const res = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`, {
+        headers: {
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": "id,displayName,location"
+        }
+      });
+      const data = await res.json();
+      if (!data.location) return json({ error: "Place has no location" }, 404);
+      return json({
+        ok: true,
+        name: data.displayName?.text || "Destination",
+        location: { lat: Number(data.location.latitude), lng: Number(data.location.longitude) }
+      });
+    } catch (e) {
+      return json({ error: e.message }, 500);
+    }
+  }
+  if (path === "/api/planner/google-routes") {
+    const apiKey = String(body?.apiKey || "").trim();
+    const origin = body?.origin;
+    const destination = body?.destination;
+    if (!apiKey || !origin || !destination) return json({ routes: [] });
+    try {
+      const reqBody = {
+        origin: { location: { latLng: { latitude: Number(origin.lat), longitude: Number(origin.lng) } } },
+        destination: { location: { latLng: { latitude: Number(destination.lat), longitude: Number(destination.lng) } } },
+        travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_AWARE",
+        computeAlternativeRoutes: true,
+        extraComputations: ["TOLLS", "TRAFFIC_ON_POLYLINE"],
+        polylineQuality: "OVERVIEW",
+        regionCode: "IN",
+        languageCode: "en-IN"
+      };
+      const mask = "routes.description,routes.distanceMeters,routes.duration,routes.staticDuration,routes.polyline.encodedPolyline,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.travelAdvisory.tollInfo,routes.travelAdvisory.speedReadingIntervals";
+      const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": mask
+        },
+        body: JSON.stringify(reqBody)
+      });
+      const data = await res.json();
+      const routes = (data.routes || []).map((r) => ({
+        description: r.description || "Highway Route",
+        encodedPolyline: r.polyline?.encodedPolyline || "",
+        distanceM: Number(r.distanceMeters) || 0,
+        durationS: Number(String(r.duration || "0s").replace("s", "")) || 0,
+        normalDurationS: r.staticDuration ? Number(String(r.staticDuration).replace("s", "")) : void 0,
+        tolls: Boolean(r.travelAdvisory?.tollInfo),
+        steps: (r.legs || []).flatMap((l) => l.steps || []).map((st) => ({
+          distanceM: Number(st.distanceMeters) || 0,
+          durationS: Number(String(st.staticDuration || "0s").replace("s", "")) || 0
+        }))
+      }));
+      return json({ ok: true, routes });
+    } catch (e) {
+      return json({ ok: false, routes: [], error: e.message });
+    }
+  }
+  if (path === "/api/planner/google-elevation") {
+    const apiKey = String(body?.apiKey || "").trim();
+    const encodedPolyline = String(body?.encodedPolyline || "").trim();
+    if (!apiKey || !encodedPolyline) return json({ elevations: [] });
+    try {
+      const urlStr = `https://maps.googleapis.com/maps/api/elevation/json?locations=${encodeURIComponent(
+        "enc:" + encodedPolyline
+      )}&key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(urlStr);
+      const data = await res.json();
+      if (data.status === "OK" && Array.isArray(data.results)) {
+        return json({ ok: true, elevations: data.results.map((r) => Number(r.elevation) || 0) });
+      }
+      return json({ ok: false, elevations: [] });
+    } catch (e) {
+      return json({ ok: false, elevations: [] });
+    }
+  }
+  if (path === "/api/planner/google-chargers") {
+    const apiKey = String(body?.apiKey || "").trim();
+    const encodedPolyline = String(body?.encodedPolyline || "").trim();
+    const origin = body?.origin;
+    if (!apiKey || !encodedPolyline) return json({ chargers: [] });
+    try {
+      const reqBody = {
+        textQuery: "EV charging station",
+        pageSize: 20,
+        searchAlongRouteParameters: { polyline: { encodedPolyline } },
+        evOptions: {
+          minimumChargingRateKw: 20,
+          connectorTypes: ["EV_CONNECTOR_TYPE_CCS_COMBO_2"]
+        }
+      };
+      if (origin && origin.lat && origin.lng) {
+        reqBody.routingParameters = {
+          origin: { latitude: Number(origin.lat), longitude: Number(origin.lng) }
+        };
+      }
+      const mask = "places.id,places.displayName,places.location,places.formattedAddress,places.evChargeOptions,places.regularOpeningHours";
+      const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": mask
+        },
+        body: JSON.stringify(reqBody)
+      });
+      const data = await res.json();
+      const chargers = (data.places || []).map((p) => {
+        if (!p.location) return null;
+        const aggs = p.evChargeOptions?.connectorAggregation || [];
+        const ccs = aggs.filter((a) => a.type === "EV_CONNECTOR_TYPE_CCS_COMBO_2");
+        const listToUse = ccs.length > 0 ? ccs : aggs;
+        const maxKw = listToUse.reduce(
+          (mx, a) => Math.max(mx, Number(a.maxChargeRateKw) || 0),
+          30
+        );
+        const connectorCount = listToUse.reduce((sum, a) => sum + (Number(a.count) || 0), 0) || null;
+        const availArr = listToUse.filter((a) => a.availableCount != null);
+        const availableCount = availArr.length > 0 ? availArr.reduce((sum, a) => sum + (Number(a.availableCount) || 0), 0) : null;
+        const periods = p.regularOpeningHours?.periods;
+        const open24h = Array.isArray(periods) ? periods.length === 1 && !periods[0].close : null;
+        return {
+          id: p.id,
+          name: p.displayName?.text || "EV Fast Charger",
+          address: p.formattedAddress || null,
+          position: { lat: Number(p.location.latitude), lng: Number(p.location.longitude) },
+          maxKw,
+          connectorCount,
+          availableCount,
+          open24h
+        };
+      }).filter(Boolean);
+      return json({ ok: true, chargers });
+    } catch (e) {
+      return json({ ok: false, chargers: [] });
+    }
+  }
   if (path === "/api/trip/start") {
     const mg = await getMgClientForWebhook(env, url);
     if (!mg) {
