@@ -9735,6 +9735,14 @@ var D1_TABLE_SCHEMAS = [
     end_location TEXT,
     avg_speed_kmh REAL,
     max_speed_kmh REAL,
+    start_lat REAL,
+    start_lng REAL,
+    end_lat REAL,
+    end_lng REAL,
+    start_cabin_temp_c REAL,
+    end_cabin_temp_c REAL,
+    start_exterior_temp_c REAL,
+    end_exterior_temp_c REAL,
     status TEXT DEFAULT 'completed',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
@@ -9816,6 +9824,22 @@ async function initD1(db) {
     await db.prepare("ALTER TABLE notifications ADD COLUMN is_read INTEGER DEFAULT 0").run();
   } catch (_) {
   }
+  const tripCols = [
+    "start_lat REAL",
+    "start_lng REAL",
+    "end_lat REAL",
+    "end_lng REAL",
+    "start_cabin_temp_c REAL",
+    "end_cabin_temp_c REAL",
+    "start_exterior_temp_c REAL",
+    "end_exterior_temp_c REAL"
+  ];
+  for (const col of tripCols) {
+    try {
+      await db.prepare(`ALTER TABLE trips ADD COLUMN ${col}`).run();
+    } catch (_) {
+    }
+  }
   if (d1InitErrors.length === 0) {
     d1Initialized = true;
   }
@@ -9876,9 +9900,10 @@ async function resolveLocation(lat, lng) {
       const addr = data.address || {};
       const road = addr.road || addr.suburb || addr.neighbourhood || "";
       const city = addr.city || addr.town || addr.village || addr.county || "";
-      if (road && city) return `${road}, ${city}`;
-      if (city) return city;
-      if (data.display_name) return data.display_name.split(",").slice(0, 2).join(",").trim();
+      const coordSuffix = `(${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+      if (road && city) return `${road}, ${city} ${coordSuffix}`;
+      if (city) return `${city} ${coordSuffix}`;
+      if (data.display_name) return `${data.display_name.split(",").slice(0, 2).join(",").trim()} ${coordSuffix}`;
     }
   } catch (_) {
   }
@@ -9963,28 +9988,68 @@ async function d1InsertTrip(env, trip) {
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare(`
-        INSERT OR REPLACE INTO trips (id, date, start_timestamp, end_timestamp, duration_seconds, distance_km, start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh, efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(
-        trip.id,
-        trip.date,
-        trip.start_timestamp,
-        trip.end_timestamp || null,
-        trip.duration_seconds || null,
-        trip.distance_km != null ? Number(trip.distance_km) : null,
-        trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
-        trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
-        trip.start_soc != null ? Number(trip.start_soc) : null,
-        trip.end_soc != null ? Number(trip.end_soc) : null,
-        trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
-        trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
-        trip.start_location || "",
-        trip.end_location || "",
-        trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
-        trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
-        trip.status || "ongoing"
-      ).run();
+      try {
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO trips (
+            id, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
+            start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh,
+            efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh,
+            start_lat, start_lng, end_lat, end_lng,
+            start_cabin_temp_c, end_cabin_temp_c, start_exterior_temp_c, end_exterior_temp_c,
+            status
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          trip.id,
+          trip.date,
+          trip.start_timestamp,
+          trip.end_timestamp || null,
+          trip.duration_seconds || null,
+          trip.distance_km != null ? Number(trip.distance_km) : null,
+          trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
+          trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
+          trip.start_soc != null ? Number(trip.start_soc) : null,
+          trip.end_soc != null ? Number(trip.end_soc) : null,
+          trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
+          trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
+          trip.start_location || "",
+          trip.end_location || "",
+          trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
+          trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
+          trip.start_lat != null ? Number(trip.start_lat) : null,
+          trip.start_lng != null ? Number(trip.start_lng) : null,
+          trip.end_lat != null ? Number(trip.end_lat) : null,
+          trip.end_lng != null ? Number(trip.end_lng) : null,
+          trip.start_cabin_temp_c != null ? Number(trip.start_cabin_temp_c) : null,
+          trip.end_cabin_temp_c != null ? Number(trip.end_cabin_temp_c) : null,
+          trip.start_exterior_temp_c != null ? Number(trip.start_exterior_temp_c) : null,
+          trip.end_exterior_temp_c != null ? Number(trip.end_exterior_temp_c) : null,
+          trip.status || "ongoing"
+        ).run();
+      } catch (_) {
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO trips (id, date, start_timestamp, end_timestamp, duration_seconds, distance_km, start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh, efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          trip.id,
+          trip.date,
+          trip.start_timestamp,
+          trip.end_timestamp || null,
+          trip.duration_seconds || null,
+          trip.distance_km != null ? Number(trip.distance_km) : null,
+          trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
+          trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
+          trip.start_soc != null ? Number(trip.start_soc) : null,
+          trip.end_soc != null ? Number(trip.end_soc) : null,
+          trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
+          trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
+          trip.start_location || "",
+          trip.end_location || "",
+          trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
+          trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
+          trip.status || "ongoing"
+        ).run();
+      }
     } catch (err) {
       console.warn("d1InsertTrip error:", err);
     }
@@ -10011,31 +10076,70 @@ async function d1BatchSyncTrips(env, rawTrips) {
       try {
         const id = trip.id || "trip_" + (trip.start_timestamp || Math.floor(Date.now() / 1e3)) + "_" + Math.random().toString(36).substring(2, 6);
         const date = trip.date || (trip.start_timestamp ? istDateString(Number(trip.start_timestamp)) : istDateString(Math.floor(Date.now() / 1e3)));
-        await env.DB.prepare(`
-          INSERT OR REPLACE INTO trips (
-            id, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
-            start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh,
-            efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          id,
-          date,
-          Number(trip.start_timestamp) || 0,
-          trip.end_timestamp ? Number(trip.end_timestamp) : null,
-          trip.duration_seconds ? Number(trip.duration_seconds) : null,
-          trip.distance_km != null ? Number(trip.distance_km) : null,
-          trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
-          trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
-          trip.start_soc != null ? Number(trip.start_soc) : null,
-          trip.end_soc != null ? Number(trip.end_soc) : null,
-          trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
-          trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
-          trip.start_location || "",
-          trip.end_location || "",
-          trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
-          trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
-          trip.status || "completed"
-        ).run();
+        try {
+          await env.DB.prepare(`
+            INSERT OR REPLACE INTO trips (
+              id, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
+              start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh,
+              efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh,
+              start_lat, start_lng, end_lat, end_lng,
+              start_cabin_temp_c, end_cabin_temp_c, start_exterior_temp_c, end_exterior_temp_c,
+              status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            id,
+            date,
+            Number(trip.start_timestamp) || 0,
+            trip.end_timestamp ? Number(trip.end_timestamp) : null,
+            trip.duration_seconds ? Number(trip.duration_seconds) : null,
+            trip.distance_km != null ? Number(trip.distance_km) : null,
+            trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
+            trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
+            trip.start_soc != null ? Number(trip.start_soc) : null,
+            trip.end_soc != null ? Number(trip.end_soc) : null,
+            trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
+            trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
+            trip.start_location || "",
+            trip.end_location || "",
+            trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
+            trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
+            trip.start_lat != null ? Number(trip.start_lat) : null,
+            trip.start_lng != null ? Number(trip.start_lng) : null,
+            trip.end_lat != null ? Number(trip.end_lat) : null,
+            trip.end_lng != null ? Number(trip.end_lng) : null,
+            trip.start_cabin_temp_c != null ? Number(trip.start_cabin_temp_c) : null,
+            trip.end_cabin_temp_c != null ? Number(trip.end_cabin_temp_c) : null,
+            trip.start_exterior_temp_c != null ? Number(trip.start_exterior_temp_c) : null,
+            trip.end_exterior_temp_c != null ? Number(trip.end_exterior_temp_c) : null,
+            trip.status || "completed"
+          ).run();
+        } catch (_) {
+          await env.DB.prepare(`
+            INSERT OR REPLACE INTO trips (
+              id, date, start_timestamp, end_timestamp, duration_seconds, distance_km,
+              start_odometer_km, end_odometer_km, start_soc, end_soc, energy_used_kwh,
+              efficiency_km_per_kwh, start_location, end_location, avg_speed_kmh, max_speed_kmh, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            id,
+            date,
+            Number(trip.start_timestamp) || 0,
+            trip.end_timestamp ? Number(trip.end_timestamp) : null,
+            trip.duration_seconds ? Number(trip.duration_seconds) : null,
+            trip.distance_km != null ? Number(trip.distance_km) : null,
+            trip.start_odometer_km != null ? Number(trip.start_odometer_km) : null,
+            trip.end_odometer_km != null ? Number(trip.end_odometer_km) : null,
+            trip.start_soc != null ? Number(trip.start_soc) : null,
+            trip.end_soc != null ? Number(trip.end_soc) : null,
+            trip.energy_used_kwh != null ? Number(trip.energy_used_kwh) : null,
+            trip.efficiency_km_per_kwh != null ? Number(trip.efficiency_km_per_kwh) : null,
+            trip.start_location || "",
+            trip.end_location || "",
+            trip.avg_speed_kmh != null ? Number(trip.avg_speed_kmh) : null,
+            trip.max_speed_kmh != null ? Number(trip.max_speed_kmh) : null,
+            trip.status || "completed"
+          ).run();
+        }
         count++;
       } catch (err) {
         console.warn("d1BatchSyncTrips error:", err);
@@ -10102,31 +10206,71 @@ async function d1UpdateTrip(env, tripId, updates) {
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare(`
-        UPDATE trips SET
-          end_timestamp = ?,
-          duration_seconds = ?,
-          distance_km = ?,
-          end_odometer_km = ?,
-          end_soc = ?,
-          energy_used_kwh = ?,
-          efficiency_km_per_kwh = ?,
-          end_location = ?,
-          avg_speed_kmh = ?,
-          status = 'completed'
-        WHERE id = ?
-      `).bind(
-        updates.end_timestamp,
-        updates.duration_seconds,
-        updates.distance_km,
-        updates.end_odometer_km,
-        updates.end_soc,
-        updates.energy_used_kwh,
-        updates.efficiency_km_per_kwh,
-        updates.end_location,
-        updates.avg_speed_kmh,
-        tripId
-      ).run();
+      try {
+        await env.DB.prepare(`
+          UPDATE trips SET
+            end_timestamp = ?,
+            duration_seconds = ?,
+            distance_km = ?,
+            end_odometer_km = ?,
+            end_soc = ?,
+            energy_used_kwh = ?,
+            efficiency_km_per_kwh = ?,
+            end_location = ?,
+            avg_speed_kmh = ?,
+            max_speed_kmh = ?,
+            end_lat = ?,
+            end_lng = ?,
+            end_cabin_temp_c = ?,
+            end_exterior_temp_c = ?,
+            status = 'completed'
+          WHERE id = ?
+        `).bind(
+          updates.end_timestamp,
+          updates.duration_seconds,
+          updates.distance_km,
+          updates.end_odometer_km,
+          updates.end_soc,
+          updates.energy_used_kwh,
+          updates.efficiency_km_per_kwh,
+          updates.end_location,
+          updates.avg_speed_kmh,
+          updates.max_speed_kmh ?? null,
+          updates.end_lat ?? null,
+          updates.end_lng ?? null,
+          updates.end_cabin_temp_c ?? null,
+          updates.end_exterior_temp_c ?? null,
+          tripId
+        ).run();
+      } catch (_) {
+        await env.DB.prepare(`
+          UPDATE trips SET
+            end_timestamp = ?,
+            duration_seconds = ?,
+            distance_km = ?,
+            end_odometer_km = ?,
+            end_soc = ?,
+            energy_used_kwh = ?,
+            efficiency_km_per_kwh = ?,
+            end_location = ?,
+            avg_speed_kmh = ?,
+            max_speed_kmh = ?,
+            status = 'completed'
+          WHERE id = ?
+        `).bind(
+          updates.end_timestamp,
+          updates.duration_seconds,
+          updates.distance_km,
+          updates.end_odometer_km,
+          updates.end_soc,
+          updates.energy_used_kwh,
+          updates.efficiency_km_per_kwh,
+          updates.end_location,
+          updates.avg_speed_kmh,
+          updates.max_speed_kmh ?? null,
+          tripId
+        ).run();
+      }
     } catch (err) {
       console.warn("d1UpdateTrip error:", err);
     }
@@ -10576,6 +10720,9 @@ async function fetchCarTelemetry(client, vin) {
   const soc = status.charge?.soc != null ? Number(status.charge.soc) : status.fuel_level != null ? Number(status.fuel_level) : 0;
   const lat = status.gps?.latitude ?? null;
   const lng = status.gps?.longitude ?? null;
+  const speedKmh = Number(status.gps?.speed_kmh) || 0;
+  const cabinTempC = status.interior_temperature != null ? Number(status.interior_temperature) : null;
+  const exteriorTempC = status.exterior_temperature != null ? Number(status.exterior_temperature) : null;
   const ch = status.charge;
   const isCharging = Boolean(ch?.is_charging);
   const isPluggedIn = Boolean(ch?.is_plugged_in || ch?.is_charging);
@@ -10590,6 +10737,9 @@ async function fetchCarTelemetry(client, vin) {
     soc,
     lat,
     lng,
+    speedKmh,
+    cabinTempC,
+    exteriorTempC,
     isCharging,
     isPluggedIn,
     powerKw,
@@ -11087,6 +11237,11 @@ async function handleApi(env, request, url) {
         start_odometer_km: telem.odometer,
         start_soc: telem.soc,
         start_location: startLocation,
+        start_lat: telem.lat,
+        start_lng: telem.lng,
+        start_cabin_temp_c: telem.cabinTempC,
+        start_exterior_temp_c: telem.exteriorTempC,
+        max_speed_kmh: telem.speedKmh || 0,
         status: "ongoing"
       };
       await d1InsertTrip(env, trip);
@@ -11224,6 +11379,8 @@ ${idleText}`, {
     const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
     const endLocation = await resolveLocation(telem?.lat, telem?.lng);
     const avgSpeedKmh = durationSec > 0 && distanceKm > 0 ? Number((distanceKm / (durationSec / 3600)).toFixed(1)) : 0;
+    const estPeakSpeed = avgSpeedKmh > 0 ? Math.min(115, Math.max(Number((avgSpeedKmh * 1.48).toFixed(1)), Number((avgSpeedKmh + 14).toFixed(1)))) : 0;
+    const maxSpeedKmh = Math.max(Number(ongoingTrip.max_speed_kmh) || 0, Number(telem?.speedKmh) || 0, estPeakSpeed);
     const updates = {
       end_timestamp: nowSec,
       duration_seconds: durationSec,
@@ -11234,6 +11391,11 @@ ${idleText}`, {
       efficiency_km_per_kwh: efficiencyKmPerKwh,
       end_location: endLocation,
       avg_speed_kmh: avgSpeedKmh,
+      max_speed_kmh: maxSpeedKmh,
+      end_lat: telem?.lat ?? null,
+      end_lng: telem?.lng ?? null,
+      end_cabin_temp_c: telem?.cabinTempC ?? ongoingTrip.start_cabin_temp_c ?? null,
+      end_exterior_temp_c: telem?.exteriorTempC ?? ongoingTrip.start_exterior_temp_c ?? null,
       status: "completed"
     };
     await d1UpdateTrip(env, ongoingTrip.id, updates);

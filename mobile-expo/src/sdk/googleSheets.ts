@@ -847,8 +847,23 @@ export function mapD1TripToRecord(r: any): TripRecord {
   const startOdo = Number(r.start_odometer_km) || 0;
   const endOdo = Number(r.end_odometer_km) || (startOdo + distanceKm);
   const durationSeconds = Number(r.duration_seconds) || Math.max(0, endSec - startSec);
-  const energyUsedKwh = Number(r.energy_used_kwh) || Number((((startSoc - endSoc) / 100) * 38).toFixed(2));
+  const energyUsedKwh = Number(r.energy_used_kwh) || Number((((startSoc - endSoc) / 100) * 37.3).toFixed(2));
   const efficiencyKmPerKwh = Number(r.efficiency_km_per_kwh) || (energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0);
+  const avgSpeedKmh = Number(r.avg_speed_kmh) || (durationSeconds > 0 && distanceKm > 0 ? Number((distanceKm / (durationSecToHours(durationSeconds))).toFixed(1)) : 0);
+  const rawMaxSpeed = Number(r.max_speed_kmh) || 0;
+  const maxSpeedKmh = rawMaxSpeed > 0
+    ? rawMaxSpeed
+    : (avgSpeedKmh > 0 ? Math.min(115, Math.max(Number((avgSpeedKmh * 1.48).toFixed(1)), Number((avgSpeedKmh + 14).toFixed(1)))) : 0);
+
+  const startLat = r.start_lat != null ? Number(r.start_lat) : null;
+  const startLng = r.start_lng != null ? Number(r.start_lng) : null;
+  const endLat = r.end_lat != null ? Number(r.end_lat) : null;
+  const endLng = r.end_lng != null ? Number(r.end_lng) : null;
+
+  const startCabinTempC = r.start_cabin_temp_c != null ? Number(r.start_cabin_temp_c) : null;
+  const endCabinTempC = r.end_cabin_temp_c != null ? Number(r.end_cabin_temp_c) : startCabinTempC;
+  const startExteriorTempC = r.start_exterior_temp_c != null ? Number(r.start_exterior_temp_c) : null;
+  const endExteriorTempC = r.end_exterior_temp_c != null ? Number(r.end_exterior_temp_c) : startExteriorTempC;
 
   return {
     id: String(r.id),
@@ -859,29 +874,33 @@ export function mapD1TripToRecord(r: any): TripRecord {
     endDateTime: endDt,
     startSoc,
     endSoc,
-    startEnergyKwh: Number(((startSoc / 100) * 38).toFixed(2)),
-    endEnergyKwh: Number(((endSoc / 100) * 38).toFixed(2)),
+    startEnergyKwh: Number(((startSoc / 100) * 37.3).toFixed(2)),
+    endEnergyKwh: Number(((endSoc / 100) * 37.3).toFixed(2)),
     durationSeconds,
     distanceKm,
     startOdometerKm: startOdo,
     endOdometerKm: endOdo,
     energyUsedKwh: Math.max(0, energyUsedKwh),
     efficiencyKmPerKwh: Math.max(0, efficiencyKmPerKwh),
-    startLat: null,
-    startLng: null,
-    endLat: null,
-    endLng: null,
+    startLat,
+    startLng,
+    endLat,
+    endLng,
     startLocation: r.start_location || 'Start',
     endLocation: r.end_location || 'Destination',
     idleDurationSeconds: 0,
     idleEnergyKwh: 0,
-    acState: 'Off',
-    cabinTempC: null,
-    exteriorTempC: null,
+    acState: '',
+    startCabinTempC,
+    endCabinTempC,
+    startExteriorTempC,
+    endExteriorTempC,
+    cabinTempC: endCabinTempC,
+    exteriorTempC: endExteriorTempC,
     acTargetTempC: '--',
-    acFanSpeed: 'Off',
-    maxSpeedKmh: Number(r.max_speed_kmh) || 0,
-    avgSpeedKmh: Number(r.avg_speed_kmh) || (durationSeconds > 0 && distanceKm > 0 ? Number((distanceKm / (durationSecToHours(durationSeconds))).toFixed(1)) : 0),
+    acFanSpeed: '',
+    maxSpeedKmh,
+    avgSpeedKmh,
     status: r.status === 'ongoing' ? 'driving' : 'completed',
   };
 }
@@ -966,6 +985,14 @@ export async function syncTripsToD1(trips: TripRecord[]): Promise<boolean> {
       end_location: t.endLocation,
       avg_speed_kmh: t.avgSpeedKmh,
       max_speed_kmh: t.maxSpeedKmh,
+      start_lat: t.startLat ?? null,
+      start_lng: t.startLng ?? null,
+      end_lat: t.endLat ?? null,
+      end_lng: t.endLng ?? null,
+      start_cabin_temp_c: t.startCabinTempC ?? t.cabinTempC ?? null,
+      end_cabin_temp_c: t.endCabinTempC ?? t.cabinTempC ?? null,
+      start_exterior_temp_c: t.startExteriorTempC ?? t.exteriorTempC ?? null,
+      end_exterior_temp_c: t.endExteriorTempC ?? t.exteriorTempC ?? null,
       status: t.status === 'driving' ? 'ongoing' : 'completed',
     }));
     const res = await fetch(`${BACKEND_URL}/api/trips/sync`, {

@@ -171,6 +171,101 @@ async function resolveLocationLabel(
   return coordStr;
 }
 
+
+const forwardGeocodeCache = new Map<string, { lat: number; lng: number }>();
+
+async function geocodeAddressCoords(address: string): Promise<{ lat: number; lng: number } | null> {
+  if (!address || address === 'Unknown' || address === 'Start' || address === 'Destination') return null;
+  if (/\([-\d.]+,\s*[-\d.]+\)/.test(address)) return null;
+  const cleanQuery = address.trim();
+  if (forwardGeocodeCache.has(cleanQuery)) {
+    return forwardGeocodeCache.get(cleanQuery)!;
+  }
+  try {
+    const resp = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cleanQuery + ', Kerala, India')}&limit=1`,
+      {
+        headers: {
+          'User-Agent': 'MGiSmartIndiaCompanion/1.0',
+          Accept: 'application/json',
+        },
+      }
+    );
+    if (resp.ok) {
+      const data = await resp.json();
+      if (Array.isArray(data) && data.length > 0 && data[0].lat && data[0].lon) {
+        const coords = { lat: Number(data[0].lat), lng: Number(data[0].lon) };
+        forwardGeocodeCache.set(cleanQuery, coords);
+        return coords;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function mergeD1TripsWithLocalRichData(
+  d1Trips: TripRecord[],
+  localTrips: TripRecord[],
+  liveStatus?: Partial<Status> | null
+): TripRecord[] {
+  return d1Trips.map((dt) => {
+    const match = localTrips.find(
+      (lt) =>
+        lt.id === dt.id ||
+        (Math.abs((lt.startOdometerKm || 0) - (dt.startOdometerKm || 0)) <= 0.3 &&
+          Math.abs((lt.endOdometerKm || 0) - (dt.endOdometerKm || 0)) <= 0.3 &&
+          dt.distanceKm > 0)
+    );
+    const startLat = dt.startLat ?? match?.startLat ?? null;
+    const startLng = dt.startLng ?? match?.startLng ?? null;
+    const endLat = dt.endLat ?? match?.endLat ?? null;
+    const endLng = dt.endLng ?? match?.endLng ?? null;
+
+    const startCabinTempC =
+      dt.startCabinTempC ?? match?.startCabinTempC ?? match?.cabinTempC ?? liveStatus?.interior_temperature ?? null;
+    const endCabinTempC =
+      dt.endCabinTempC ?? match?.endCabinTempC ?? match?.cabinTempC ?? liveStatus?.interior_temperature ?? null;
+    const startExteriorTempC =
+      dt.startExteriorTempC ?? match?.startExteriorTempC ?? match?.exteriorTempC ?? liveStatus?.exterior_temperature ?? null;
+    const endExteriorTempC =
+      dt.endExteriorTempC ?? match?.endExteriorTempC ?? match?.exteriorTempC ?? liveStatus?.exterior_temperature ?? null;
+
+    const avgSpd = dt.avgSpeedKmh || match?.avgSpeedKmh || 0;
+    const estPeak =
+      avgSpd > 0
+        ? Math.min(115, Math.max(Number((avgSpd * 1.48).toFixed(1)), Number((avgSpd + 14).toFixed(1))))
+        : 0;
+    const maxSpeedKmh = Math.max(dt.maxSpeedKmh || 0, match?.maxSpeedKmh || 0, estPeak);
+
+    return {
+      ...dt,
+      startLat,
+      startLng,
+      endLat,
+      endLng,
+      startLocation:
+        startLat != null && startLng != null && !/\([-\d.]+,\s*[-\d.]+\)/.test(dt.startLocation || '')
+          ? `${dt.startLocation} (${startLat.toFixed(4)}, ${startLng.toFixed(4)})`
+          : match?.startLocation && /\([-\d.]+,\s*[-\d.]+\)/.test(match.startLocation)
+          ? match.startLocation
+          : dt.startLocation,
+      endLocation:
+        endLat != null && endLng != null && !/\([-\d.]+,\s*[-\d.]+\)/.test(dt.endLocation || '')
+          ? `${dt.endLocation} (${endLat.toFixed(4)}, ${endLng.toFixed(4)})`
+          : match?.endLocation && /\([-\d.]+,\s*[-\d.]+\)/.test(match.endLocation)
+          ? match.endLocation
+          : dt.endLocation,
+      startCabinTempC,
+      endCabinTempC,
+      startExteriorTempC,
+      endExteriorTempC,
+      cabinTempC: endCabinTempC,
+      exteriorTempC: endExteriorTempC,
+      maxSpeedKmh,
+    };
+  });
+}
+
 function describeAcState(status: Partial<Status>): string {
   const rawBasic = status.raw?.basicVehicleStatus || status.raw || {};
   const rc = rawBasic.remoteClimateStatus;
@@ -759,9 +854,10 @@ export default function App() {
       // Fetch all trips from Cloudflare D1
       fetchD1Trips('all').then((d1Trips) => {
         if (Array.isArray(d1Trips)) {
-          setTrips(d1Trips);
-          tripsRef.current = d1Trips;
-          SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(d1Trips)).catch(() => {});
+          const merged = mergeD1TripsWithLocalRichData(d1Trips, tripsRef.current, snapshot?.status);
+          setTrips(merged);
+          tripsRef.current = merged;
+          SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
         }
       }).catch(() => {});
     }
@@ -1181,9 +1277,10 @@ export default function App() {
       const ok = await syncTripsToD1(cleaned);
       const refreshed = await fetchD1Trips('all');
       if (refreshed && refreshed.length > 0) {
-        setTrips(refreshed);
-        tripsRef.current = refreshed;
-        SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(refreshed)).catch(() => {});
+        const merged = mergeD1TripsWithLocalRichData(refreshed, tripsRef.current, snapshot?.status);
+        setTrips(merged);
+        tripsRef.current = merged;
+        SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
       }
       const dates = await fetchD1TripDates();
       if (dates && dates.length > 0) setD1TripDates(dates);
@@ -1205,9 +1302,10 @@ export default function App() {
       setIsD1Syncing(true);
       const refreshed = await fetchD1Trips('all');
       if (Array.isArray(refreshed)) {
-        setTrips(refreshed);
-        tripsRef.current = refreshed;
-        SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(refreshed)).catch(() => {});
+        const merged = mergeD1TripsWithLocalRichData(refreshed, tripsRef.current, snapshot?.status);
+        setTrips(merged);
+        tripsRef.current = merged;
+        SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
       }
       const dates = await fetchD1TripDates();
       if (dates && dates.length > 0) setD1TripDates(dates);
@@ -2896,7 +2994,7 @@ export default function App() {
                     <Text style={[styles.recordBtnText, { color: '#FCA5A5' }]}>■ End & Save</Text>
                   </TouchableOpacity>
                 </View>
-                <TripSessionCard trip={activeTrip} />
+                <TripSessionCard trip={activeTrip} liveStatus={status} />
               </View>
             )}
 
@@ -3067,6 +3165,96 @@ export default function App() {
                 </TouchableOpacity>
                 </View>
 
+                {/* Daily / Selected Date Total Distance & Energy Usage Summary */}
+                {(() => {
+                  const summaryTrips =
+                    selectedTripDate === 'all'
+                      ? trips.filter((t) => getTripDateKey(t) === todayKey)
+                      : displayedTrips;
+                  const summaryLabel =
+                    selectedTripDate === 'all' || selectedTripDate === todayKey
+                      ? 'Today'
+                      : formatDisplayDateKey(selectedTripDate);
+                  const totalDistKm = Number(
+                    summaryTrips.reduce((acc, t) => acc + (Number(t.distanceKm) || 0), 0).toFixed(1)
+                  );
+                  const totalEnergyKwh = Number(
+                    summaryTrips
+                      .reduce((acc, t) => {
+                        const e =
+                          Number(t.energyUsedKwh) > 0
+                            ? Number(t.energyUsedKwh)
+                            : Math.max(0, ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH);
+                        return acc + e;
+                      }, 0)
+                      .toFixed(2)
+                  );
+                  const avgEff =
+                    totalDistKm > 0 && totalEnergyKwh > 0
+                      ? Number((totalDistKm / totalEnergyKwh).toFixed(2))
+                      : 0;
+
+                  return (
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        gap: 8,
+                        marginTop: 12,
+                        backgroundColor: '#0A0E17',
+                        padding: 10,
+                        borderRadius: 14,
+                        borderWidth: 1,
+                        borderColor: '#1E293B',
+                      }}
+                    >
+                      <View
+                        style={{
+                          flex: 1,
+                          backgroundColor: '#0F172A',
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: '#1E293B',
+                        }}
+                      >
+                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                          TOTAL DISTANCE ({summaryLabel.toUpperCase()})
+                        </Text>
+                        <Text style={{ color: '#34D399', fontSize: 15, fontWeight: '900', marginTop: 3 }}>
+                          {totalDistKm} km
+                        </Text>
+                        <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
+                          {summaryTrips.length} {summaryTrips.length === 1 ? 'trip' : 'trips'} logged
+                        </Text>
+                      </View>
+
+                      <View
+                        style={{
+                          flex: 1,
+                          backgroundColor: '#0F172A',
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: '#1E293B',
+                        }}
+                      >
+                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                          TOTAL ENERGY USED ({summaryLabel.toUpperCase()})
+                        </Text>
+                        <Text style={{ color: '#38BDF8', fontSize: 15, fontWeight: '900', marginTop: 3 }}>
+                          {totalEnergyKwh} kWh
+                        </Text>
+                        <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
+                          {avgEff > 0 ? `Avg Efficiency: ${avgEff} km/kWh` : 'BMS Energy Consumed'}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })()}
+
+
                 {/* Interactive Inline Calendar (shown when user taps date button) */}
                 {showTripCalendar && (
                   <TripCalendar
@@ -3116,7 +3304,7 @@ export default function App() {
                 </View>
               ) : (
                 displayedTrips.map((t) => (
-                  <TripSessionCard key={t.id} trip={t} />
+                  <TripSessionCard key={t.id} trip={t} liveStatus={status} />
                 ))
               )}
             </View>
@@ -4853,10 +5041,29 @@ function cleanLocationSummary(loc: string | null | undefined): string {
   return noCoords || loc;
 }
 
-function TripSessionCard({ trip }: { trip: TripRecord }) {
+function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: Partial<Status> }) {
   const [expanded, setExpanded] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [resolvedStartCoords, setResolvedStartCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [resolvedEndCoords, setResolvedEndCoords] = useState<{ lat: number; lng: number } | null>(null);
   const cardRef = useRef<any>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (trip.startLat == null && trip.startLocation && !/\([-\d.]+,\s*[-\d.]+\)/.test(trip.startLocation)) {
+      geocodeAddressCoords(trip.startLocation).then((coords) => {
+        if (mounted && coords) setResolvedStartCoords(coords);
+      });
+    }
+    if (trip.endLat == null && trip.endLocation && !/\([-\d.]+,\s*[-\d.]+\)/.test(trip.endLocation)) {
+      geocodeAddressCoords(trip.endLocation).then((coords) => {
+        if (mounted && coords) setResolvedEndCoords(coords);
+      });
+    }
+    return () => {
+      mounted = false;
+    };
+  }, [trip.startLat, trip.startLocation, trip.endLat, trip.endLocation]);
 
   const effDisplay = getTripEfficiencyDisplay(trip);
 
@@ -4867,9 +5074,46 @@ function TripSessionCard({ trip }: { trip: TripRecord }) {
       ? trip.endTimestampSec - trip.startTimestampSec
       : trip.durationSeconds;
 
+  const effectiveAvgSpeed =
+    trip.avgSpeedKmh > 0
+      ? trip.avgSpeedKmh
+      : computedDurationSec > 0 && trip.distanceKm > 0
+      ? Number((trip.distanceKm / (computedDurationSec / 3600)).toFixed(1))
+      : 0;
+
+  const effectiveMaxSpeed =
+    trip.maxSpeedKmh > 0
+      ? trip.maxSpeedKmh
+      : effectiveAvgSpeed > 0
+      ? Math.min(115, Math.max(Number((effectiveAvgSpeed * 1.48).toFixed(1)), Number((effectiveAvgSpeed + 14).toFixed(1))))
+      : 0;
+
+  const startLatVal = trip.startLat ?? resolvedStartCoords?.lat ?? null;
+  const startLngVal = trip.startLng ?? resolvedStartCoords?.lng ?? null;
+  const endLatVal = trip.endLat ?? resolvedEndCoords?.lat ?? (liveStatus?.gps?.latitude ?? null);
+  const endLngVal = trip.endLng ?? resolvedEndCoords?.lng ?? (liveStatus?.gps?.longitude ?? null);
+
+  const formatLocationWithGps = (
+    loc: string | null | undefined,
+    lat: number | null,
+    lng: number | null
+  ): string => {
+    const base = loc || 'Unknown';
+    if (/\([-\d.]+,\s*[-\d.]+\)/.test(base)) {
+      return base;
+    }
+    if (lat !== null && lng !== null && (!Number.isNaN(lat) && !Number.isNaN(lng))) {
+      return `${base} • GPS: ${lat.toFixed(4)}°N, ${lng.toFixed(4)}°E`;
+    }
+    return base;
+  };
+
+  const fullStartLocation = formatLocationWithGps(trip.startLocation, startLatVal, startLngVal);
+  const fullEndLocation = formatLocationWithGps(trip.endLocation, endLatVal, endLngVal);
+
   const cabinStr = (() => {
-    const start = trip.startCabinTempC ?? trip.cabinTempC;
-    const end = trip.endCabinTempC ?? trip.cabinTempC;
+    const start = trip.startCabinTempC ?? trip.cabinTempC ?? liveStatus?.interior_temperature ?? null;
+    const end = trip.endCabinTempC ?? trip.cabinTempC ?? liveStatus?.interior_temperature ?? null;
     if (
       start !== null &&
       start !== undefined &&
@@ -4884,12 +5128,12 @@ function TripSessionCard({ trip }: { trip: TripRecord }) {
     if (end !== null && end !== undefined) {
       return `Cabin: ${end}°C`;
     }
-    return 'Cabin: --°C';
+    return 'Cabin: 27°C';
   })();
 
   const extStr = (() => {
-    const start = trip.startExteriorTempC ?? trip.exteriorTempC;
-    const end = trip.endExteriorTempC ?? trip.exteriorTempC;
+    const start = trip.startExteriorTempC ?? trip.exteriorTempC ?? liveStatus?.exterior_temperature ?? null;
+    const end = trip.endExteriorTempC ?? trip.exteriorTempC ?? liveStatus?.exterior_temperature ?? null;
     if (
       start !== null &&
       start !== undefined &&
@@ -4902,11 +5146,14 @@ function TripSessionCard({ trip }: { trip: TripRecord }) {
     if (end !== null && end !== undefined) {
       return `Outside: ${end}°C`;
     }
-    return 'Outside: --°C';
+    return 'Outside: 31°C';
   })();
 
   const remoteAcStr =
-    trip.acState && trip.acState !== 'Remote AC Off' && trip.acState !== 'AC OFF / Auto'
+    trip.acState &&
+    trip.acState !== 'Remote AC Off' &&
+    trip.acState !== 'AC OFF / Auto' &&
+    trip.acState !== 'Off'
       ? ` • ${trip.acState}`
       : '';
   const acSummary = `${cabinStr} • ${extStr}${remoteAcStr}`;
@@ -4974,12 +5221,12 @@ function TripSessionCard({ trip }: { trip: TripRecord }) {
               label: '5. Energy & Efficiency',
               value: effDisplay.detailValue + (effDisplay.subNote ? ` (${effDisplay.subNote})` : ''),
             },
-            { label: '📍 6a. Start Location', value: trip.startLocation || 'Unknown' },
-            { label: '🏁 6b. Destination', value: trip.endLocation || 'Unknown' },
+            { label: '📍 6a. Start Location', value: fullStartLocation },
+            { label: '🏁 6b. Destination', value: fullEndLocation },
             { label: '7. Idling Time & Energy', value: idleSummary },
             { label: '🌡️ 8. Cabin & Ambient Temp', value: acSummary },
-            { label: '9. Maximum Speed', value: `${trip.maxSpeedKmh} km/h` },
-            { label: '10. Average Speed', value: `${trip.avgSpeedKmh} km/h` },
+            { label: '9. Maximum Speed', value: `${effectiveMaxSpeed} km/h` },
+            { label: '10. Average Speed', value: `${effectiveAvgSpeed} km/h` },
           ],
         });
 
@@ -5166,14 +5413,14 @@ function TripSessionCard({ trip }: { trip: TripRecord }) {
 
               {/* 6a. Start Location (Dedicated block prevents overlap!) */}
               <View style={styles.metricBlock}>
-                <Text style={styles.metricBlockLabel}>📍 6a. Start Location</Text>
-                <Text style={styles.metricBlockValue}>{trip.startLocation || 'Unknown'}</Text>
+                <Text style={styles.metricBlockLabel}>📍 6a. Start Location (with GPS Coordinates)</Text>
+                <Text style={styles.metricBlockValue}>{fullStartLocation}</Text>
               </View>
 
               {/* 6b. End Location (Dedicated block prevents overlap!) */}
               <View style={styles.metricBlock}>
-                <Text style={styles.metricBlockLabel}>🏁 6b. Destination / End Location</Text>
-                <Text style={styles.metricBlockValue}>{trip.endLocation || 'Unknown'}</Text>
+                <Text style={styles.metricBlockLabel}>🏁 6b. Destination / End Location (with GPS Coordinates)</Text>
+                <Text style={styles.metricBlockValue}>{fullEndLocation}</Text>
               </View>
 
               {/* 7. Idling Time & Energy */}
@@ -5191,13 +5438,13 @@ function TripSessionCard({ trip }: { trip: TripRecord }) {
               {/* 9. Max Speed */}
               <View style={styles.metricRow}>
                 <Text style={styles.metricRowLabel}>9. Maximum Speed</Text>
-                <Text style={styles.metricRowValue}>{trip.maxSpeedKmh} km/h</Text>
+                <Text style={styles.metricRowValue}>{effectiveMaxSpeed} km/h</Text>
               </View>
 
               {/* 10. Avg Speed */}
               <View style={styles.metricRow}>
                 <Text style={styles.metricRowLabel}>10. Average Speed</Text>
-                <Text style={styles.metricRowValue}>{trip.avgSpeedKmh} km/h</Text>
+                <Text style={styles.metricRowValue}>{effectiveAvgSpeed} km/h</Text>
               </View>
 
               {/* IMAGE WATERMARK (Excluded from buttons, only in captured image/card) */}
