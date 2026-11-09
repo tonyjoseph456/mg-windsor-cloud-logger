@@ -820,13 +820,13 @@ export default function App() {
   const [pin, setPin] = useState('');
   const [vin, setVin] = useState('');
 
+  // Telemetry state
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+
   useEffect(() => {
     const currentVin = snapshot?.vehicle?.vin || vin;
     setActiveD1Vin(currentVin || '');
   }, [vin, snapshot?.vehicle?.vin]);
-
-  // Telemetry state
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [activeTrip, setActiveTrip] = useState<TripRecord | null>(null);
