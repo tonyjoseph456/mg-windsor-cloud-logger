@@ -7564,7 +7564,7 @@ var CONTROL_ATTEMPTS = 15;
 var CONTROL_DELAY_MS = 2e3;
 var LOGIN_ATTEMPTS = 3;
 var LOGIN_DELAY_MS = 1500;
-var STATUS_ATTEMPTS = 10;
+var STATUS_ATTEMPTS = 16;
 var STATUS_DELAY_MS = 1500;
 var STATUS_RESULT_PENDING = [0, 4, 6];
 var STATUS_RESULT_SESSION_INVALID = 2;
@@ -8092,7 +8092,18 @@ var MgIndiaClient = class {
         if (this.vin !== operationVin) {
           throw new MgIndiaApiError("VIN changed during polling");
         }
-        const text = await post(eventId, label);
+        let text;
+        try {
+          text = await post(eventId, label);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const isTransientHttpOrNet = /HTTP (500|502|503|504|408|429)\b/i.test(msg) || /network|timeout|abort|fetch|failed to fetch|socket/i.test(msg);
+          if (!isTransientHttpOrNet || attempt >= STATUS_ATTEMPTS - 1) {
+            throw err;
+          }
+          await sleep(STATUS_DELAY_MS);
+          continue;
+        }
         let dispatcher;
         let statusPayload;
         let charge;
@@ -8286,7 +8297,13 @@ var MgIndiaClient = class {
       try {
         text = await this._postTapFrame(body, name);
       } catch (err) {
-        throw new MgIndiaCommandIndeterminate(`${name} completion is unknown: ${err.message}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTransientHttpOrNet = /HTTP (500|502|503|504|408|429)\b/i.test(msg) || /network|timeout|abort|fetch|failed to fetch|socket/i.test(msg);
+        if (eventId > 0 && isTransientHttpOrNet && attempt < CONTROL_ATTEMPTS - 1) {
+          await sleep(CONTROL_DELAY_MS);
+          continue;
+        }
+        throw new MgIndiaCommandIndeterminate(`${name} completion is unknown: ${msg}`);
       }
       let dispatcher;
       let control;
