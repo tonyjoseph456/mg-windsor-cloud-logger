@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import Svg, { Circle, Path, Rect, G } from 'react-native-svg';
 import * as SecureStore from './src/storage';
-import './src/webShims';
+import { setGlobalFontScale, getGlobalFontScale } from './src/webShims';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
 import { captureRef } from 'react-native-view-shot';
@@ -90,6 +90,7 @@ const CLOUD_API_KEY_KEY = 'mg_ismart_cloud_api_key_v2';
 const GOOGLE_SYNC_KEY = 'mg_ismart_google_sync_v1';
 const BACKEND_KEY = 'mg_ismart_backend_v1';
 const GOOGLE_CLIENT_ID_KEY = 'mg_ismart_google_client_id_v1';
+const FONT_SCALE_KEY = 'mg_ismart_font_scale_v1';
 const DEFAULT_CLOUD_SYNC_URL =
   'https://raw.githubusercontent.com/tonyjoseph456/mg-windsor-cloud-logger/main/data/cloud_charging_log.json';
 
@@ -1000,6 +1001,16 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [tab, setTab] = useState<TabId>('home');
 
+  // Global Font Scale for Small Mobile Screens & Accessibility (80% - 125%)
+  const [fontScale, setFontScale] = useState<number>(() => getGlobalFontScale());
+
+  const handleFontScaleChange = useCallback(async (val: number) => {
+    const clamped = Math.max(0.75, Math.min(1.3, Number(val.toFixed(2))));
+    setFontScale(clamped);
+    setGlobalFontScale(clamped);
+    await SecureStore.setItemAsync(FONT_SCALE_KEY, String(clamped));
+  }, []);
+
   // Credentials & Session
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
@@ -1598,6 +1609,7 @@ export default function App() {
           rawCloudKey,
           rawGoogleSync,
           rawGoogleClientId,
+          rawFontScale,
         ] = await Promise.all([
           SecureStore.getItemAsync(SESSION_KEY),
           SecureStore.getItemAsync(SNAPSHOT_KEY),
@@ -1611,7 +1623,16 @@ export default function App() {
           SecureStore.getItemAsync(CLOUD_API_KEY_KEY),
           SecureStore.getItemAsync(GOOGLE_SYNC_KEY),
           SecureStore.getItemAsync(GOOGLE_CLIENT_ID_KEY),
+          SecureStore.getItemAsync(FONT_SCALE_KEY),
         ]);
+
+        if (rawFontScale) {
+          const num = parseFloat(rawFontScale);
+          if (!isNaN(num) && num >= 0.75 && num <= 1.3) {
+            setFontScale(num);
+            setGlobalFontScale(num);
+          }
+        }
 
         if (rawGoogleClientId) {
           setGoogleClientId(rawGoogleClientId);
@@ -4101,6 +4122,202 @@ export default function App() {
               <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
                 <Text style={styles.logoutBtnText}>Log Out of MG iSMART</Text>
               </TouchableOpacity>
+            </AccountSectionCard>
+
+            {/* CARD 2: DISPLAY & TEXT SIZE SCALING */}
+            <AccountSectionCard
+              title="Display & Text Size Scaling"
+              icon="🔤"
+              badge={`${Math.round(fontScale * 100)}%`}
+              badgeBg={fontScale < 1 ? '#064E3B' : fontScale > 1 ? '#0C4A6E' : '#1E293B'}
+              badgeColor={fontScale < 1 ? '#34D399' : fontScale > 1 ? '#38BDF8' : '#94A3B8'}
+              preview={`Font scale: ${Math.round(fontScale * 100)}% • ${
+                fontScale <= 0.85
+                  ? 'Compact (Best for Small Screens)'
+                  : fontScale <= 0.95
+                  ? 'Slightly Compact'
+                  : fontScale === 1
+                  ? 'Standard Default'
+                  : fontScale <= 1.1
+                  ? 'Large Text'
+                  : 'Extra Large Text'
+              }`}
+            >
+              <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 17, marginBottom: 14 }}>
+                Scale app-wide text up or down to comfortably fit your device screen. Selecting{' '}
+                <Text style={{ color: '#34D399', fontWeight: '800' }}>85%</Text> or{' '}
+                <Text style={{ color: '#38BDF8', fontWeight: '800' }}>90%</Text> prevents text wrapping and ensures
+                all metrics, battery targets, and trip corridor details fit neatly inside their boxes on smaller mobile screens.
+              </Text>
+
+              {/* Slider Track with Step Buttons */}
+              <View style={styles.fontSliderContainer}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <Text style={styles.fontSliderLabel}>FONT SIZE SCALE</Text>
+                  <View style={styles.fontScaleBadge}>
+                    <Text style={styles.fontScaleBadgeText}>
+                      {Math.round(fontScale * 100)}% {fontScale <= 0.85 ? '· Compact' : fontScale === 1.0 ? '· Default' : fontScale >= 1.15 ? '· Large' : ''}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Interactive Slider Bar + Steppers */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TouchableOpacity
+                    style={[styles.stepperBtn, fontScale <= 0.8 && { opacity: 0.4 }]}
+                    disabled={fontScale <= 0.8}
+                    onPress={() => handleFontScaleChange(Math.max(0.8, fontScale - 0.05))}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.stepperBtnText}>−</Text>
+                  </TouchableOpacity>
+
+                  {/* Slider Track */}
+                  <View style={{ flex: 1, position: 'relative', height: 36, justifyContent: 'center' }}>
+                    {/* Background Track */}
+                    <View style={styles.sliderTrack}>
+                      {/* Active Fill */}
+                      <View
+                        style={[
+                          styles.sliderFill,
+                          { width: `${Math.max(0, Math.min(100, ((fontScale - 0.8) / (1.25 - 0.8)) * 100))}%` },
+                        ]}
+                      />
+                    </View>
+
+                    {/* Visual Knob */}
+                    <View
+                      style={[
+                        styles.sliderKnob,
+                        {
+                          left: `${Math.max(0, Math.min(100, ((fontScale - 0.8) / (1.25 - 0.8)) * 100))}%`,
+                          transform: [{ translateX: -11 }],
+                        },
+                      ]}
+                    />
+
+                    {/* Transparent HTML Range Input on Web for native touch dragging */}
+                    {Platform.OS === 'web' && (
+                      <input
+                        type="range"
+                        min="80"
+                        max="125"
+                        step="5"
+                        value={Math.round(fontScale * 100)}
+                        onChange={(e: any) => handleFontScaleChange(Number(e.target.value) / 100)}
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          top: 0,
+                          width: '100%',
+                          height: '100%',
+                          opacity: 0,
+                          cursor: 'pointer',
+                          margin: 0,
+                          padding: 0,
+                        } as any}
+                      />
+                    )}
+                  </View>
+
+                  <TouchableOpacity
+                    style={[styles.stepperBtn, fontScale >= 1.25 && { opacity: 0.4 }]}
+                    disabled={fontScale >= 1.25}
+                    onPress={() => handleFontScaleChange(Math.min(1.25, fontScale + 0.05))}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.stepperBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Quick Preset Chips */}
+              <View style={{ marginTop: 14 }}>
+                <Text style={[styles.fontSliderLabel, { marginBottom: 6 }]}>QUICK PRESETS</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {[
+                    { scale: 0.8, label: '80% Extra Compact' },
+                    { scale: 0.85, label: '85% Compact (Recommended)' },
+                    { scale: 0.9, label: '90% Small' },
+                    { scale: 1.0, label: '100% Default' },
+                    { scale: 1.1, label: '110% Large' },
+                    { scale: 1.2, label: '120% Extra Large' },
+                  ].map((preset) => {
+                    const isSelected = Math.abs(fontScale - preset.scale) < 0.02;
+                    return (
+                      <TouchableOpacity
+                        key={preset.scale}
+                        style={[
+                          styles.presetChip,
+                          isSelected && styles.presetChipActive,
+                        ]}
+                        onPress={() => handleFontScaleChange(preset.scale)}
+                        activeOpacity={0.7}
+                      >
+                        <Text
+                          style={[
+                            styles.presetChipText,
+                            isSelected && styles.presetChipTextActive,
+                          ]}
+                        >
+                          {isSelected ? '✓ ' : ''}{preset.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Live Interactive Preview Box */}
+              <View style={styles.previewBox}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <Text style={styles.previewTitle}>📱 LIVE PREVIEW AT {Math.round(fontScale * 100)}% SCALE</Text>
+                  <Text style={{ color: '#34D399', fontSize: 10, fontWeight: '800' }}>Fits inside boxes</Text>
+                </View>
+
+                <View style={styles.previewCardInner}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                      🚗 MG Windsor EV (Pearl White)
+                    </Text>
+                    <View style={styles.previewSocBadge}>
+                      <Text style={{ color: '#34D399', fontSize: 11, fontWeight: '900' }}>85% SOC</Text>
+                    </View>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 12, marginTop: 6, flexWrap: 'wrap' }}>
+                    <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+                      ⚡ Range: <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>270 km</Text>
+                    </Text>
+                    <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+                      🔋 12V Aux: <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>12.8 V</Text>
+                    </Text>
+                    <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+                      🌿 Health: <Text style={{ color: '#34D399', fontWeight: '700' }}>97.1% SOH</Text>
+                    </Text>
+                  </View>
+
+                  <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1E293B', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ color: '#38BDF8', fontSize: 11, fontWeight: '700' }}>
+                      📍 Kochi → Bengaluru (542 km • 3 stops)
+                    </Text>
+                    <Text style={{ color: '#FCD34D', fontSize: 10, fontWeight: '700' }}>
+                      🛡️ 18 km backup
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Reset to Default Button */}
+              {Math.abs(fontScale - 1.0) > 0.02 && (
+                <TouchableOpacity
+                  style={styles.resetFontBtn}
+                  onPress={() => handleFontScaleChange(1.0)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.resetFontBtnText}>↺ Reset to 100% Default Font Size</Text>
+                </TouchableOpacity>
+              )}
             </AccountSectionCard>
 
             {/* CARD 2: MONTHLY DRIVING & CHARGING ANALYTICS */}
@@ -8166,5 +8383,140 @@ const styles = StyleSheet.create({
   tripActionButtonsWrap: {
     marginTop: 6,
     marginBottom: 4,
+  },
+  // Font Scaling Slider & Account Section Styles
+  fontSliderContainer: {
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 12,
+  },
+  fontSliderLabel: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  fontScaleBadge: {
+    backgroundColor: '#1E293B',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  fontScaleBadgeText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  stepperBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepperBtnText: {
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '800',
+    lineHeight: 20,
+  },
+  sliderTrack: {
+    flex: 1,
+    height: 38,
+    justifyContent: 'center',
+    position: 'relative',
+    marginHorizontal: 10,
+  },
+  sliderFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#38BDF8',
+  },
+  sliderKnob: {
+    position: 'absolute',
+    top: 9,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#0284C7',
+    marginLeft: -10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  presetChip: {
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  presetChipActive: {
+    backgroundColor: '#0C4A6E',
+    borderColor: '#38BDF8',
+  },
+  presetChipText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  presetChipTextActive: {
+    color: '#38BDF8',
+    fontWeight: '800',
+  },
+  previewBox: {
+    marginTop: 14,
+    backgroundColor: '#090D16',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 12,
+  },
+  previewTitle: {
+    color: '#64748B',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  previewCardInner: {
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 10,
+  },
+  previewSocBadge: {
+    backgroundColor: '#064E3B',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#059669',
+  },
+  resetFontBtn: {
+    marginTop: 12,
+    backgroundColor: '#1E293B',
+    borderRadius: 10,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  resetFontBtnText: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

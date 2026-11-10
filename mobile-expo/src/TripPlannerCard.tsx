@@ -553,9 +553,9 @@ export function TripPlannerCard({
             </View>
             <View style={{ flexDirection: 'row', gap: 6, marginTop: 5 }}>
               <View style={{ flex: 1 }}>
-                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <View style={{ height: 28, justifyContent: 'center', alignItems: 'center' }}>
                   <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
-                    START SOC %
+                    START SOC{'\n'}%
                   </Text>
                 </View>
                 <TextInput
@@ -569,9 +569,9 @@ export function TripPlannerCard({
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <View style={{ height: 28, justifyContent: 'center', alignItems: 'center' }}>
                   <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
-                    MIN @ CHARGER %
+                    MIN @ CHARGER{'\n'}%
                   </Text>
                 </View>
                 <TextInput
@@ -585,9 +585,9 @@ export function TripPlannerCard({
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <View style={{ height: 28, justifyContent: 'center', alignItems: 'center' }}>
                   <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
-                    MIN @ DEST %
+                    MIN @ DEST{'\n'}%
                   </Text>
                 </View>
                 <TextInput
@@ -601,9 +601,9 @@ export function TripPlannerCard({
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <View style={{ height: 28, justifyContent: 'center', alignItems: 'center' }}>
                   <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
-                    CHARGE TARGET %
+                    CHARGE TARGET{'\n'}%
                   </Text>
                 </View>
                 <TextInput
@@ -885,7 +885,7 @@ export function TripPlannerCard({
                                 ]}
                                 numberOfLines={2}
                               >
-                                {rc.label.replace(/\//g, ' / ')}
+                                {rc.label.replace(/\//g, ' / ').replace(/-/g, ' - ')}
                               </Text>
                               <Text style={styles.routeTabSub} numberOfLines={1}>
                                 {Math.round(rc.distanceM / 1000)} km • {formatHm(rc.durationS / 60)} • ⛰️ +{rc.climbM}m climb • ⚡ {rc.chargers.length} DC
@@ -2031,6 +2031,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: '100%',
     overflow: 'hidden',
+    alignSelf: 'stretch',
+    ...(Platform.OS === 'web' ? ({ boxSizing: 'border-box' } as any) : {}),
   },
   routeTabActive: {
     borderColor: '#10B981',
@@ -2041,12 +2043,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
     flexShrink: 1,
+    flexWrap: 'wrap',
+    ...(Platform.OS === 'web'
+      ? ({
+          wordBreak: 'break-word',
+          overflowWrap: 'anywhere',
+        } as any)
+      : {}),
   },
   routeTabSub: {
     color: '#94A3B8',
     fontSize: 10,
     marginTop: 3,
     flexShrink: 1,
+    flexWrap: 'wrap',
+    ...(Platform.OS === 'web'
+      ? ({
+          wordBreak: 'break-word',
+          overflowWrap: 'anywhere',
+        } as any)
+      : {}),
   },
   summaryBox: {
     backgroundColor: '#0A0E17',
