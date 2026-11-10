@@ -64,12 +64,15 @@ export const DEFAULT_WINDSOR_PROFILE: VehicleProfile = {
   dcCurve: WINDSOR_38_DC_CURVE,
 };
 
+export type ChargeStrategy = 'optimal' | 'fixed';
+
 export interface TripSettings {
   minArrivalAtChargerPercent: number;
   minArrivalAtDestinationPercent: number;
   maxChargeTargetPercent: number;
   maxDetourKm: number;
   replanDeviationPercent: number;
+  chargeStrategy?: ChargeStrategy;
 }
 
 export const DEFAULT_TRIP_SETTINGS: TripSettings = {
@@ -78,6 +81,7 @@ export const DEFAULT_TRIP_SETTINGS: TripSettings = {
   maxChargeTargetPercent: 80,
   maxDetourKm: 5,
   replanDeviationPercent: 5,
+  chargeStrategy: 'optimal',
 };
 
 export type NetworkPreference = 'OFF' | 'PREFER' | 'ONLY';
@@ -748,6 +752,10 @@ export class VoltaTripPlanner {
     let bestEndCost = Number.MAX_VALUE;
 
     const departures = (j: number, arrive: number, toEnd: number): number[] => {
+      if (this.settings.chargeStrategy === 'fixed') {
+        const target = Math.max(arrive + MIN_GAIN_SOC, Math.min(100, maxTarget));
+        return [target];
+      }
       const set = new Set<number>();
       let d = Math.ceil((arrive + MIN_GAIN_SOC) / 5) * 5;
       while (d <= maxTarget + 1e-9) {
@@ -1008,10 +1016,12 @@ export class VoltaTripPlanner {
       const dropToEnd = arrive - remSim[remSim.length - 1].socPercent;
       const needToFinish = dropToEnd + minDest + FINISH_MARGIN_SOC;
       const roundUp5 = (x: number) => Math.ceil(x / 5.0) * 5.0;
-      const depart = Math.min(
-        100.0,
-        Math.min(maxTarget, Math.max(arrive + 10.0, roundUp5(needToFinish)))
-      );
+      const depart = this.settings.chargeStrategy === 'fixed'
+        ? Math.max(arrive + 5.0, Math.min(100.0, maxTarget))
+        : Math.min(
+            100.0,
+            Math.min(maxTarget, Math.max(arrive + 10.0, roundUp5(needToFinish)))
+          );
 
       stops.push({
         charger: pick,

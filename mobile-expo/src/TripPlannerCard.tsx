@@ -420,9 +420,54 @@ export function TripPlannerCard({
 
           {/* User-Configured Trip Battery % Strategy (Start, Min @ Charger, Min @ Dest, Charge Target) */}
           <View style={{ marginTop: 10 }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={styles.fieldLabel}>TRIP BATTERY % TARGETS (USER CONFIGURED)</Text>
-              <Text style={{ color: '#64748B', fontSize: 10, fontWeight: '600' }}>No forced presets</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+              <Text style={styles.fieldLabel}>TRIP BATTERY % TARGETS</Text>
+              <View style={{ flexDirection: 'row', gap: 4 }}>
+                <TouchableOpacity
+                  style={[
+                    styles.pillBtn,
+                    { paddingVertical: 3, paddingHorizontal: 7 },
+                    (settings.chargeStrategy ?? 'optimal') === 'optimal' && styles.pillBtnActive,
+                  ]}
+                  onPress={() => {
+                    const next: TripSettings = { ...settings, chargeStrategy: 'optimal' };
+                    setSettings(next);
+                    SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.pillBtnText,
+                      { fontSize: 10 },
+                      (settings.chargeStrategy ?? 'optimal') === 'optimal' && styles.pillBtnTextActive,
+                    ]}
+                  >
+                    ⚡ Optimal (Fastest)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.pillBtn,
+                    { paddingVertical: 3, paddingHorizontal: 7 },
+                    settings.chargeStrategy === 'fixed' && styles.pillBtnActive,
+                  ]}
+                  onPress={() => {
+                    const next: TripSettings = { ...settings, chargeStrategy: 'fixed' };
+                    setSettings(next);
+                    SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.pillBtnText,
+                      { fontSize: 10 },
+                      settings.chargeStrategy === 'fixed' && styles.pillBtnTextActive,
+                    ]}
+                  >
+                    🔋 Fixed ({chargeTargetInput || '100'}% Every Stop)
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
             <View style={{ flexDirection: 'row', gap: 6, marginTop: 5 }}>
               <View style={{ flex: 1 }}>
