@@ -1464,6 +1464,31 @@ export async function resolvePlaceSuggestion(
   throw new Error('Could not resolve coordinates for selected place.');
 }
 
+// In-memory elevation cache across polyline hashes to prevent redundant network calls
+const elevationCache = new Map<string, number[]>();
+
+function interpolateElevations(sampleElevations: number[], totalPoints: number): number[] {
+  if (sampleElevations.length === 0) return Array(totalPoints).fill(0);
+  if (totalPoints <= 1) return Array(totalPoints).fill(sampleElevations[0]);
+  if (sampleElevations.length === totalPoints) return sampleElevations;
+
+  const M = sampleElevations.length;
+  const result: number[] = new Array(totalPoints);
+  for (let i = 0; i < totalPoints; i++) {
+    const frac = i / (totalPoints - 1);
+    const sampleIdxFloat = frac * (M - 1);
+    const low = Math.floor(sampleIdxFloat);
+    const high = Math.min(M - 1, Math.ceil(sampleIdxFloat));
+    if (low === high) {
+      result[i] = sampleElevations[low];
+    } else {
+      const t = sampleIdxFloat - low;
+      result[i] = Number((sampleElevations[low] * (1 - t) + sampleElevations[high] * t).toFixed(1));
+    }
+  }
+  return result;
+}
+
 /**
  * Fetch 90m SRTM Digital Elevation Model (DEM) elevations along sampled route points.
  * Uses Google Elevation API if key is set, else Open-Meteo Elevation API (100% free, no key).
@@ -1474,6 +1499,12 @@ export async function fetchRouteElevations(
 ): Promise<number[]> {
   if (points.length === 0) return [];
 
+  const cacheKey = `${points[0].lat.toFixed(3)},${points[0].lng.toFixed(3)}->${points[points.length - 1].lat.toFixed(3)},${points[points.length - 1].lng.toFixed(3)}:${points.length}`;
+  const cached = elevationCache.get(cacheKey);
+  if (cached && cached.length === points.length) {
+    return cached;
+  }
+
   // Option A: Google Elevation API via Worker proxy
   if (googleApiKey && googleApiKey.trim().length > 15) {
     try {
@@ -1483,44 +1514,54 @@ export async function fetchRouteElevations(
         body: JSON.stringify({
           apiKey: googleApiKey.trim(),
           encodedPolyline: Geo.encodePolyline(points),
-          count: points.length,
+          count: Math.min(500, points.length),
         }),
       });
       if (res.ok) {
         const data = await res.json();
-        if (
-          Array.isArray(data.elevations) &&
-          data.elevations.length === points.length
-        ) {
-          return data.elevations;
+        if (Array.isArray(data.elevations) && data.elevations.length > 0) {
+          const interpolated = interpolateElevations(data.elevations, points.length);
+          elevationCache.set(cacheKey, interpolated);
+          return interpolated;
         }
       }
     } catch (_) {}
   }
 
-  // Option B: Free Open-Meteo SRTM DEM API (batches of 90 coordinates)
-  const out: number[] = [];
-  const batchSize = 90;
-  for (let i = 0; i < points.length; i += batchSize) {
-    const chunk = points.slice(i, i + batchSize);
-    const lats = chunk.map((p) => p.lat.toFixed(5)).join(',');
-    const lngs = chunk.map((p) => p.lng.toFixed(5)).join(',');
-    try {
-      const res = await fetch(
-        `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`
-      );
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.elevation) && data.elevation.length === chunk.length) {
-          out.push(...data.elevation.map((v: any) => Number(v) || 0));
-          continue;
-        }
+  // Option B: Free Open-Meteo SRTM DEM API (Smart 80-Sample Resampling & Interpolation)
+  // Open-Meteo allows max 100 coordinates per request. By evenly sampling up to 80 points,
+  // the entire route elevation profile is fetched in a SINGLE GET request, preventing 429 rate-limiting.
+  try {
+    const sampleCount = Math.min(80, points.length);
+    const sampleIndices: number[] = [];
+    if (points.length <= sampleCount) {
+      for (let i = 0; i < points.length; i++) sampleIndices.push(i);
+    } else {
+      for (let s = 0; s < sampleCount; s++) {
+        sampleIndices.push(Math.round((s / (sampleCount - 1)) * (points.length - 1)));
       }
-    } catch (_) {}
-    // Fallback if offline
-    out.push(...chunk.map(() => 0));
-  }
-  return out;
+    }
+
+    const queryPoints = sampleIndices.map((idx) => points[idx]);
+    const lats = queryPoints.map((p) => p.lat.toFixed(4)).join(',');
+    const lngs = queryPoints.map((p) => p.lng.toFixed(4)).join(',');
+
+    const res = await fetch(
+      `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.elevation) && data.elevation.length === queryPoints.length) {
+        const rawElevations = data.elevation.map((v: any) => Number(v) || 0);
+        const interpolated = interpolateElevations(rawElevations, points.length);
+        elevationCache.set(cacheKey, interpolated);
+        return interpolated;
+      }
+    }
+  } catch (_) {}
+
+  // Fallback if offline
+  return points.map(() => 0);
 }
 
 /**
@@ -1579,7 +1620,7 @@ export async function findChargersAlongRoute(
     } catch (_) {}
   }
 
-  // 2. Query OpenStreetMap Overpass API for charging stations along the route bounding box
+  // 2. Query OpenStreetMap Overpass API for charging stations along the route bounding box via Worker Proxy
   try {
     let minLat = 90,
       maxLat = -90,
@@ -1595,11 +1636,11 @@ export async function findChargersAlongRoute(
     const bbox = `${(minLat - pad).toFixed(3)},${(minLng - pad).toFixed(3)},${(
       maxLat + pad
     ).toFixed(3)},${(maxLng + pad).toFixed(3)}`;
-    const overpassQuery = `[out:json][timeout:8];node["amenity"="charging_station"](${bbox});out body 120;`;
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
+
+    const res = await fetch(`${BACKEND_URL}/api/planner/osm-chargers`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(overpassQuery)}`,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bbox }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -1784,6 +1825,9 @@ export async function computeTripRouteChoices(
   const choices: RouteChoice[] = [];
   for (let i = 0; i < rawRoutes.length; i++) {
     const r = rawRoutes[i];
+    if (i > 0) {
+      await new Promise((res) => setTimeout(res, 200));
+    }
     onProgress?.(
       `Reading elevation (Ghats/hills) & DC chargers for Route ${i + 1}...`
     );

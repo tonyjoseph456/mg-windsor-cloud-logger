@@ -3078,11 +3078,13 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   if (path === '/api/planner/google-elevation') {
     const apiKey = String(body?.apiKey || '').trim();
     const encodedPolyline = String(body?.encodedPolyline || '').trim();
+    const sampleCount = Math.max(2, Math.min(500, Number(body?.count) || 120));
     if (!apiKey || !encodedPolyline) return json({ elevations: [] });
     try {
-      const urlStr = `https://maps.googleapis.com/maps/api/elevation/json?locations=${encodeURIComponent(
+      // Use Google Elevation 'path' parameter which samples along the encoded route polyline
+      const urlStr = `https://maps.googleapis.com/maps/api/elevation/json?path=${encodeURIComponent(
         'enc:' + encodedPolyline
-      )}&key=${encodeURIComponent(apiKey)}`;
+      )}&samples=${sampleCount}&key=${encodeURIComponent(apiKey)}`;
       const res = await fetch(urlStr);
       const data: any = await res.json();
       if (data.status === 'OK' && Array.isArray(data.results)) {
@@ -3091,6 +3093,30 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       return json({ ok: false, elevations: [] });
     } catch (e) {
       return json({ ok: false, elevations: [] });
+    }
+  }
+
+  if (path === '/api/planner/osm-chargers') {
+    const bbox = String(body?.bbox || '').trim();
+    if (!bbox) return json({ ok: false, elements: [] });
+    try {
+      const overpassQuery = `[out:json][timeout:6];node["amenity"="charging_station"](${bbox});out body 80;`;
+      const res = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'MG-Windsor-TripPlanner/1.0 (https://mg-windsor.pages.dev)',
+        },
+        body: `data=${encodeURIComponent(overpassQuery)}`,
+        signal: AbortSignal.timeout(6000),
+      });
+      if (res.ok) {
+        const data: any = await res.json();
+        return json({ ok: true, elements: data.elements || [] });
+      }
+      return json({ ok: false, elements: [] });
+    } catch (e) {
+      return json({ ok: false, elements: [] });
     }
   }
 
