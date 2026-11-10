@@ -1898,3 +1898,239 @@ export async function verifyGoogleMapsApiKey(
     return { ok: false, message: (e as Error).message };
   }
 }
+
+/**
+ * Find the nearest other charger in the corridor within 15-20 km of a given charger
+ */
+export function findBackupChargerInCorridor(
+  c: PlannedCharger,
+  allChargers: PlannedCharger[],
+  maxDistanceKm = 20
+): {
+  backup: PlannedCharger | null;
+  distanceKm: number | null;
+  isWithin20km: boolean;
+} {
+  const candidates = allChargers.filter(
+    (other) =>
+      other.id !== c.id &&
+      Math.abs(other.alongRouteM - c.alongRouteM) <= maxDistanceKm * 1000.0 &&
+      Math.abs(other.alongRouteM - c.alongRouteM) >= 200.0
+  );
+  if (candidates.length === 0) {
+    return { backup: null, distanceKm: null, isWithin20km: false };
+  }
+  candidates.sort(
+    (a, b) =>
+      Math.abs(a.alongRouteM - c.alongRouteM) -
+      Math.abs(b.alongRouteM - c.alongRouteM)
+  );
+  const best = candidates[0];
+  const offsetKm = Number(((best.alongRouteM - c.alongRouteM) / 1000.0).toFixed(1));
+  return {
+    backup: best,
+    distanceKm: offsetKm,
+    isWithin20km: true,
+  };
+}
+
+/**
+ * Simulate battery arrival % and driving distance to a candidate charger from a given start point
+ * using route elevation profile and live traffic speeds.
+ */
+export function simulateLegToCharger(
+  vehicle: VehicleProfile,
+  points: ProfilePoint[],
+  fromM: number,
+  fromSoc: number,
+  targetCharger: PlannedCharger
+): {
+  distanceM: number;
+  arriveSoc: number;
+  isReachable: boolean;
+} {
+  if (points.length === 0) {
+    return { distanceM: 0, arriveSoc: fromSoc, isReachable: true };
+  }
+  const model = new EnergyModel(vehicle);
+  const capKwh = vehicle.usableCapacityKwh;
+
+  let fromIdx = points.findIndex((p) => p.distanceM >= fromM);
+  if (fromIdx < 0) fromIdx = 0;
+
+  let toIdx = points.findIndex((p) => p.distanceM >= targetCharger.alongRouteM);
+  if (toIdx < 0) toIdx = points.length - 1;
+  const targetIdx = Math.max(fromIdx + 1, toIdx);
+
+  const slice = points.slice(fromIdx, targetIdx + 1);
+  const sim = model.simulate(slice, fromSoc);
+  const atExitSoc = sim[sim.length - 1]?.socPercent ?? fromSoc;
+  const detourKwh = (targetCharger.detourM / 2 / 1000.0) / vehicle.cityKmPerKwh;
+  const detourSoc = (detourKwh / capKwh) * 100.0;
+  const arriveSoc = Number((atExitSoc - detourSoc).toFixed(1));
+  const distanceM = Math.max(0, targetCharger.alongRouteM - fromM);
+
+  return {
+    distanceM,
+    arriveSoc,
+    isReachable: arriveSoc > 0,
+  };
+}
+
+/**
+ * Build a complete trip plan from a list of user-selected charging stops,
+ * computing physics elevation and traffic across each leg.
+ */
+export function buildManualTripPlan(
+  vehicle: VehicleProfile,
+  settings: TripSettings,
+  points: ProfilePoint[],
+  startSoc: number,
+  selectedChargers: PlannedCharger[],
+  allChargers: PlannedCharger[],
+  feedbackMap: Record<string, ChargerFeedbackEntry[]> = {}
+): TripPlan {
+  if (points.length === 0) {
+    return {
+      reachable: false,
+      stops: [],
+      arrivalSoc: 0,
+      socTrace: [],
+      distanceM: 0,
+      driveMinutes: 0,
+      chargeMinutes: 0,
+      energy: { flatKwh: 0, climbKwh: 0, regenKwh: 0, totalKwh: 0, terrainKwh: 0 },
+      usableCapacityKwh: vehicle.usableCapacityKwh,
+      terrainPercent: 0,
+    };
+  }
+
+  const model = new EnergyModel(vehicle);
+  const totalM = points[points.length - 1].distanceM;
+  const capKwh = vehicle.usableCapacityKwh;
+  const targetSoc = settings.maxChargeTargetPercent || 100;
+
+  const trace: SocPoint[] = [];
+  const stops: PlannedStop[] = [];
+  let fromPointIdx = 0;
+  let currentSoc = startSoc;
+
+  let dcCount = 0;
+  let acCount = 0;
+
+  for (let sIdx = 0; sIdx < selectedChargers.length; sIdx++) {
+    const c = selectedChargers[sIdx];
+    const targetIdx = points.findIndex((p) => p.distanceM >= c.alongRouteM);
+    const stopIdx = Math.max(fromPointIdx + 1, targetIdx < 0 ? points.length - 1 : targetIdx);
+
+    const legSlice = points.slice(fromPointIdx, stopIdx + 1);
+    const legSim = model.simulate(legSlice, currentSoc);
+    if (legSim.length > 0) {
+      trace.push(...legSim.slice(0, legSim.length - 1));
+    }
+
+    const detourKwh = (c.detourM / 2 / 1000.0) / vehicle.cityKmPerKwh;
+    const detourSoc = (detourKwh / capKwh) * 100.0;
+    const rawArrive = legSim[legSim.length - 1]?.socPercent ?? currentSoc;
+    const arriveSoc = Number((rawArrive - detourSoc).toFixed(1));
+
+    // Windsor 4-DC fast charge rule
+    const isFast = (c.maxKw || 30) >= 20;
+    let chargeType: 'DC' | 'AC' = isFast ? 'DC' : 'AC';
+    let dcStopIndex: number | undefined;
+    let isMandatoryAcStop = false;
+    let mandatoryAcReason: string | undefined;
+
+    if (isFast) {
+      dcCount++;
+      if (dcCount > 4) {
+        chargeType = 'AC';
+        isMandatoryAcStop = true;
+        acCount++;
+        mandatoryAcReason =
+          'MG Windsor EV BMS Rule: Mandatory slow AC charge to 100% for LFP cell balancing after 4 consecutive DC charges.';
+      } else {
+        dcStopIndex = dcCount;
+      }
+    } else {
+      acCount++;
+    }
+
+    const departSoc = isMandatoryAcStop
+      ? 100
+      : Math.min(100, Math.max(arriveSoc + 5, targetSoc));
+    const chargeMinutes = isMandatoryAcStop
+      ? Math.round((((100 - arriveSoc) / 100.0) * capKwh / 7.4) * 60.0)
+      : Math.round(ChargeTime.minutes(vehicle, arriveSoc, departSoc, c.maxKw));
+
+    const conf = evaluateChargerConfidence(c, allChargers, feedbackMap[c.id] || []);
+    const backupInfo = findBackupChargerInCorridor(c, allChargers, 20);
+
+    const plannedStop: PlannedStop = {
+      charger: c,
+      arriveSoc,
+      departSoc,
+      chargeMinutes,
+      chargeType,
+      dcStopIndex,
+      isMandatoryAcStop,
+      mandatoryAcReason,
+      backupCharger: backupInfo.backup || conf.backup || null,
+      backupDistanceKm: backupInfo.distanceKm ?? conf.backupKm,
+      nextCharger: conf.nextCharger,
+      nextDistanceKm: conf.nextKm,
+      confidenceDots: conf.dots,
+      confidenceLabel: conf.label,
+      confidenceReasons: conf.reasons,
+    };
+
+    stops.push(plannedStop);
+    trace.push({
+      distanceM: points[stopIdx].distanceM,
+      socPercent: arriveSoc,
+      elevationM: points[stopIdx].elevationM,
+    });
+
+    fromPointIdx = stopIdx;
+    currentSoc = departSoc;
+  }
+
+  const remainingSlice = points.slice(fromPointIdx);
+  const remainingSim = model.simulate(remainingSlice, currentSoc);
+  trace.push(...remainingSim);
+
+  const destinationArrivalSoc = Number(
+    (remainingSim[remainingSim.length - 1]?.socPercent ?? currentSoc).toFixed(1)
+  );
+
+  const detourMin = stops.reduce(
+    (acc, s) => acc + ((s.charger.detourM / 1000.0) / 35.0) * 60.0,
+    0
+  );
+  const totalChargeMinutes = stops.reduce((acc, s) => acc + s.chargeMinutes, 0);
+  const energy = model.breakdown(points);
+
+  let driveMinutes = 0;
+  for (let i = 1; i < points.length; i++) {
+    const distKm = (points[i].distanceM - points[i - 1].distanceM) / 1000.0;
+    const speed = Math.max(10, (points[i].speedKmh + points[i - 1].speedKmh) / 2);
+    driveMinutes += (distKm / speed) * 60.0;
+  }
+
+  return {
+    reachable: destinationArrivalSoc > 0,
+    stops,
+    arrivalSoc: destinationArrivalSoc,
+    socTrace: trace,
+    distanceM: totalM,
+    driveMinutes: Math.round(driveMinutes + detourMin),
+    chargeMinutes: totalChargeMinutes,
+    energy,
+    usableCapacityKwh: capKwh,
+    terrainPercent: Number(
+      ((energy.terrainKwh / capKwh) * 100.0).toFixed(1)
+    ),
+    dcStopCount: dcCount > 4 ? 4 : dcCount,
+    mandatoryAcStopCount: acCount,
+  };
+}

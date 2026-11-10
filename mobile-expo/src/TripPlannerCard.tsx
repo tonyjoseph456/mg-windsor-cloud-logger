@@ -12,12 +12,14 @@ import {
 import Svg, { Circle, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
 import * as SecureStore from './storage';
 import {
+  buildManualTripPlan,
   ChargerFeedbackEntry,
   ChargeVerdict,
   computeTripRouteChoices,
   DEFAULT_CHARGER_PREFS,
   DEFAULT_TRIP_SETTINGS,
   DEFAULT_WINDSOR_PROFILE,
+  findBackupChargerInCorridor,
   LatLng,
   NamedPlace,
   PlaceSuggestion,
@@ -27,6 +29,7 @@ import {
   resolvePlaceSuggestion,
   RouteChoice,
   searchDestinationPlaces,
+  simulateLegToCharger,
   TripPlan,
   TripSettings,
   VehicleProfile,
@@ -227,12 +230,66 @@ export function TripPlannerCard({
     SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
   };
 
-  // Re-compute optimal charging plan whenever route, startSoc, settings, or broken-charger feedback changes
+  // User-selected charging stops (initially empty; stops are selected step-by-step by the user)
+  const [selectedStopChargers, setSelectedStopChargers] = useState<PlannedCharger[]>([]);
+
+  // When route choices or active route index changes, reset user-selected stops
+  useEffect(() => {
+    setSelectedStopChargers([]);
+  }, [routeChoices, selectedRouteIdx]);
+
   const activeRouteChoice: RouteChoice | null =
     routeChoices[selectedRouteIdx] || routeChoices[0] || null;
 
-  const planOptions: PlanOption[] = useMemo(() => {
-    if (!activeRouteChoice) return [];
+  // Build the live trip plan based on user's selected charging stops
+  const activePlan: TripPlan | null = useMemo(() => {
+    if (!activeRouteChoice) return null;
+    const startSoc = Math.max(
+      0,
+      Math.min(100, Number(startSocInput) || currentSoc || 80)
+    );
+    return buildManualTripPlan(
+      vehicleProfile,
+      settings,
+      activeRouteChoice.profile,
+      startSoc,
+      selectedStopChargers,
+      activeRouteChoice.chargers,
+      feedbackMap
+    );
+  }, [
+    activeRouteChoice,
+    startSocInput,
+    currentSoc,
+    vehicleProfile,
+    settings,
+    selectedStopChargers,
+    feedbackMap,
+  ]);
+
+  const handleAddStop = (charger: PlannedCharger) => {
+    setSelectedStopChargers((prev) => {
+      if (prev.some((p) => p.id === charger.id)) return prev;
+      return [...prev, charger].sort((a, b) => a.alongRouteM - b.alongRouteM);
+    });
+    onShowBanner?.(
+      'ok',
+      `Added "${charger.name}" as Stop ${selectedStopChargers.length + 1}`
+    );
+  };
+
+  const handleRemoveStop = (index: number) => {
+    setSelectedStopChargers((prev) => prev.filter((_, i) => i !== index));
+    onShowBanner?.('ok', `Removed Stop ${index + 1}`);
+  };
+
+  const handleClearStops = () => {
+    setSelectedStopChargers([]);
+    onShowBanner?.('ok', 'Cleared all selected charging stops.');
+  };
+
+  const handleAutoSuggestStops = () => {
+    if (!activeRouteChoice) return;
     const startSoc = Math.max(
       0,
       Math.min(100, Number(startSocInput) || currentSoc || 80)
@@ -243,17 +300,42 @@ export function TripPlannerCard({
       DEFAULT_CHARGER_PREFS,
       feedbackMap
     );
-    return planner.options(
+    const options = planner.options(
       activeRouteChoice.profile,
       startSoc,
       activeRouteChoice.chargers,
       activeRouteChoice.durationS / 60.0
     );
-  }, [activeRouteChoice, startSocInput, currentSoc, vehicleProfile, settings, feedbackMap]);
+    const autoPlan = options[0]?.plan;
+    if (autoPlan && autoPlan.stops.length > 0) {
+      setSelectedStopChargers(autoPlan.stops.map((s) => s.charger));
+      onShowBanner?.(
+        'ok',
+        `Auto-suggested ${autoPlan.stops.length} optimal stops based on live traffic & elevation.`
+      );
+    } else {
+      setSelectedStopChargers([]);
+      onShowBanner?.('ok', 'Route can be driven non-stop without charging!');
+    }
+  };
 
-  const activeOption: PlanOption | null =
-    planOptions[selectedOptionIdx] || planOptions[0] || null;
-  const activePlan: TripPlan | null = activeOption?.plan || null;
+  const numSelectedStops = selectedStopChargers.length;
+  const lastSelectedStop =
+    activePlan && activePlan.stops.length > 0
+      ? activePlan.stops[activePlan.stops.length - 1]
+      : null;
+
+  const currentLegFromM = lastSelectedStop ? lastSelectedStop.charger.alongRouteM : 0;
+  const currentLegFromSoc = lastSelectedStop
+    ? lastSelectedStop.departSoc
+    : Math.max(0, Math.min(100, Number(startSocInput) || currentSoc || 80));
+  const currentLegFromName = lastSelectedStop
+    ? `Stop ${numSelectedStops} (${lastSelectedStop.charger.name})`
+    : 'Starting Location';
+
+  const eligibleChargers = (activeRouteChoice?.chargers || []).filter(
+    (c) => c.alongRouteM > currentLegFromM + 500
+  );
 
   const handlePlanTrip = async (destOverride?: NamedPlace) => {
     const targetDest = destOverride || selectedDest;
@@ -273,7 +355,7 @@ export function TripPlannerCard({
       );
       setRouteChoices(choices);
       setSelectedRouteIdx(0);
-      setSelectedOptionIdx(0);
+      setSelectedStopChargers([]);
     } catch (e) {
       setErrorText((e as Error).message || 'Failed to compute route plan.');
     } finally {
@@ -795,32 +877,51 @@ export function TripPlannerCard({
                 </View>
               )}
 
-              {/* 2. Plan Goal Options (Fastest vs Fewer Stops vs Preferred Network) */}
-              {planOptions.length > 1 && (
-                <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
-                  {planOptions.map((opt, idx) => {
-                    const active = idx === selectedOptionIdx;
-                    return (
-                      <TouchableOpacity
-                        key={opt.goal}
-                        style={[styles.pillBtn, active && styles.pillBtnActive]}
-                        onPress={() => setSelectedOptionIdx(idx)}
-                      >
-                        <Text
-                          style={[
-                            styles.pillBtnText,
-                            active && styles.pillBtnTextActive,
-                          ]}
-                        >
-                          {opt.label} ({opt.plan.stops.length}{' '}
-                          {opt.plan.stops.length === 1 ? 'stop' : 'stops'} • +
-                          {opt.plan.chargeMinutes}m)
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
+              {/* 2. Interactive Trip Builder Toolbar */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  backgroundColor: '#0F172A',
+                  padding: 10,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: '#1E293B',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={{ color: '#38BDF8', fontSize: 13, fontWeight: '900' }}>
+                    🛠️ Charging Stops: {selectedStopChargers.length} Selected
+                  </Text>
+                  <Text style={{ color: '#64748B', fontSize: 11 }}>
+                    ({selectedStopChargers.length === 0 ? 'Pick Stop 1 below' : `Next: Stop ${selectedStopChargers.length + 1}`})
+                  </Text>
                 </View>
-              )}
+
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  {selectedStopChargers.length > 0 && (
+                    <TouchableOpacity
+                      style={[styles.smallActionBtn, { borderColor: '#EF444480', backgroundColor: '#7F1D1D20' }]}
+                      onPress={handleClearStops}
+                    >
+                      <Text style={{ color: '#FCA5A5', fontSize: 11, fontWeight: '800' }}>
+                        🗑️ Reset Stops
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.smallActionBtn, { borderColor: '#10B98180', backgroundColor: '#064E3B25' }]}
+                    onPress={handleAutoSuggestStops}
+                  >
+                    <Text style={{ color: '#34D399', fontSize: 11, fontWeight: '800' }}>
+                      ⚡ Auto-Suggest Stops
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
 
               {/* 3. Trip Summary Metrics Grid */}
               <View style={styles.summaryBox}>
@@ -1002,6 +1103,7 @@ export function TripPlannerCard({
                       stop={stop}
                       minChargerPercent={settings.minArrivalAtChargerPercent}
                       onNavigate={(pos, name) => openNavigation(pos.lat, pos.lng, name)}
+                      onRemove={() => handleRemoveStop(idx)}
                       onMarkBroken={() =>
                         handleMarkChargerVerdict(
                           stop.charger.id,
@@ -1019,209 +1121,207 @@ export function TripPlannerCard({
                     />
                   ))}
                 </View>
-              ) : (
-                <View style={styles.noStopsBanner}>
+              ) : activePlan.arrivalSoc >= settings.minArrivalAtDestinationPercent ? (
+                <View style={styles.destinationSuccessBanner}>
                   <Text style={{ color: '#34D399', fontSize: 13, fontWeight: '800' }}>
-                    ✅ Non-Stop Drive! No Charging Required
+                    ✅ Direct Drive Reachable! No Charging Required
                   </Text>
-                  <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 2 }}>
+                  <Text style={{ color: '#E2E8F0', fontSize: 11, marginTop: 2 }}>
                     Starting at {startSocInput}%, you will arrive at {selectedDest?.name} with approximately{' '}
                     <Text style={{ color: '#34D399', fontWeight: '800' }}>
                       {activePlan.arrivalSoc}%
                     </Text>{' '}
-                    battery remaining (accounting for +{activeRouteChoice.climbM}m elevation climb).
+                    battery remaining (accounting for +{activeRouteChoice.climbM}m elevation climb & live traffic). Or select Stop 1 below if you prefer a safety buffer.
+                  </Text>
+                </View>
+              ) : activePlan.arrivalSoc > 0 ? (
+                <View style={styles.destinationWarningBanner}>
+                  <Text style={{ color: '#FCD34D', fontSize: 13, fontWeight: '800' }}>
+                    ⚠️ Low Battery at Destination: {activePlan.arrivalSoc}%
+                  </Text>
+                  <Text style={{ color: '#FEF3C7', fontSize: 11, marginTop: 2 }}>
+                    Arrival battery ({activePlan.arrivalSoc}%) is below your configured {settings.minArrivalAtDestinationPercent}% destination buffer. Select Stop 1 from the chargers listed below to recharge.
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.destinationDangerBanner}>
+                  <Text style={{ color: '#FCA5A5', fontSize: 13, fontWeight: '800' }}>
+                    🚨 Additional Charging Stop Needed
+                  </Text>
+                  <Text style={{ color: '#FEE2E2', fontSize: 11, marginTop: 2 }}>
+                    Route distance ({(activePlan.distanceM / 1000).toFixed(1)} km) exceeds battery range. Please select Stop 1 from the chargers listed below.
                   </Text>
                 </View>
               )}
 
-              {/* 6. All DC Fast Chargers Along Route Corridor List */}
+              {/* 6. Step-by-Step Interactive Stop Selection */}
               {activeRouteChoice.chargers.length > 0 && (
                 <View style={styles.corridorChargersBox}>
-                  <Text style={styles.fieldLabel}>
-                    🔌 ALL {activeRouteChoice.chargers.length} DC FAST CHARGERS ALONG THIS ROUTE (MAX GAP: {activeRouteChoice.longestGapKm} KM)
-                  </Text>
-                  <View style={{ gap: 6, marginTop: 8 }}>
-                    {activeRouteChoice.chargers.map((c) => {
-                      const plannedStop = activePlan.stops.find(
-                        (s) => s.charger.id === c.id
-                      );
-                      const isPlanned = Boolean(plannedStop);
-                      const isBackup = activePlan.stops.some(
-                        (s) => s.backupCharger?.id === c.id
-                      );
-                      const isBroken =
-                        (feedbackMap[c.id] || []).slice(-1)[0]?.verdict === 'Broken';
+                  <View style={{ marginBottom: 10 }}>
+                    <Text style={styles.fieldLabel}>
+                      {selectedStopChargers.length === 0
+                        ? `📍 ALL DC FAST CHARGERS ALONG ROUTE (SELECT STOP 1 · ${eligibleChargers.length} AVAILABLE)`
+                        : `📍 DOWNSTREAM CHARGERS TO DESTINATION (SELECT STOP ${selectedStopChargers.length + 1} · ${eligibleChargers.length} AVAILABLE)`}
+                    </Text>
+                    <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 2 }}>
+                      {selectedStopChargers.length === 0
+                        ? `Arrival battery % & distances are calculated from Starting Location (departing at ${startSocInput || '100'}% SoC, using live traffic & elevation):`
+                        : `Arrival battery % & distances are calculated from Stop ${selectedStopChargers.length} (${lastSelectedStop?.charger.name}, departing at ${lastSelectedStop?.departSoc || 100}% SoC, using live traffic & elevation):`}
+                    </Text>
+                  </View>
 
-                      // 1. Calculate Estimated Arrival Battery % for this charger along the route
-                      let estArrivalSoc: number | null = null;
-                      let isReachable = true;
+                  {eligibleChargers.length === 0 ? (
+                    <View style={[styles.backupBox, { backgroundColor: '#064E3B20', borderColor: '#10B98160' }]}>
+                      <Text style={{ color: '#34D399', fontSize: 12, fontWeight: '800' }}>
+                        🏁 No further downstream chargers needed! Destination is reachable with {activePlan.arrivalSoc}% battery.
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={{ gap: 8 }}>
+                      {eligibleChargers.map((c) => {
+                        const isAlreadySelected = selectedStopChargers.some((s) => s.id === c.id);
+                        const legInfo = simulateLegToCharger(
+                          vehicleProfile,
+                          activeRouteChoice.profile,
+                          currentLegFromM,
+                          currentLegFromSoc,
+                          c
+                        );
+                        const backupInfo = findBackupChargerInCorridor(c, activeRouteChoice.chargers, 20);
+                        const isBroken = (feedbackMap[c.id] || []).slice(-1)[0]?.verdict === 'Broken';
 
-                      if (plannedStop) {
-                        estArrivalSoc = Math.round(plannedStop.arriveSoc);
-                        isReachable = estArrivalSoc > 0;
-                      } else {
-                        // Find simulated SoC at this distance in activePlan.socTrace
-                        const trace = activePlan.socTrace || [];
-                        const pt =
-                          [...trace].reverse().find((p) => p.distanceM <= c.alongRouteM) ||
-                          trace[0];
-                        if (pt) {
-                          const detourKwh =
-                            c.detourM / 1000 / vehicleProfile.cityKmPerKwh;
-                          const detourSoc =
-                            (detourKwh / vehicleProfile.usableCapacityKwh) * 100;
-                          const calculatedSoc = Math.round(pt.socPercent - detourSoc);
-                          estArrivalSoc = calculatedSoc;
-                          isReachable = calculatedSoc > 0;
-                        }
-                      }
-
-                      // 2. Check if this charger is the NEXT charger following a planned stop with NO 25 km backup
-                      const prevStopWithNoBackup = activePlan.stops.find(
-                        (s) => !s.backupCharger && s.nextCharger?.id === c.id
-                      );
-                      const prevStopIdx = prevStopWithNoBackup
-                        ? activePlan.stops.findIndex(
-                            (s) => s.charger.id === prevStopWithNoBackup.charger.id
-                          ) + 1
-                        : null;
-
-                      return (
-                        <View
-                          key={c.id}
-                          style={[
-                            styles.corridorRow,
-                            isPlanned && {
-                              borderColor: '#34D39980',
-                              backgroundColor: '#064E3B25',
-                            },
-                            isBackup &&
-                              !isPlanned && {
-                                borderColor: '#38BDF860',
-                                backgroundColor: '#0284C718',
+                        return (
+                          <View
+                            key={c.id}
+                            style={[
+                              styles.corridorRow,
+                              isAlreadySelected && {
+                                borderColor: '#34D39980',
+                                backgroundColor: '#064E3B25',
                               },
-                            isBroken && {
-                              opacity: 0.5,
-                              borderColor: '#EF444460',
-                            },
-                          ]}
-                        >
-                          <View style={{ flex: 1, paddingRight: 8 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                              <Text style={{ color: '#F8FAFC', fontSize: 12, fontWeight: '800' }}>
-                                {c.name}
-                              </Text>
-                              {isPlanned && (
-                                <View style={styles.tagPlanned}>
-                                  <Text style={styles.tagPlannedText}>PLANNED STOP</Text>
-                                </View>
-                              )}
-                              {isBackup && !isPlanned && (
-                                <View style={styles.tagBackup}>
-                                  <Text style={styles.tagBackupText}>BACKUP</Text>
-                                </View>
-                              )}
+                              isBroken && {
+                                opacity: 0.5,
+                                borderColor: '#EF444460',
+                              },
+                            ]}
+                          >
+                            <View style={{ flex: 1, paddingRight: 8 }}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
+                                  {c.name}
+                                </Text>
 
-                              {/* Estimated Arrival Battery % Badge */}
-                              {estArrivalSoc != null && isReachable ? (
-                                <View
-                                  style={[
-                                    styles.tagPlanned,
-                                    isPlanned
-                                      ? { backgroundColor: '#064E3B', borderColor: '#10B981', borderWidth: 1 }
-                                      : { backgroundColor: '#0C4A6E', borderColor: '#38BDF860', borderWidth: 1 },
-                                  ]}
-                                >
-                                  <Text
+                                {/* Estimated Arrival Battery % Badge (live calculated with elevation + traffic) */}
+                                {legInfo.isReachable ? (
+                                  <View
                                     style={[
-                                      styles.tagPlannedText,
-                                      isPlanned ? { color: '#34D399' } : { color: '#38BDF8' },
+                                      styles.tagPlanned,
+                                      {
+                                        backgroundColor:
+                                          legInfo.arriveSoc <= settings.minArrivalAtChargerPercent + 6
+                                            ? '#064E3B'
+                                            : '#0C4A6E',
+                                        borderColor:
+                                          legInfo.arriveSoc <= settings.minArrivalAtChargerPercent + 6
+                                            ? '#10B981'
+                                            : '#38BDF860',
+                                        borderWidth: 1,
+                                      },
                                     ]}
                                   >
-                                    ⚡ Arrive: {estArrivalSoc}% SoC
-                                  </Text>
-                                </View>
-                              ) : (
-                                <View style={[styles.tagBackup, { backgroundColor: '#7F1D1D', borderColor: '#EF4444', borderWidth: 1 }]}>
-                                  <Text style={[styles.tagBackupText, { color: '#FCA5A5' }]}>
-                                    ❌ Won't Arrive (Exceeds Range)
-                                  </Text>
-                                </View>
-                              )}
+                                    <Text
+                                      style={[
+                                        styles.tagPlannedText,
+                                        {
+                                          color:
+                                            legInfo.arriveSoc <= settings.minArrivalAtChargerPercent + 6
+                                              ? '#34D399'
+                                              : '#38BDF8',
+                                        },
+                                      ]}
+                                    >
+                                      ⚡ Arrive: {Math.round(legInfo.arriveSoc)}% SoC
+                                    </Text>
+                                  </View>
+                                ) : (
+                                  <View
+                                    style={[
+                                      styles.tagBackup,
+                                      { backgroundColor: '#7F1D1D', borderColor: '#EF4444', borderWidth: 1 },
+                                    ]}
+                                  >
+                                    <Text style={[styles.tagBackupText, { color: '#FCA5A5' }]}>
+                                      ❌ Won't Arrive (Exceeds Range)
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
 
-                              {isPlanned && !plannedStop?.backupCharger && (
-                                <View style={[styles.tagBackup, { backgroundColor: '#78350F', borderColor: '#F59E0B60', borderWidth: 1 }]}>
-                                  <Text style={[styles.tagBackupText, { color: '#FCD34D' }]}>
-                                    ⚠️ No 25km Backup
-                                  </Text>
-                                </View>
-                              )}
+                              {/* Distance & Charger details */}
+                              <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 3 }}>
+                                {selectedStopChargers.length === 0
+                                  ? `At ${(c.alongRouteM / 1000).toFixed(1)} km from start`
+                                  : `+${(legInfo.distanceM / 1000).toFixed(1)} km from Stop ${selectedStopChargers.length} · (At ${(c.alongRouteM / 1000).toFixed(1)} km)`}
+                                {` • ⚡ ${c.maxKw} kW CCS2`}
+                                {c.network ? ` • ${c.network}` : ''}
+                                {c.detourM > 400
+                                  ? ` • +${(c.detourM / 1000).toFixed(1)} km detour`
+                                  : ' • On highway'}
+                              </Text>
 
-                              {isBroken && (
-                                <View style={[styles.tagBackup, { backgroundColor: '#7F1D1D' }]}>
-                                  <Text style={[styles.tagBackupText, { color: '#FCA5A5' }]}>
-                                    MARKED OFFLINE
+                              {/* Nearest Backup Charger in 15-20 km */}
+                              <View style={{ marginTop: 3 }}>
+                                {backupInfo.isWithin20km && backupInfo.backup ? (
+                                  <Text style={{ color: '#38BDF8', fontSize: 10, fontWeight: '700' }}>
+                                    🛡️ Nearest Backup in 15-20 km: {backupInfo.backup.name} ({backupInfo.distanceKm && backupInfo.distanceKm >= 0 ? `+${backupInfo.distanceKm} km ahead` : `${Math.abs(backupInfo.distanceKm || 0)} km earlier`})
                                   </Text>
-                                </View>
-                              )}
+                                ) : (
+                                  <Text style={{ color: '#FCD34D', fontSize: 10, fontWeight: '700' }}>
+                                    ⚠️ No backup charger within 15-20 km
+                                  </Text>
+                                )}
+                              </View>
                             </View>
-                            <Text style={{ color: '#94A3B8', fontSize: 10, marginTop: 2 }}>
-                              At {(c.alongRouteM / 1000).toFixed(0)} km • ⚡ {c.maxKw} kW CCS2
-                              {c.network ? ` • ${c.network}` : ''}
-                              {c.detourM > 400
-                                ? ` • +${(c.detourM / 1000).toFixed(1)} km detour`
-                                : ' • On highway'}
-                              {c.availableCount != null
-                                ? ` • 🟢 ${c.availableCount}/${c.connectorCount || '?'} free`
-                                : ''}
-                              {prevStopWithNoBackup && (
+
+                            {/* Action Buttons: + Select as Stop X / Map */}
+                            <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.smallActionBtn,
+                                  {
+                                    backgroundColor: legInfo.isReachable ? '#0284C7' : '#7F1D1D30',
+                                    borderColor: legInfo.isReachable ? '#38BDF8' : '#EF444480',
+                                    paddingHorizontal: 10,
+                                    paddingVertical: 7,
+                                  },
+                                ]}
+                                onPress={() => handleAddStop(c)}
+                              >
                                 <Text
                                   style={{
-                                    color:
-                                      prevStopWithNoBackup.nextUnassistedSoc != null &&
-                                      prevStopWithNoBackup.nextUnassistedSoc >= 0
-                                        ? '#FCD34D'
-                                        : '#F87171',
-                                    fontWeight: '800',
+                                    color: legInfo.isReachable ? '#FFF' : '#FCA5A5',
+                                    fontSize: 11,
+                                    fontWeight: '900',
                                   }}
                                 >
-                                  {prevStopWithNoBackup.nextUnassistedSoc != null &&
-                                  prevStopWithNoBackup.nextUnassistedSoc >= 0
-                                    ? ` • If Stop ${prevStopIdx} offline: ~${Math.round(prevStopWithNoBackup.nextUnassistedSoc)}% SoC`
-                                    : ` • If Stop ${prevStopIdx} offline: ❌ Won't Reach!`}
-                                </Text>
-                              )}
-                            </Text>
-                          </View>
-
-                          <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                            {!isBroken && (
-                              <TouchableOpacity
-                                style={styles.smallActionBtn}
-                                onPress={() =>
-                                  handleMarkChargerVerdict(c.id, c.name, 'Broken')
-                                }
-                              >
-                                <Text style={{ color: '#FCA5A5', fontSize: 10, fontWeight: '700' }}>
-                                  Offline?
+                                  + Select as Stop {selectedStopChargers.length + 1}
                                 </Text>
                               </TouchableOpacity>
-                            )}
-                            <TouchableOpacity
-                              style={[styles.smallActionBtn, { borderColor: '#38BDF860' }]}
-                              onPress={() =>
-                                openNavigation(c.position.lat, c.position.lng, c.name)
-                              }
-                            >
-                              <Text style={{ color: '#38BDF8', fontSize: 10, fontWeight: '700' }}>
-                                🧭 Map
-                              </Text>
-                            </TouchableOpacity>
+                              <TouchableOpacity
+                                style={[
+                                  styles.smallActionBtn,
+                                  { paddingHorizontal: 8, paddingVertical: 4, borderColor: '#334155' },
+                                ]}
+                                onPress={() => openNavigation(c.position.lat, c.position.lng, c.name)}
+                              >
+                                <Text style={{ color: '#94A3B8', fontSize: 10, fontWeight: '700' }}>🧭 Map</Text>
+                              </TouchableOpacity>
+                            </View>
                           </View>
-                        </View>
-                      );
-                    })}
-                  </View>
+                        );
+                      })}
+                    </View>
+                  )}
                 </View>
               )}
             </View>
@@ -1259,6 +1359,7 @@ function PlannedStopItem({
   stop,
   minChargerPercent,
   onNavigate,
+  onRemove,
   onMarkBroken,
   onMarkWorked,
 }: {
@@ -1266,6 +1367,7 @@ function PlannedStopItem({
   stop: PlannedStop;
   minChargerPercent?: number;
   onNavigate: (pos: LatLng, name: string) => void;
+  onRemove?: () => void;
   onMarkBroken: () => void;
   onMarkWorked: () => void;
 }) {
@@ -1526,14 +1628,22 @@ function PlannedStopItem({
         </View>
       )}
 
-      {/* Action Buttons: Navigate / Mark Offline & Re-plan */}
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+      {/* Action Buttons: Navigate / Remove / Mark Offline & Re-plan */}
+      <View style={{ flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
         <TouchableOpacity
           style={[styles.stopBtn, { backgroundColor: '#0284C7', flex: 1.2 }]}
           onPress={() => onNavigate(c.position, c.name)}
         >
           <Text style={styles.stopBtnText}>🧭 Navigate to Stop</Text>
         </TouchableOpacity>
+        {onRemove && (
+          <TouchableOpacity
+            style={[styles.stopBtn, { backgroundColor: '#7F1D1D30', borderWidth: 1, borderColor: '#EF444470', flex: 0.8 }]}
+            onPress={onRemove}
+          >
+            <Text style={[styles.stopBtnText, { color: '#FCA5A5' }]}>✕ Remove</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           style={[styles.stopBtn, { backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#34D39960', flex: 0.8 }]}
           onPress={onMarkWorked}
@@ -1541,7 +1651,7 @@ function PlannedStopItem({
           <Text style={[styles.stopBtnText, { color: '#34D399' }]}>👍 Worked</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.stopBtn, { backgroundColor: '#7F1D1D40', borderWidth: 1, borderColor: '#EF444480', flex: 1.2 }]}
+          style={[styles.stopBtn, { backgroundColor: '#7F1D1D40', borderWidth: 1, borderColor: '#EF444480', flex: 1.1 }]}
           onPress={onMarkBroken}
         >
           <Text style={[styles.stopBtnText, { color: '#FCA5A5' }]}>
@@ -2043,6 +2153,27 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#10B98160',
+  },
+  destinationSuccessBanner: {
+    backgroundColor: '#064E3B25',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#10B98160',
+  },
+  destinationWarningBanner: {
+    backgroundColor: '#78350F25',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#F59E0B60',
+  },
+  destinationDangerBanner: {
+    backgroundColor: '#7F1D1D25',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#EF444460',
   },
   corridorChargersBox: {
     backgroundColor: '#0A0E17',
