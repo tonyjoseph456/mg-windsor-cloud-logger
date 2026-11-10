@@ -76,6 +76,9 @@ export function TripPlannerCard({
   const [startSocInput, setStartSocInput] = useState<string>(
     String(Math.round(currentSoc || 80))
   );
+  const [minChargerInput, setMinChargerInput] = useState<string>('10');
+  const [minDestInput, setMinDestInput] = useState<string>('15');
+  const [chargeTargetInput, setChargeTargetInput] = useState<string>('80');
   const [settings, setSettings] = useState<TripSettings>(DEFAULT_TRIP_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -111,7 +114,21 @@ export function TripPlannerCard({
         ]);
         if (savedKey) setGoogleApiKey(savedKey);
         if (savedFb) setFeedbackMap(JSON.parse(savedFb));
-        if (savedSet) setSettings({ ...DEFAULT_TRIP_SETTINGS, ...JSON.parse(savedSet) });
+        if (savedSet) {
+          try {
+            const parsed = JSON.parse(savedSet);
+            if (parsed.minArrivalAtChargerPercent != null) {
+              setMinChargerInput(String(parsed.minArrivalAtChargerPercent));
+            }
+            if (parsed.minArrivalAtDestinationPercent != null) {
+              setMinDestInput(String(parsed.minArrivalAtDestinationPercent));
+            }
+            if (parsed.maxChargeTargetPercent != null) {
+              setChargeTargetInput(String(parsed.maxChargeTargetPercent));
+            }
+            setSettings({ ...DEFAULT_TRIP_SETTINGS, ...parsed });
+          } catch (_) {}
+        }
       } catch (_) {}
     })();
   }, []);
@@ -177,6 +194,39 @@ export function TripPlannerCard({
     return () => clearTimeout(timer);
   }, [originQuery, originMode, activeOrigin, googleApiKey, customOrigin]);
 
+  const handleMinChargerChange = (v: string) => {
+    setMinChargerInput(v);
+    const num = parseInt(v, 10);
+    const next: TripSettings = {
+      ...settings,
+      minArrivalAtChargerPercent: isNaN(num) ? 0 : Math.max(0, Math.min(100, num)),
+    };
+    setSettings(next);
+    SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
+  };
+
+  const handleMinDestChange = (v: string) => {
+    setMinDestInput(v);
+    const num = parseInt(v, 10);
+    const next: TripSettings = {
+      ...settings,
+      minArrivalAtDestinationPercent: isNaN(num) ? 0 : Math.max(0, Math.min(100, num)),
+    };
+    setSettings(next);
+    SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
+  };
+
+  const handleChargeTargetChange = (v: string) => {
+    setChargeTargetInput(v);
+    const num = parseInt(v, 10);
+    const next: TripSettings = {
+      ...settings,
+      maxChargeTargetPercent: isNaN(num) ? 100 : Math.max(0, Math.min(100, num)),
+    };
+    setSettings(next);
+    SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
+  };
+
   // Re-compute optimal charging plan whenever route, startSoc, settings, or broken-charger feedback changes
   const activeRouteChoice: RouteChoice | null =
     routeChoices[selectedRouteIdx] || routeChoices[0] || null;
@@ -184,7 +234,7 @@ export function TripPlannerCard({
   const planOptions: PlanOption[] = useMemo(() => {
     if (!activeRouteChoice) return [];
     const startSoc = Math.max(
-      10,
+      0,
       Math.min(100, Number(startSocInput) || currentSoc || 80)
     );
     const planner = new VoltaTripPlanner(
@@ -327,7 +377,7 @@ export function TripPlannerCard({
 
       {expanded && (
         <View style={{ marginTop: 12 }}>
-          {/* Origin & Starting SoC Row */}
+          {/* Starting Location */}
           <View style={styles.row}>
             <View style={{ flex: 1 }}>
               <Text style={styles.fieldLabel}>STARTING LOCATION</Text>
@@ -366,16 +416,63 @@ export function TripPlannerCard({
                 </TouchableOpacity>
               </View>
             </View>
+          </View>
 
-            <View style={{ width: 95 }}>
-              <Text style={styles.fieldLabel}>START SOC %</Text>
-              <TextInput
-                style={[styles.input, { marginTop: 4, textAlign: 'center', fontWeight: '800' }]}
-                keyboardType="numeric"
-                maxLength={3}
-                value={startSocInput}
-                onChangeText={setStartSocInput}
-              />
+          {/* User-Configured Trip Battery % Strategy (Start, Min @ Charger, Min @ Dest, Charge Target) */}
+          <View style={{ marginTop: 10 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.fieldLabel}>TRIP BATTERY % TARGETS (USER CONFIGURED)</Text>
+              <Text style={{ color: '#64748B', fontSize: 10, fontWeight: '600' }}>No forced presets</Text>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 6, marginTop: 5 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>START SOC %</Text>
+                <TextInput
+                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  keyboardType="numeric"
+                  maxLength={3}
+                  value={startSocInput}
+                  onChangeText={setStartSocInput}
+                  placeholder="85"
+                  placeholderTextColor="#475569"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>MIN @ CHARGER %</Text>
+                <TextInput
+                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  keyboardType="numeric"
+                  maxLength={3}
+                  value={minChargerInput}
+                  onChangeText={handleMinChargerChange}
+                  placeholder="10"
+                  placeholderTextColor="#475569"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>MIN @ DEST %</Text>
+                <TextInput
+                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  keyboardType="numeric"
+                  maxLength={3}
+                  value={minDestInput}
+                  onChangeText={handleMinDestChange}
+                  placeholder="15"
+                  placeholderTextColor="#475569"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>CHARGE TARGET %</Text>
+                <TextInput
+                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  keyboardType="numeric"
+                  maxLength={3}
+                  value={chargeTargetInput}
+                  onChangeText={handleChargeTargetChange}
+                  placeholder="80"
+                  placeholderTextColor="#475569"
+                />
+              </View>
             </View>
           </View>
 
@@ -424,7 +521,7 @@ export function TripPlannerCard({
               <Text style={styles.fieldLabel}>DESTINATION</Text>
               <TouchableOpacity onPress={() => setShowSettings((v) => !v)}>
                 <Text style={{ color: '#38BDF8', fontSize: 11, fontWeight: '700' }}>
-                  {showSettings ? '▲ Hide Buffers & API Key' : '⚙️ Buffers & Google API Key'}
+                  {showSettings ? '▲ Hide Google API Key' : '⚙️ Google API Key'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -544,64 +641,10 @@ export function TripPlannerCard({
             </View>
           </View>
 
-          {/* Collapsible Planner Settings & Optional Google Maps API Key */}
+          {/* Collapsible Optional Google Maps API Key */}
           {showSettings && (
             <View style={styles.settingsBox}>
               <Text style={styles.settingsHeader}>
-                🔋 Battery Buffers &amp; Target SoC
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.fieldLabel}>MIN AT CHARGER %</Text>
-                  <TextInput
-                    style={[styles.input, { marginTop: 4, textAlign: 'center' }]}
-                    keyboardType="numeric"
-                    value={String(settings.minArrivalAtChargerPercent)}
-                    onChangeText={(v) => {
-                      const next = {
-                        ...settings,
-                        minArrivalAtChargerPercent: Math.max(5, Math.min(40, Number(v) || 10)),
-                      };
-                      setSettings(next);
-                      SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
-                    }}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.fieldLabel}>MIN AT DEST %</Text>
-                  <TextInput
-                    style={[styles.input, { marginTop: 4, textAlign: 'center' }]}
-                    keyboardType="numeric"
-                    value={String(settings.minArrivalAtDestinationPercent)}
-                    onChangeText={(v) => {
-                      const next = {
-                        ...settings,
-                        minArrivalAtDestinationPercent: Math.max(5, Math.min(50, Number(v) || 15)),
-                      };
-                      setSettings(next);
-                      SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
-                    }}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.fieldLabel}>CHARGE TARGET %</Text>
-                  <TextInput
-                    style={[styles.input, { marginTop: 4, textAlign: 'center' }]}
-                    keyboardType="numeric"
-                    value={String(settings.maxChargeTargetPercent)}
-                    onChangeText={(v) => {
-                      const next = {
-                        ...settings,
-                        maxChargeTargetPercent: Math.max(60, Math.min(100, Number(v) || 80)),
-                      };
-                      setSettings(next);
-                      SecureStore.setItemAsync(PLANNER_SETTINGS_STORAGE, JSON.stringify(next));
-                    }}
-                  />
-                </View>
-              </View>
-
-              <Text style={[styles.settingsHeader, { marginTop: 12 }]}>
                 🔑 Optional Google Maps Platform API Key (Hybrid Mode)
               </Text>
               <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 2, lineHeight: 16 }}>
