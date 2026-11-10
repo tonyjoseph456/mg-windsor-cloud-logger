@@ -397,6 +397,10 @@ export interface PlannedStop {
   mealPlace?: string | null;
   backupCharger?: PlannedCharger | null;
   backupDistanceKm?: number | null;
+  nextCharger?: PlannedCharger | null;
+  nextDistanceKm?: number | null;
+  nextUnassistedSoc?: number | null;
+  maxUnassistedRangeKm?: number | null;
   confidenceDots?: number;
   confidenceLabel?: string;
   confidenceReasons?: string[];
@@ -494,6 +498,8 @@ export function evaluateChargerConfidence(
   reasons: string[];
   backup: PlannedCharger | null;
   backupKm: number | null;
+  nextCharger?: PlannedCharger | null;
+  nextKm?: number | null;
 } {
   let score = 3.0;
   const why: string[] = [];
@@ -554,10 +560,19 @@ export function evaluateChargerConfidence(
     ? Number(((backup.alongRouteM - c.alongRouteM) / 1000).toFixed(1))
     : null;
 
+  // Next charger ahead on the route (regardless of distance)
+  const ahead = allChargers
+    .filter((other) => other.id !== c.id && other.alongRouteM > c.alongRouteM)
+    .sort((a, b) => a.alongRouteM - b.alongRouteM);
+  const nextCharger = ahead[0] || null;
+  const nextKm = nextCharger
+    ? Number(((nextCharger.alongRouteM - c.alongRouteM) / 1000).toFixed(1))
+    : null;
+
   const dots = Math.max(1, Math.min(5, Math.round(score)));
   const label = dots >= 4 ? 'Reliable' : dots === 3 ? 'Good' : 'Unsure';
 
-  return { dots, label, reasons: why, backup, backupKm };
+  return { dots, label, reasons: why, backup, backupKm, nextCharger, nextKm };
 }
 
 // ============================================================================
@@ -670,10 +685,31 @@ export class VoltaTripPlanner {
         allChargers,
         this.feedbackMap[s.charger.id] || []
       );
+      const nextUnassistedSoc =
+        conf.nextCharger && conf.nextKm != null
+          ? Number(
+              (
+                s.arriveSoc -
+                (conf.nextKm / this.vehicle.highwayKmPerKwh / this.vehicle.usableCapacityKwh) *
+                  100
+              ).toFixed(1)
+            )
+          : null;
+      const maxUnassistedRangeKm = Number(
+        (
+          (s.arriveSoc / 100) *
+          this.vehicle.usableCapacityKwh *
+          this.vehicle.highwayKmPerKwh
+        ).toFixed(0)
+      );
       return {
         ...s,
         backupCharger: conf.backup,
         backupDistanceKm: conf.backupKm,
+        nextCharger: conf.nextCharger,
+        nextDistanceKm: conf.nextKm,
+        nextUnassistedSoc,
+        maxUnassistedRangeKm,
         confidenceDots: conf.dots,
         confidenceLabel: conf.label,
         confidenceReasons: conf.reasons,

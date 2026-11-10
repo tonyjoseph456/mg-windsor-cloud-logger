@@ -992,14 +992,50 @@ export function TripPlannerCard({
                   </Text>
                   <View style={{ gap: 6, marginTop: 8 }}>
                     {activeRouteChoice.chargers.map((c) => {
-                      const isPlanned = activePlan.stops.some(
+                      const plannedStop = activePlan.stops.find(
                         (s) => s.charger.id === c.id
                       );
+                      const isPlanned = Boolean(plannedStop);
                       const isBackup = activePlan.stops.some(
                         (s) => s.backupCharger?.id === c.id
                       );
                       const isBroken =
                         (feedbackMap[c.id] || []).slice(-1)[0]?.verdict === 'Broken';
+
+                      // 1. Calculate Estimated Arrival Battery % for this charger along the route
+                      let estArrivalSoc: number | null = null;
+                      let isReachable = true;
+
+                      if (plannedStop) {
+                        estArrivalSoc = Math.round(plannedStop.arriveSoc);
+                        isReachable = estArrivalSoc > 0;
+                      } else {
+                        // Find simulated SoC at this distance in activePlan.socTrace
+                        const trace = activePlan.socTrace || [];
+                        const pt =
+                          [...trace].reverse().find((p) => p.distanceM <= c.alongRouteM) ||
+                          trace[0];
+                        if (pt) {
+                          const detourKwh =
+                            c.detourM / 1000 / vehicleProfile.cityKmPerKwh;
+                          const detourSoc =
+                            (detourKwh / vehicleProfile.usableCapacityKwh) * 100;
+                          const calculatedSoc = Math.round(pt.socPercent - detourSoc);
+                          estArrivalSoc = calculatedSoc;
+                          isReachable = calculatedSoc > 0;
+                        }
+                      }
+
+                      // 2. Check if this charger is the NEXT charger following a planned stop with NO 25 km backup
+                      const prevStopWithNoBackup = activePlan.stops.find(
+                        (s) => !s.backupCharger && s.nextCharger?.id === c.id
+                      );
+                      const prevStopIdx = prevStopWithNoBackup
+                        ? activePlan.stops.findIndex(
+                            (s) => s.charger.id === prevStopWithNoBackup.charger.id
+                          ) + 1
+                        : null;
+
                       return (
                         <View
                           key={c.id}
@@ -1035,6 +1071,42 @@ export function TripPlannerCard({
                                   <Text style={styles.tagBackupText}>BACKUP</Text>
                                 </View>
                               )}
+
+                              {/* Estimated Arrival Battery % Badge */}
+                              {estArrivalSoc != null && isReachable ? (
+                                <View
+                                  style={[
+                                    styles.tagPlanned,
+                                    isPlanned
+                                      ? { backgroundColor: '#064E3B', borderColor: '#10B981', borderWidth: 1 }
+                                      : { backgroundColor: '#0C4A6E', borderColor: '#38BDF860', borderWidth: 1 },
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.tagPlannedText,
+                                      isPlanned ? { color: '#34D399' } : { color: '#38BDF8' },
+                                    ]}
+                                  >
+                                    ⚡ Arrive: {estArrivalSoc}% SoC
+                                  </Text>
+                                </View>
+                              ) : (
+                                <View style={[styles.tagBackup, { backgroundColor: '#7F1D1D', borderColor: '#EF4444', borderWidth: 1 }]}>
+                                  <Text style={[styles.tagBackupText, { color: '#FCA5A5' }]}>
+                                    ❌ Won't Arrive (Exceeds Range)
+                                  </Text>
+                                </View>
+                              )}
+
+                              {isPlanned && !plannedStop?.backupCharger && (
+                                <View style={[styles.tagBackup, { backgroundColor: '#78350F', borderColor: '#F59E0B60', borderWidth: 1 }]}>
+                                  <Text style={[styles.tagBackupText, { color: '#FCD34D' }]}>
+                                    ⚠️ No 25km Backup
+                                  </Text>
+                                </View>
+                              )}
+
                               {isBroken && (
                                 <View style={[styles.tagBackup, { backgroundColor: '#7F1D1D' }]}>
                                   <Text style={[styles.tagBackupText, { color: '#FCA5A5' }]}>
@@ -1052,6 +1124,23 @@ export function TripPlannerCard({
                               {c.availableCount != null
                                 ? ` • 🟢 ${c.availableCount}/${c.connectorCount || '?'} free`
                                 : ''}
+                              {prevStopWithNoBackup && (
+                                <Text
+                                  style={{
+                                    color:
+                                      prevStopWithNoBackup.nextUnassistedSoc != null &&
+                                      prevStopWithNoBackup.nextUnassistedSoc >= 0
+                                        ? '#FCD34D'
+                                        : '#F87171',
+                                    fontWeight: '800',
+                                  }}
+                                >
+                                  {prevStopWithNoBackup.nextUnassistedSoc != null &&
+                                  prevStopWithNoBackup.nextUnassistedSoc >= 0
+                                    ? ` • If Stop ${prevStopIdx} offline: ~${Math.round(prevStopWithNoBackup.nextUnassistedSoc)}% SoC`
+                                    : ` • If Stop ${prevStopIdx} offline: ❌ Won't Reach!`}
+                                </Text>
+                              )}
                             </Text>
                           </View>
 
@@ -1202,8 +1291,8 @@ function PlannedStopItem({
         </View>
       </View>
 
-      {/* Automatic Backup Charger Box */}
-      {stop.backupCharger && (
+      {/* Automatic Backup Charger Box OR No-Backup Alert */}
+      {stop.backupCharger ? (
         <View style={styles.backupBox}>
           <View style={{ flex: 1, paddingRight: 8 }}>
             <Text style={{ color: '#38BDF8', fontSize: 10, fontWeight: '800' }}>
@@ -1223,6 +1312,89 @@ function PlannedStopItem({
               🧭 Backup Map
             </Text>
           </TouchableOpacity>
+        </View>
+      ) : (
+        <View
+          style={[
+            styles.backupBox,
+            {
+              backgroundColor:
+                stop.nextUnassistedSoc != null && stop.nextUnassistedSoc >= 0
+                  ? '#78350F25'
+                  : '#7F1D1D25',
+              borderColor:
+                stop.nextUnassistedSoc != null && stop.nextUnassistedSoc >= 0
+                  ? '#F59E0B70'
+                  : '#EF444470',
+            },
+          ]}
+        >
+          <View style={{ flex: 1, paddingRight: 8 }}>
+            <Text
+              style={{
+                color:
+                  stop.nextUnassistedSoc != null && stop.nextUnassistedSoc >= 0
+                    ? '#FCD34D'
+                    : '#FCA5A5',
+                fontSize: 10,
+                fontWeight: '900',
+                letterSpacing: 0.5,
+              }}
+            >
+              {stop.nextUnassistedSoc != null && stop.nextUnassistedSoc >= 0
+                ? '⚠️ NO BACKUP CHARGER WITHIN 25 KM'
+                : '🚨 NO BACKUP WITHIN 25 KM — EXCEEDS BATTERY RANGE'}
+            </Text>
+            {stop.nextCharger ? (
+              <View style={{ marginTop: 2 }}>
+                <Text style={{ color: '#E2E8F0', fontSize: 11, fontWeight: '700' }}>
+                  Next charger on route: {stop.nextCharger.name} at {(stop.nextCharger.alongRouteM / 1000).toFixed(0)} km (+{stop.nextDistanceKm} km ahead)
+                </Text>
+                {stop.nextUnassistedSoc != null && stop.nextUnassistedSoc >= 0 ? (
+                  <Text style={{ color: '#34D399', fontSize: 11, fontWeight: '800', marginTop: 2 }}>
+                    • If this station is offline: Approx. arrival with current battery is ~{Math.round(stop.nextUnassistedSoc)}% SoC (Reachable)
+                  </Text>
+                ) : (
+                  <Text style={{ color: '#F87171', fontSize: 11, fontWeight: '800', marginTop: 2 }}>
+                    • ❌ Won't reach next charger if this station is offline! Exceeds range ({Math.round(stop.arriveSoc)}% battery gives max ~{stop.maxUnassistedRangeKm} km, shortfall of {Math.max(1, Math.round((stop.nextDistanceKm || 0) - (stop.maxUnassistedRangeKm || 0)))} km)
+                  </Text>
+                )}
+              </View>
+            ) : (
+              <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 2 }}>
+                Last charging station on this corridor before destination.
+              </Text>
+            )}
+          </View>
+          {stop.nextCharger && (
+            <TouchableOpacity
+              style={[
+                styles.smallActionBtn,
+                {
+                  borderColor:
+                    stop.nextUnassistedSoc != null && stop.nextUnassistedSoc >= 0
+                      ? '#F59E0B'
+                      : '#EF4444',
+                },
+              ]}
+              onPress={() =>
+                onNavigate(stop.nextCharger!.position, stop.nextCharger!.name)
+              }
+            >
+              <Text
+                style={{
+                  color:
+                    stop.nextUnassistedSoc != null && stop.nextUnassistedSoc >= 0
+                      ? '#F59E0B'
+                      : '#EF4444',
+                  fontSize: 10,
+                  fontWeight: '800',
+                }}
+              >
+                🧭 Next Map
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
