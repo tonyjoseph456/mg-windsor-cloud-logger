@@ -2081,7 +2081,14 @@ export default function App() {
           }
         } catch (_) {}
       }
-      showBanner('err', msg);
+      if (/not ready after polling/i.test(msg)) {
+        showBanner(
+          'err',
+          '💤 Vehicle is in Sleep Mode (12V battery saver). It will refresh once unlocked, charged, or driven.'
+        );
+      } else {
+        showBanner('err', msg);
+      }
     } finally {
       setIsSyncing(false);
     }
