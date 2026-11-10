@@ -943,14 +943,64 @@ export function TripPlannerCard({
               {/* 5. Planned Charging Stops + Automatic Backup Charger + Offline/Broken Re-plan Button */}
               {activePlan.stops.length > 0 ? (
                 <View style={{ gap: 10 }}>
+                  {/* Windsor EV BMS 4-DC Fast Charging Rule Status Banner */}
+                  {(() => {
+                    const dcStopsCount =
+                      activePlan.dcStopCount ??
+                      activePlan.stops.filter((s) => !s.isMandatoryAcStop).length;
+                    return (
+                      <View style={styles.windsorBanner}>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            flexWrap: 'wrap',
+                            gap: 6,
+                          }}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={{ fontSize: 13 }}>🔋</Text>
+                            <Text style={styles.windsorBannerTitle}>
+                              MG WINDSOR EV BMS 4-DC FAST CHARGE RULE
+                            </Text>
+                          </View>
+                          <View
+                            style={[
+                              styles.windsorBadge,
+                              dcStopsCount <= 4
+                                ? { backgroundColor: '#064E3B', borderColor: '#10B981' }
+                                : { backgroundColor: '#78350F', borderColor: '#F59E0B' },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.windsorBadgeText,
+                                dcStopsCount <= 4 ? { color: '#34D399' } : { color: '#FCD34D' },
+                              ]}
+                            >
+                              ⚡ {dcStopsCount}/4 DC Charges Used
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.windsorBannerSub}>
+                          {dcStopsCount <= 4
+                            ? `Each DC leg distance is maximized to arrive near your configured ${settings.minArrivalAtChargerPercent}% buffer, preserving your 4 consecutive DC charges and avoiding premature short stops.`
+                            : `4 consecutive DC fast charges used! Next charge is designated as a mandatory Slow AC charge to 100% for LFP cell balancing.`}
+                        </Text>
+                      </View>
+                    );
+                  })()}
+
                   <Text style={styles.fieldLabel}>
-                    ⚡ PLANNED DC FAST CHARGING STOPS ({activePlan.stops.length})
+                    ⚡ PLANNED CHARGING STOPS ({activePlan.stops.length})
                   </Text>
                   {activePlan.stops.map((stop, idx) => (
                     <PlannedStopItem
                       key={`${stop.charger.id}-${idx}`}
                       index={idx + 1}
                       stop={stop}
+                      minChargerPercent={settings.minArrivalAtChargerPercent}
                       onNavigate={(pos, name) => openNavigation(pos.lat, pos.lng, name)}
                       onMarkBroken={() =>
                         handleMarkChargerVerdict(
@@ -1207,12 +1257,14 @@ export function TripPlannerCard({
 function PlannedStopItem({
   index,
   stop,
+  minChargerPercent,
   onNavigate,
   onMarkBroken,
   onMarkWorked,
 }: {
   index: number;
   stop: PlannedStop;
+  minChargerPercent?: number;
   onNavigate: (pos: LatLng, name: string) => void;
   onMarkBroken: () => void;
   onMarkWorked: () => void;
@@ -1220,21 +1272,63 @@ function PlannedStopItem({
   const c = stop.charger;
   const dots = stop.confidenceDots || 4;
   const dotStr = '●'.repeat(dots) + '○'.repeat(Math.max(0, 5 - dots));
+  const isNearTarget =
+    minChargerPercent != null &&
+    Math.abs(stop.arriveSoc - minChargerPercent) <= 8;
 
   return (
-    <View style={styles.stopCard}>
+    <View
+      style={[
+        styles.stopCard,
+        stop.isMandatoryAcStop && {
+          borderColor: '#F59E0B90',
+          backgroundColor: '#1E170A',
+        },
+      ]}
+    >
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <View style={{ flex: 1, paddingRight: 8 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <View style={styles.stopBadge}>
+            <View
+              style={[
+                styles.stopBadge,
+                stop.isMandatoryAcStop && { backgroundColor: '#D97706' },
+              ]}
+            >
               <Text style={styles.stopBadgeText}>STOP {index}</Text>
             </View>
+
+            {/* Windsor 4-DC Fast Charging Rule Badge */}
+            {stop.isMandatoryAcStop ? (
+              <View
+                style={[
+                  styles.tagBackup,
+                  { backgroundColor: '#78350F', borderColor: '#F59E0B', borderWidth: 1 },
+                ]}
+              >
+                <Text style={[styles.tagBackupText, { color: '#FCD34D', fontWeight: '900', fontSize: 9 }]}>
+                  🔌 MANDATORY SLOW AC (WINDSOR 4-DC RULE)
+                </Text>
+              </View>
+            ) : (
+              <View
+                style={[
+                  styles.tagPlanned,
+                  { backgroundColor: '#064E3B', borderColor: '#10B981', borderWidth: 1 },
+                ]}
+              >
+                <Text style={[styles.tagPlannedText, { color: '#34D399', fontWeight: '800', fontSize: 9 }]}>
+                  ⚡ DC Fast Charge ({stop.dcStopIndex || index}/4)
+                </Text>
+              </View>
+            )}
+
             <Text style={{ color: '#F8FAFC', fontSize: 14, fontWeight: '900' }}>
               {c.name}
             </Text>
           </View>
           <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 3 }}>
-            At {(c.alongRouteM / 1000).toFixed(1)} km • ⚡ {c.maxKw} kW CCS2
+            At {(c.alongRouteM / 1000).toFixed(1)} km • {stop.isMandatoryAcStop ? '🔌 Slow AC 7.4 kW' : `⚡ ${c.maxKw} kW CCS2`}
             {c.network ? ` • ${c.network}` : ''}
             {c.detourM > 400
               ? ` • +${(c.detourM / 1000).toFixed(1)} km detour`
@@ -1271,7 +1365,14 @@ function PlannedStopItem({
       {/* Charge From -> To Bar */}
       <View style={styles.stopSocRow}>
         <View>
-          <Text style={styles.metricLabel}>ARRIVE</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Text style={styles.metricLabel}>ARRIVE</Text>
+            {isNearTarget && (
+              <View style={[styles.tagPlanned, { paddingHorizontal: 4, paddingVertical: 1, backgroundColor: '#064E3B80' }]}>
+                <Text style={{ color: '#34D399', fontSize: 8, fontWeight: '800' }}>🎯 BUFFER HIT</Text>
+              </View>
+            )}
+          </View>
           <Text style={{ color: '#F59E0B', fontSize: 16, fontWeight: '900' }}>
             {Math.round(stop.arriveSoc)}%
           </Text>
@@ -1284,12 +1385,39 @@ function PlannedStopItem({
           </Text>
         </View>
         <View style={{ flex: 1, alignItems: 'flex-end' }}>
-          <Text style={styles.metricLabel}>EST. CHARGE TIME</Text>
-          <Text style={{ color: '#38BDF8', fontSize: 15, fontWeight: '900' }}>
+          <Text style={styles.metricLabel}>
+            {stop.isMandatoryAcStop ? 'EST. SLOW AC TIME' : 'EST. CHARGE TIME'}
+          </Text>
+          <Text
+            style={{
+              color: stop.isMandatoryAcStop ? '#FCD34D' : '#38BDF8',
+              fontSize: 15,
+              fontWeight: '900',
+            }}
+          >
             ⏱️ ~{stop.chargeMinutes} mins
           </Text>
         </View>
       </View>
+
+      {/* Mandatory AC Alert Banner if applicable */}
+      {stop.isMandatoryAcStop && (
+        <View
+          style={[
+            styles.backupBox,
+            { backgroundColor: '#78350F30', borderColor: '#F59E0B80', borderWidth: 1, marginTop: 8 },
+          ]}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: '#FCD34D', fontSize: 10, fontWeight: '900' }}>
+              🔌 WINDSOR 4-DC RULE: MANDATORY SLOW AC CHARGE
+            </Text>
+            <Text style={{ color: '#FEF3C7', fontSize: 10, marginTop: 2, lineHeight: 14 }}>
+              MG Windsor EV requires a full slow AC charge (3.3 kW or 7.4 kW) to 100% after 4 consecutive DC fast charges to allow the BMS to balance individual LFP cell voltages.
+            </Text>
+          </View>
+        </View>
+      )}
 
       {/* Automatic Backup Charger Box OR No-Backup Alert */}
       {stop.backupCharger ? (
@@ -1827,6 +1955,35 @@ const styles = StyleSheet.create({
     padding: 12,
     borderWidth: 1,
     borderColor: '#1E293B',
+  },
+  windsorBanner: {
+    backgroundColor: '#0F172A',
+    borderColor: '#1E293B',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 11,
+    gap: 4,
+  },
+  windsorBannerTitle: {
+    color: '#F8FAFC',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  windsorBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  windsorBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  windsorBannerSub: {
+    color: '#94A3B8',
+    fontSize: 10,
+    lineHeight: 14,
   },
   stopCard: {
     backgroundColor: '#0A0E17',

@@ -79,7 +79,7 @@ export const DEFAULT_TRIP_SETTINGS: TripSettings = {
   minArrivalAtChargerPercent: 10,
   minArrivalAtDestinationPercent: 15,
   maxChargeTargetPercent: 80,
-  maxDetourKm: 5,
+  maxDetourKm: 15,
   replanDeviationPercent: 5,
   chargeStrategy: 'optimal',
 };
@@ -404,6 +404,10 @@ export interface PlannedStop {
   confidenceDots?: number;
   confidenceLabel?: string;
   confidenceReasons?: string[];
+  chargeType?: 'DC' | 'AC';
+  dcStopIndex?: number;
+  isMandatoryAcStop?: boolean;
+  mandatoryAcReason?: string;
 }
 
 export type PlanGoal = 'Fastest' | 'FewerStops' | 'Preferred';
@@ -421,6 +425,8 @@ export interface TripPlan {
   energy: EnergyBreakdown;
   usableCapacityKwh: number;
   terrainPercent: number;
+  dcStopCount?: number;
+  mandatoryAcStopCount?: number;
 }
 
 export interface PlanOption {
@@ -579,9 +585,9 @@ export function evaluateChargerConfidence(
 // OPTIMAL DIJKSTRA & GREEDY STOP PLANNER (Ported from OptimalPlanner.kt & TripPlanner.kt)
 // ============================================================================
 
-const STOP_OVERHEAD_MIN = 10.0;
+const STOP_OVERHEAD_MIN = 12.0;
 const MIN_GAIN_SOC = 10.0;
-const MAX_ARRIVE_SOC = 55.0;
+const MAX_ARRIVE_SOC = 75.0;
 const DETOUR_KMH = 35.0;
 const PREFERRED_BONUS_MIN = 4.0;
 const FINISH_MARGIN_SOC = 3.0;
@@ -679,6 +685,8 @@ export class VoltaTripPlanner {
     plan: TripPlan,
     allChargers: PlannedCharger[]
   ): TripPlan {
+    let dcCount = 0;
+    let acCount = 0;
     const stops = plan.stops.map((s) => {
       const conf = evaluateChargerConfidence(
         s.charger,
@@ -702,8 +710,45 @@ export class VoltaTripPlanner {
           this.vehicle.highwayKmPerKwh
         ).toFixed(0)
       );
+
+      // MG Windsor EV BMS 4-DC Continuous Fast Charging Rule:
+      // After 4 consecutive DC fast charges, a mandatory slow AC charge to 100% is required for LFP cell balancing.
+      const isFastCharger = (s.charger.maxKw || 30) >= 20;
+      let chargeType: 'DC' | 'AC' = isFastCharger ? 'DC' : 'AC';
+      let dcStopIndex: number | undefined;
+      let isMandatoryAcStop = false;
+      let mandatoryAcReason: string | undefined;
+
+      if (isFastCharger) {
+        dcCount++;
+        if (dcCount > 4) {
+          chargeType = 'AC';
+          isMandatoryAcStop = true;
+          acCount++;
+          mandatoryAcReason =
+            'MG Windsor EV BMS Rule: Mandatory slow AC charge to 100% for LFP cell balancing after 4 consecutive DC charges.';
+        } else {
+          dcStopIndex = dcCount;
+        }
+      } else {
+        acCount++;
+      }
+
+      const departSoc = isMandatoryAcStop ? 100 : s.departSoc;
+      const chargeMinutes = isMandatoryAcStop
+        ? Math.round(
+            (((100 - s.arriveSoc) / 100.0) * this.vehicle.usableCapacityKwh / 7.4) * 60.0
+          )
+        : s.chargeMinutes;
+
       return {
         ...s,
+        departSoc,
+        chargeMinutes,
+        chargeType,
+        dcStopIndex,
+        isMandatoryAcStop,
+        mandatoryAcReason,
         backupCharger: conf.backup,
         backupDistanceKm: conf.backupKm,
         nextCharger: conf.nextCharger,
@@ -715,7 +760,16 @@ export class VoltaTripPlanner {
         confidenceReasons: conf.reasons,
       };
     });
-    return { ...plan, stops };
+
+    const totalChargeMinutes = stops.reduce((acc, s) => acc + s.chargeMinutes, 0);
+
+    return {
+      ...plan,
+      stops,
+      chargeMinutes: totalChargeMinutes,
+      dcStopCount: dcCount > 4 ? 4 : dcCount,
+      mandatoryAcStopCount: acCount,
+    };
   }
 
   private cumulativeKwh(points: ProfilePoint[]): number[] {
@@ -738,12 +792,13 @@ export class VoltaTripPlanner {
     const maxTarget = this.settings.maxChargeTargetPercent;
     const cum = this.cumulativeKwh(points);
 
+    const maxDetourAllowedM = Math.max(this.settings.maxDetourKm * 2000.0, 30000.0);
     const list = chargers
       .filter(
         (c) =>
           c.alongRouteM > 1.0 &&
           c.alongRouteM < total &&
-          c.detourM <= this.settings.maxDetourKm * 2000.0
+          c.detourM <= maxDetourAllowedM
       )
       .sort((a, b) => a.alongRouteM - b.alongRouteM);
 
@@ -832,12 +887,23 @@ export class VoltaTripPlanner {
 
         const deps = departures(k, arrive, drop(idx[k], end));
         for (const dep of deps) {
+          // 1. Premature stop penalty: heavily penalize stopping when vehicle still has high SoC above minCharger.
+          // This stretches each leg to arrive near minArrivalAtChargerPercent, maximizing range per DC charge.
+          const surplusSoc = Math.max(0, arrive - (minCharger + 6));
+          const prematurePenalty = Math.pow(surplusSoc, 1.6) * 3.5;
+
+          // 2. Windsor EV BMS 4-DC Continuous Fast Charging Rule penalty:
+          // Discourage unnecessary extra stops that exhaust the 4 consecutive DC charging slots.
+          const extraStopPenalty = fromStops >= 3 ? 150.0 : 0.0;
+
           const cost =
             fromCost +
             stopWeight +
             STOP_OVERHEAD_MIN +
             detourMin(k) +
-            ChargeTime.minutes(this.vehicle, arrive, dep, list[k].maxKw) -
+            ChargeTime.minutes(this.vehicle, arrive, dep, list[k].maxKw) +
+            prematurePenalty +
+            extraStopPenalty -
             bonus(k);
           const nodeKey = `${k}:${Math.round(dep * 10)}`;
           const prevBest = best.get(nodeKey) ?? Number.MAX_VALUE;
@@ -963,12 +1029,13 @@ export class VoltaTripPlanner {
     const minCharger = this.settings.minArrivalAtChargerPercent;
     const minDest = this.settings.minArrivalAtDestinationPercent;
     const maxTarget = this.settings.maxChargeTargetPercent;
+    const maxDetourAllowedM = Math.max(this.settings.maxDetourKm * 2000.0, 30000.0);
     const candidates = chargers
       .filter(
         (c) =>
           c.alongRouteM > 1.0 &&
           c.alongRouteM < total &&
-          c.detourM <= this.settings.maxDetourKm * 2000.0
+          c.detourM <= maxDetourAllowedM
       )
       .sort((a, b) => a.alongRouteM - b.alongRouteM);
 
@@ -1466,7 +1533,7 @@ export async function fetchRouteElevations(
 export async function findChargersAlongRoute(
   samples: RoutePoint[],
   routeDistanceM: number,
-  maxDetourKm = 10,
+  maxDetourKm = 15,
   googleApiKey?: string | null
 ): Promise<PlannedCharger[]> {
   if (samples.length < 2) return [];
@@ -1753,7 +1820,7 @@ export async function computeTripRouteChoices(
     const chargers = await findChargersAlongRoute(
       samples,
       r.distanceM,
-      10,
+      15,
       googleApiKey
     );
     const climbM = Math.round(Terrain.ascentM(elevations));
