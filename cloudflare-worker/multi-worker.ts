@@ -1158,6 +1158,19 @@ async function d1KvPut(env: Env, key: string, value: any): Promise<void> {
   }
 }
 
+async function d1KvDelete(env: Env, key: string): Promise<void> {
+  if (env.DB) {
+    try {
+      await env.DB.prepare('DELETE FROM kv_store WHERE key = ?').bind(key).run();
+    } catch (_) {}
+  }
+  if (env.TRIP_KV) {
+    try {
+      await env.TRIP_KV.delete(key);
+    } catch (_) {}
+  }
+}
+
 async function resolveLocation(lat?: number | null, lng?: number | null): Promise<string> {
   if (!lat || !lng) return 'Unknown Location';
   try {
@@ -3737,6 +3750,46 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       await saveUser(env, u);
     }
     return json({ success: true, message: 'Car registered for CarPlay webhooks & PWA' });
+  }
+
+  // Deregister car and wipe all cloud server data (D1, KV, push subs)
+  if (path === '/api/deregister-car' || path === '/api/car/wipe') {
+    const cleanVin = normVin(body?.vin || url.searchParams.get('vin'));
+    const cleanPhone = String(body?.phone || url.searchParams.get('phone') || '').replace(/\D/g, '');
+    const clearHistory = body?.clearHistory === true || url.searchParams.get('clearHistory') === '1' || true;
+
+    // 1. Remove active session from D1 / KV
+    await d1KvDelete(env, 'mg_active_session');
+    if (cleanVin) {
+      await d1KvDelete(env, `mg_session:${cleanVin}`);
+      await d1KvDelete(env, `push_subs:${cleanVin}`);
+    }
+    if (cleanPhone) {
+      await d1KvDelete(env, `mg_session_phone:${cleanPhone}`);
+    }
+    await d1KvDelete(env, 'push_subs:default');
+
+    // 2. Clear D1 database tables if requested
+    if (clearHistory && env.DB) {
+      try {
+        if (cleanVin) {
+          await env.DB.prepare('DELETE FROM trips WHERE vin = ?').bind(cleanVin).run();
+          await env.DB.prepare('DELETE FROM charges WHERE vin = ?').bind(cleanVin).run();
+          await env.DB.prepare('DELETE FROM charging_sessions WHERE vin = ?').bind(cleanVin).run();
+          await env.DB.prepare('DELETE FROM notifications WHERE vin = ?').bind(cleanVin).run();
+        } else {
+          await env.DB.prepare('DELETE FROM trips').run();
+          await env.DB.prepare('DELETE FROM charges').run();
+          await env.DB.prepare('DELETE FROM charging_sessions').run();
+          await env.DB.prepare('DELETE FROM notifications').run();
+        }
+      } catch (_) {}
+    }
+
+    return json({
+      success: true,
+      message: 'Vehicle session, push tokens, and cloud telemetry successfully wiped from server.',
+    });
   }
 
   const u = await authUser(env, url, body);

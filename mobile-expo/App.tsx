@@ -69,6 +69,7 @@ import {
   fetchChargingHistory,
   clearChargingHistory,
   registerCarSession,
+  deregisterCarSession,
   AppNotificationRecord,
   fetchD1Notifications,
   clearD1Notifications,
@@ -2242,6 +2243,49 @@ export default function App() {
     );
   };
 
+  const handleWipeCloudData = () => {
+    Alert.alert(
+      '⚠️ Wipe Cloud Data & Deregister Car',
+      'This will permanently delete your saved vehicle session tokens, background telemetry, push notification subscriptions, and Cloudflare D1 database logs. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Wipe Everything & Log Out',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deregisterCarSession({
+                vin: vin || snapshot?.vehicle?.vin || undefined,
+                phone: phone.replace(/\D/g, '') || undefined,
+                clearHistory: true,
+              });
+            } catch (_) {}
+
+            await Promise.all([
+              SecureStore.deleteItemAsync(SESSION_KEY),
+              SecureStore.deleteItemAsync(SNAPSHOT_KEY),
+              SecureStore.deleteItemAsync(GOOGLE_SYNC_KEY),
+            ]);
+            clientRef.current = null;
+            setSnapshot(null);
+            setPassword('');
+            setPin('');
+            setVin('');
+            setActiveD1Vin('');
+            setTrips([]);
+            tripsRef.current = [];
+            setChargeLogs([]);
+            chargeLogsRef.current = [];
+            setD1ChargingSessions([]);
+            setD1Notifications([]);
+            setIsAuthenticated(false);
+            showBanner('ok', 'Cloud session and vehicle telemetry wiped successfully.');
+          },
+        },
+      ]
+    );
+  };
+
   const handleGoogleSignIn = async () => {
     try {
       setIsGoogleSyncing(true);
@@ -4121,6 +4165,13 @@ export default function App() {
 
               <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
                 <Text style={styles.logoutBtnText}>Log Out of MG iSMART</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.logoutBtn, { backgroundColor: '#7F1D1D20', borderColor: '#EF444450', marginTop: 8 }]}
+                onPress={handleWipeCloudData}
+              >
+                <Text style={[styles.logoutBtnText, { color: '#FCA5A5' }]}>🗑️ Wipe Cloud Data &amp; Deregister Car</Text>
               </TouchableOpacity>
             </AccountSectionCard>
 

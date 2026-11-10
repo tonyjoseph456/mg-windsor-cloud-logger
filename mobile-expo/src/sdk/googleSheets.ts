@@ -1250,6 +1250,19 @@ export async function registerCarSession(car: { uid: string; token: string; vin?
   }
 }
 
+export async function deregisterCarSession(params: { vin?: string; phone?: string; clearHistory?: boolean }): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/deregister-car`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    return res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 export interface AppNotificationRecord {
   id: string;
   vin?: string;
