@@ -553,9 +553,13 @@ export function TripPlannerCard({
             </View>
             <View style={{ flexDirection: 'row', gap: 6, marginTop: 5 }}>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>START SOC %</Text>
+                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
+                    START SOC %
+                  </Text>
+                </View>
                 <TextInput
-                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  style={[styles.input, { marginTop: 4, textAlign: 'center', fontWeight: '800', height: 38 }]}
                   keyboardType="numeric"
                   maxLength={3}
                   value={startSocInput}
@@ -565,9 +569,13 @@ export function TripPlannerCard({
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>MIN @ CHARGER %</Text>
+                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
+                    MIN @ CHARGER %
+                  </Text>
+                </View>
                 <TextInput
-                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  style={[styles.input, { marginTop: 4, textAlign: 'center', fontWeight: '800', height: 38 }]}
                   keyboardType="numeric"
                   maxLength={3}
                   value={minChargerInput}
@@ -577,9 +585,13 @@ export function TripPlannerCard({
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>MIN @ DEST %</Text>
+                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
+                    MIN @ DEST %
+                  </Text>
+                </View>
                 <TextInput
-                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  style={[styles.input, { marginTop: 4, textAlign: 'center', fontWeight: '800', height: 38 }]}
                   keyboardType="numeric"
                   maxLength={3}
                   value={minDestInput}
@@ -589,9 +601,13 @@ export function TripPlannerCard({
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.fieldLabel, { fontSize: 9, textAlign: 'center' }]}>CHARGE TARGET %</Text>
+                <View style={{ height: 26, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <Text style={[styles.fieldLabel, { fontSize: 8.5, textAlign: 'center', lineHeight: 11 }]}>
+                    CHARGE TARGET %
+                  </Text>
+                </View>
                 <TextInput
-                  style={[styles.input, { marginTop: 3, textAlign: 'center', fontWeight: '800' }]}
+                  style={[styles.input, { marginTop: 4, textAlign: 'center', fontWeight: '800', height: 38 }]}
                   keyboardType="numeric"
                   maxLength={3}
                   value={chargeTargetInput}
@@ -842,14 +858,15 @@ export function TripPlannerCard({
             <View style={{ marginTop: 14, gap: 12 }}>
               {/* 1. Route Alternatives Selector (if multiple routes returned) */}
               {routeChoices.length > 1 && (
-                <View>
-                  <Text style={styles.fieldLabel}>ROUTE ALTERNATIVES</Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                <View style={{ width: '100%' }}>
+                  <Text style={styles.fieldLabel}>ROUTE ALTERNATIVES ({routeChoices.length})</Text>
+                  <View style={{ flexDirection: 'column', gap: 6, marginTop: 4, width: '100%' }}>
                     {routeChoices.map((rc, idx) => {
                       const active = idx === selectedRouteIdx;
                       return (
                         <TouchableOpacity
                           key={rc.id}
+                          activeOpacity={0.7}
                           style={[
                             styles.routeTab,
                             active && styles.routeTabActive,
@@ -859,17 +876,39 @@ export function TripPlannerCard({
                             setSelectedOptionIdx(0);
                           }}
                         >
-                          <Text
-                            style={[
-                              styles.routeTabTitle,
-                              active && { color: '#34D399' },
-                            ]}
-                          >
-                            {rc.label}
-                          </Text>
-                          <Text style={styles.routeTabSub}>
-                            {Math.round(rc.distanceM / 1000)} km • {formatHm(rc.durationS / 60)} • ⛰️ +{rc.climbM}m climb • ⚡ {rc.chargers.length} DC
-                          </Text>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text
+                                style={[
+                                  styles.routeTabTitle,
+                                  active && { color: '#34D399' },
+                                ]}
+                                numberOfLines={2}
+                              >
+                                {rc.label.replace(/\//g, ' / ')}
+                              </Text>
+                              <Text style={styles.routeTabSub} numberOfLines={1}>
+                                {Math.round(rc.distanceM / 1000)} km • {formatHm(rc.durationS / 60)} • ⛰️ +{rc.climbM}m climb • ⚡ {rc.chargers.length} DC
+                              </Text>
+                            </View>
+                            <View
+                              style={[
+                                styles.pillBtn,
+                                { paddingVertical: 3, paddingHorizontal: 8, marginTop: 1 },
+                                active && styles.pillBtnActive,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.pillBtnText,
+                                  { fontSize: 10, fontWeight: '800' },
+                                  active && styles.pillBtnTextActive,
+                                ]}
+                              >
+                                {active ? '✓ Active' : 'Select'}
+                              </Text>
+                            </View>
+                          </View>
                         </TouchableOpacity>
                       );
                     })}
@@ -1820,6 +1859,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     borderWidth: 1,
     borderColor: '#1E293B',
+    overflow: 'hidden',
   },
   headerRow: {
     flexDirection: 'row',
@@ -1986,9 +2026,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1E293B',
     borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    flexGrow: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    width: '100%',
+    maxWidth: '100%',
+    overflow: 'hidden',
   },
   routeTabActive: {
     borderColor: '#10B981',
@@ -1998,11 +2040,13 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 12,
     fontWeight: '800',
+    flexShrink: 1,
   },
   routeTabSub: {
     color: '#94A3B8',
     fontSize: 10,
-    marginTop: 2,
+    marginTop: 3,
+    flexShrink: 1,
   },
   summaryBox: {
     backgroundColor: '#0A0E17',
