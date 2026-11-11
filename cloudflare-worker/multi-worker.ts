@@ -1599,6 +1599,132 @@ async function d1GetActiveTrip(env: Env, vin?: string | null) {
   return null;
 }
 
+function d1DeduplicateTripRows(trips: any[]): { clean: any[]; duplicateIds: string[] } {
+  if (!Array.isArray(trips) || trips.length === 0) return { clean: [], duplicateIds: [] };
+
+  const valid = trips.filter(
+    (t) => Number(t?.distance_km ?? t?.distanceKm ?? 0) >= 0.2 || t?.status === 'ongoing' || t?.status === 'driving'
+  );
+
+  valid.sort((a, b) => {
+    const timeA = Number(a.start_timestamp || a.startTimestampSec || 0);
+    const timeB = Number(b.start_timestamp || b.startTimestampSec || 0);
+    if (timeA !== timeB) return timeB - timeA;
+    return Number(b.distance_km || b.distanceKm || 0) - Number(a.distance_km || a.distanceKm || 0);
+  });
+
+  const clean: any[] = [];
+  const duplicateIds: string[] = [];
+
+  for (const t of valid) {
+    const tId = String(t.id || '');
+    const tStartSec = Number(t.start_timestamp || t.startTimestampSec || 0);
+    const tEndSec = Number(t.end_timestamp || t.endTimestampSec || tStartSec);
+    const tStartOdo = Number(t.start_odometer_km || t.startOdometerKm || 0);
+    const tEndOdo = Number(t.end_odometer_km || t.endOdometerKm || 0);
+    const tDist = Number(t.distance_km || t.distanceKm || 0);
+    const tDur = Number(t.duration_seconds || t.durationSeconds || (tEndSec - tStartSec) || 0);
+
+    let isDuplicate = false;
+
+    for (let i = 0; i < clean.length; i++) {
+      const c = clean[i];
+      const cId = String(c.id || '');
+      const cStartSec = Number(c.start_timestamp || c.startTimestampSec || 0);
+      const cEndSec = Number(c.end_timestamp || c.endTimestampSec || cStartSec);
+      const cStartOdo = Number(c.start_odometer_km || c.startOdometerKm || 0);
+      const cEndOdo = Number(c.end_odometer_km || c.endOdometerKm || 0);
+      const cDist = Number(c.distance_km || c.distanceKm || 0);
+      const cDur = Number(c.duration_seconds || c.durationSeconds || (cEndSec - cStartSec) || 0);
+
+      // 1. Exact ID
+      if (tId && cId && tId === cId) {
+        isDuplicate = true;
+        break;
+      }
+
+      // 2. Same End Odometer (within 0.25 km) & Overlapping Time Window
+      const sameEndOdo = tEndOdo > 0 && cEndOdo > 0 && Math.abs(tEndOdo - cEndOdo) <= 0.25;
+      const timeOverlaps = tStartSec <= cEndSec + 90 && tEndSec >= cStartSec - 90;
+
+      // 3. Same Start Odometer & Start Time
+      const sameStartOdo = tStartOdo > 0 && cStartOdo > 0 && Math.abs(tStartOdo - cStartOdo) <= 0.25;
+      const sameStartTime = Math.abs(tStartSec - cStartSec) <= 120;
+
+      // 4. Same Distance (within 0.5 km) & close Start Time (within 180s)
+      const sameDistance = Math.abs(tDist - cDist) <= 0.5 && tDist > 0.2;
+      const closeStartTime = Math.abs(tStartSec - cStartSec) <= 180;
+
+      // 5. Overlapping time interval >= 50%
+      const overlapStart = Math.max(tStartSec, cStartSec);
+      const overlapEnd = Math.min(tEndSec, cEndSec);
+      const overlapSec = Math.max(0, overlapEnd - overlapStart);
+      const minDuration = Math.min(tDur, cDur);
+      const isSignificantOverlap = minDuration > 120 && overlapSec >= minDuration * 0.5 && Math.abs(tDist - cDist) <= 1.0;
+
+      if ((sameEndOdo && timeOverlaps) || (sameStartOdo && sameStartTime) || (sameDistance && closeStartTime) || isSignificantOverlap) {
+        if (tDist > cDist || (tDist === cDist && tDur > cDur)) {
+          if (cId) duplicateIds.push(cId);
+          clean[i] = t;
+        } else {
+          if (tId) duplicateIds.push(tId);
+        }
+        isDuplicate = true;
+        break;
+      }
+    }
+
+    if (!isDuplicate) {
+      clean.push(t);
+    }
+  }
+
+  return { clean, duplicateIds };
+}
+
+async function d1DeduplicateTrips(env: Env, vin?: string | null): Promise<{ removedCount: number; duplicateIds: string[] }> {
+  const v = normVin(vin);
+  let allTrips: any[] = [];
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      if (v) {
+        const res = await env.DB.prepare("SELECT * FROM trips WHERE vin = ? ORDER BY start_timestamp DESC").bind(v).all();
+        allTrips = res.results || [];
+      } else {
+        const res = await env.DB.prepare("SELECT * FROM trips ORDER BY start_timestamp DESC").all();
+        allTrips = res.results || [];
+      }
+    } catch (_) {}
+  } else if (env.TRIP_KV) {
+    try {
+      allTrips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+      if (v) allTrips = allTrips.filter((t: any) => normVin(t.vin) === v);
+    } catch (_) {}
+  }
+
+  const { duplicateIds } = d1DeduplicateTripRows(allTrips);
+
+  if (duplicateIds.length > 0) {
+    if (env.DB) {
+      for (const id of duplicateIds) {
+        try {
+          await env.DB.prepare('DELETE FROM trips WHERE id = ?').bind(id).run();
+        } catch (_) {}
+      }
+    }
+    if (env.TRIP_KV) {
+      try {
+        let trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+        trips = trips.filter((t: any) => !duplicateIds.includes(String(t.id)));
+        await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips));
+      } catch (_) {}
+    }
+  }
+
+  return { removedCount: duplicateIds.length, duplicateIds };
+}
+
 async function d1GetTrips(env: Env, date?: string | null, vin?: string | null) {
   const v = normVin(vin);
   if (env.DB) {
@@ -1607,25 +1733,25 @@ async function d1GetTrips(env: Env, date?: string | null, vin?: string | null) {
       if (!date || date === 'all') {
         if (v) {
           const res = await env.DB.prepare("SELECT * FROM trips WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
-          return res.results || [];
+          return d1DeduplicateTripRows(res.results || []).clean;
         }
         const res = await env.DB.prepare("SELECT * FROM trips ORDER BY start_timestamp DESC LIMIT 150").all();
-        return res.results || [];
+        return d1DeduplicateTripRows(res.results || []).clean;
       }
       if (v) {
         const res = await env.DB.prepare("SELECT * FROM trips WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
-        return res.results || [];
+        return d1DeduplicateTripRows(res.results || []).clean;
       }
       const res = await env.DB.prepare("SELECT * FROM trips WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
-      return res.results || [];
+      return d1DeduplicateTripRows(res.results || []).clean;
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
       let trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
       if (v) trips = trips.filter((t: any) => normVin(t.vin) === v);
-      if (!date || date === 'all') return trips;
-      return trips.filter((t: any) => t.date === date);
+      const filtered = (!date || date === 'all') ? trips : trips.filter((t: any) => t.date === date);
+      return d1DeduplicateTripRows(filtered).clean;
     } catch (_) {}
   }
   return [];
@@ -1849,6 +1975,121 @@ async function d1GetActiveCharge(env: Env, vin?: string | null) {
   return null;
 }
 
+function d1DeduplicateChargeRows(charges: any[]): { clean: any[]; duplicateIds: string[] } {
+  if (!Array.isArray(charges) || charges.length === 0) return { clean: [], duplicateIds: [] };
+
+  const valid = charges.filter((c) => {
+    const startSec = Number(c.start_timestamp || c.startTimestampSec || c.start_time || 0);
+    const endSoc = Number(c.end_soc || c.endSoc || 0);
+    const startSoc = Number(c.start_soc || c.startSoc || 0);
+    if (!startSec || (endSoc <= 1 && startSoc > 5)) return false;
+    return true;
+  });
+
+  valid.sort((a, b) => {
+    const timeA = Number(a.start_timestamp || a.startTimestampSec || a.start_time || 0);
+    const timeB = Number(b.start_timestamp || b.startTimestampSec || b.start_time || 0);
+    if (timeA !== timeB) return timeB - timeA;
+    return Number(b.energy_added_kwh || b.kwh_added || 0) - Number(a.energy_added_kwh || a.kwh_added || 0);
+  });
+
+  const clean: any[] = [];
+  const duplicateIds: string[] = [];
+
+  for (const c of valid) {
+    const cId = String(c.id || '');
+    const cStartSec = Number(c.start_timestamp || c.startTimestampSec || c.start_time || 0);
+    const cEndSec = Number(c.end_timestamp || c.endTimestampSec || c.end_time || cStartSec);
+    const cOdo = Number(c.odometer_km || c.odometerKm || c.start_odometer_km || 0);
+    const cEnergy = Number(c.energy_added_kwh || c.kwh_added || 0);
+    const cEndSoc = Number(c.end_soc || c.endSoc || 0);
+
+    let isDuplicate = false;
+
+    for (let i = 0; i < clean.length; i++) {
+      const e = clean[i];
+      const eId = String(e.id || '');
+      const eStartSec = Number(e.start_timestamp || e.startTimestampSec || e.start_time || 0);
+      const eEndSec = Number(e.end_timestamp || e.endTimestampSec || e.end_time || eStartSec);
+      const eOdo = Number(e.odometer_km || e.odometerKm || e.start_odometer_km || 0);
+      const eEnergy = Number(e.energy_added_kwh || e.kwh_added || 0);
+      const eEndSoc = Number(e.end_soc || e.endSoc || 0);
+
+      // 1. Exact ID
+      if (cId && eId && cId === eId) {
+        isDuplicate = true;
+        break;
+      }
+
+      // 2. Close Start Time (< 30 min) and same Odometer (< 0.2 km)
+      const sameOdo = cOdo > 0 && eOdo > 0 && Math.abs(cOdo - eOdo) <= 0.2;
+      const closeTime = Math.abs(cStartSec - eStartSec) < 1800;
+      const sameEndSoc = cEndSoc > 0 && eEndSoc > 0 && Math.abs(cEndSoc - eEndSoc) <= 1;
+
+      if ((sameOdo && closeTime) || (closeTime && sameEndSoc)) {
+        if (cEnergy > eEnergy || (cEndSec > eEndSec)) {
+          if (eId) duplicateIds.push(eId);
+          clean[i] = c;
+        } else {
+          if (cId) duplicateIds.push(cId);
+        }
+        isDuplicate = true;
+        break;
+      }
+    }
+
+    if (!isDuplicate) {
+      clean.push(c);
+    }
+  }
+
+  return { clean, duplicateIds };
+}
+
+async function d1DeduplicateCharges(env: Env, vin?: string | null): Promise<{ removedCount: number; duplicateIds: string[] }> {
+  const v = normVin(vin);
+  let allCharges: any[] = [];
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      if (v) {
+        const res = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC").bind(v).all();
+        allCharges = res.results || [];
+      } else {
+        const res = await env.DB.prepare("SELECT * FROM charges ORDER BY start_timestamp DESC").all();
+        allCharges = res.results || [];
+      }
+    } catch (_) {}
+  } else if (env.TRIP_KV) {
+    try {
+      allCharges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+      if (v) allCharges = allCharges.filter((c: any) => normVin(c.vin) === v);
+    } catch (_) {}
+  }
+
+  const { duplicateIds } = d1DeduplicateChargeRows(allCharges);
+
+  if (duplicateIds.length > 0) {
+    if (env.DB) {
+      for (const id of duplicateIds) {
+        try {
+          await env.DB.prepare('DELETE FROM charges WHERE id = ?').bind(id).run();
+          await env.DB.prepare('DELETE FROM charging_sessions WHERE id = ?').bind(id).run();
+        } catch (_) {}
+      }
+    }
+    if (env.TRIP_KV) {
+      try {
+        let charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
+        charges = charges.filter((c: any) => !duplicateIds.includes(String(c.id)));
+        await env.TRIP_KV.put('d1_fallback:charges', JSON.stringify(charges));
+      } catch (_) {}
+    }
+  }
+
+  return { removedCount: duplicateIds.length, duplicateIds };
+}
+
 async function d1GetCharges(env: Env, date?: string | null, vin?: string | null) {
   const v = normVin(vin);
   if (env.DB) {
@@ -1857,25 +2098,25 @@ async function d1GetCharges(env: Env, date?: string | null, vin?: string | null)
       if (!date || date === 'all') {
         if (v) {
           const res = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
-          return res.results || [];
+          return d1DeduplicateChargeRows(res.results || []).clean;
         }
         const res = await env.DB.prepare("SELECT * FROM charges ORDER BY start_timestamp DESC LIMIT 150").all();
-        return res.results || [];
+        return d1DeduplicateChargeRows(res.results || []).clean;
       }
       if (v) {
         const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
-        return res.results || [];
+        return d1DeduplicateChargeRows(res.results || []).clean;
       }
       const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
-      return res.results || [];
+      return d1DeduplicateChargeRows(res.results || []).clean;
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
       let charges = (await env.TRIP_KV.get('d1_fallback:charges', 'json')) || [];
       if (v) charges = charges.filter((c: any) => normVin(c.vin) === v);
-      if (!date || date === 'all') return charges;
-      return charges.filter((c: any) => c.date === date);
+      const filtered = (!date || date === 'all') ? charges : charges.filter((c: any) => c.date === date);
+      return d1DeduplicateChargeRows(filtered).clean;
     } catch (_) {}
   }
   return [];
@@ -3468,6 +3709,17 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     return json({ success: true, count, message: `Synced ${count} trip(s) to Cloudflare D1` });
   }
 
+  // Deduplicate and permanently prune duplicate Trips in D1 database
+  if (path === '/api/trips/dedup' || path === '/api/trips/clean') {
+    const res = await d1DeduplicateTrips(env, reqVin);
+    return json({
+      success: true,
+      removedCount: res.removedCount,
+      removedIds: res.duplicateIds,
+      message: `Cleaned and purged ${res.removedCount} duplicate trip(s) from Cloudflare D1`,
+    });
+  }
+
   // Delete Trip from D1
   if (path === '/api/trips/delete') {
     const tripId = body?.id || url.searchParams.get('id');
@@ -3694,6 +3946,17 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const rawCharges = body?.charges || [];
     const count = await d1BatchSyncCharges(env, rawCharges, reqVin);
     return json({ success: true, count, message: `Synced ${count} charge(s) to Cloudflare D1` });
+  }
+
+  // Deduplicate and permanently prune duplicate Charges in D1 database
+  if (path === '/api/charges/dedup' || path === '/api/charges/clean') {
+    const res = await d1DeduplicateCharges(env, reqVin);
+    return json({
+      success: true,
+      removedCount: res.removedCount,
+      removedIds: res.duplicateIds,
+      message: `Cleaned and purged ${res.removedCount} duplicate charge(s) from Cloudflare D1`,
+    });
   }
 
   // Delete Charge from D1

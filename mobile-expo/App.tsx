@@ -60,11 +60,13 @@ import {
   syncTripsToD1,
   deleteD1Trip,
   clearD1Trips,
+  dedupD1Trips,
   fetchD1Charges,
   fetchD1ChargeDates,
   syncChargesToD1,
   deleteD1Charge,
   clearD1Charges,
+  dedupD1Charges,
   ChargingSessionRecord,
   fetchChargingHistory,
   clearChargingHistory,
@@ -212,7 +214,7 @@ function mergeD1TripsWithLocalRichData(
   localTrips: TripRecord[],
   liveStatus?: Partial<Status> | null
 ): TripRecord[] {
-  return d1Trips.map((dt) => {
+  const mapped = d1Trips.map((dt) => {
     const match = localTrips.find(
       (lt) =>
         lt.id === dt.id ||
@@ -268,6 +270,7 @@ function mergeD1TripsWithLocalRichData(
       maxSpeedKmh,
     };
   });
+  return deduplicateTripList(mapped);
 }
 
 function describeAcState(status: Partial<Status>): string {
@@ -1879,13 +1882,46 @@ export default function App() {
   };
 
   const handleCleanAndDeduplicateD1 = async () => {
-    const cleanedTrips = deduplicateTripList(tripsRef.current);
-    setTrips(cleanedTrips);
-    tripsRef.current = cleanedTrips;
-    SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(cleanedTrips)).catch(() => {});
-    await syncTripsToD1(cleanedTrips);
-    Alert.alert('Deduplicated & Cleaned ✨', `Optimized list to ${cleanedTrips.length} unique trip(s) in Cloudflare D1.`);
-    showBanner('ok', 'Trips deduplicated in D1');
+    try {
+      setIsD1Syncing(true);
+      const before = tripsRef.current;
+      const cleanedTrips = deduplicateTripList(before);
+      const keptIds = new Set(cleanedTrips.map((t) => String(t.id)));
+      const droppedTrips = before.filter((t) => !keptIds.has(String(t.id)));
+
+      // 1. Explicitly delete every dropped duplicate trip from D1
+      const activeVin = vin || snapshot?.vehicle?.vin;
+      for (const dropped of droppedTrips) {
+        if (dropped.id) {
+          await deleteD1Trip(String(dropped.id), activeVin);
+        }
+      }
+
+      // 2. Trigger server-side D1 deduplication to purge any duplicates stored in D1 SQL
+      const serverRes = await dedupD1Trips(activeVin);
+
+      // 3. Update local state and persistence
+      setTrips(cleanedTrips);
+      tripsRef.current = cleanedTrips;
+      await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(cleanedTrips)).catch(() => {});
+
+      // 4. Update distinct dates
+      const dates = await fetchD1TripDates(activeVin);
+      if (dates && dates.length > 0) setD1TripDates(dates);
+
+      const totalRemoved = droppedTrips.length + (serverRes.removedCount || 0);
+      Alert.alert(
+        'Deduplicated & Cleaned ✨',
+        totalRemoved > 0
+          ? `Permanently removed ${totalRemoved} duplicate entry(ies) from Cloudflare D1. ${cleanedTrips.length} unique trip(s) remaining.`
+          : `List is clean! ${cleanedTrips.length} unique trip(s) in Cloudflare D1.`
+      );
+      showBanner('ok', 'Trips deduplicated & permanently saved in D1');
+    } catch (err: any) {
+      showBanner('err', `Dedupe error: ${err?.message || err}`);
+    } finally {
+      setIsD1Syncing(false);
+    }
   };
 
   const handleClearAllD1Trips = () => {
@@ -1967,13 +2003,46 @@ export default function App() {
   };
 
   const handleCleanAndDeduplicateCharges = async () => {
-    const cleanedCharges = deduplicateChargeList(chargeLogsRef.current);
-    setChargeLogs(cleanedCharges);
-    chargeLogsRef.current = cleanedCharges;
-    SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(cleanedCharges)).catch(() => {});
-    await syncChargesToD1(cleanedCharges);
-    Alert.alert('Deduplicated & Cleaned ✨', `Optimized list to ${cleanedCharges.length} unique charge(s) in Cloudflare D1.`);
-    showBanner('ok', 'Charges deduplicated in D1');
+    try {
+      setIsD1Syncing(true);
+      const before = chargeLogsRef.current;
+      const cleanedCharges = deduplicateChargeList(before);
+      const keptIds = new Set(cleanedCharges.map((c) => String(c.id)));
+      const droppedCharges = before.filter((c) => !keptIds.has(String(c.id)));
+
+      // 1. Explicitly delete every dropped duplicate charge from D1
+      const activeVin = vin || snapshot?.vehicle?.vin;
+      for (const dropped of droppedCharges) {
+        if (dropped.id) {
+          await deleteD1Charge(String(dropped.id), activeVin);
+        }
+      }
+
+      // 2. Trigger server-side D1 deduplication to purge any duplicates stored in D1 SQL
+      const serverRes = await dedupD1Charges(activeVin);
+
+      // 3. Update local state and persistence
+      setChargeLogs(cleanedCharges);
+      chargeLogsRef.current = cleanedCharges;
+      await SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(cleanedCharges)).catch(() => {});
+
+      // 4. Update distinct dates
+      const dates = await fetchD1ChargeDates(activeVin);
+      if (dates && dates.length > 0) setD1ChargeDates(dates);
+
+      const totalRemoved = droppedCharges.length + (serverRes.removedCount || 0);
+      Alert.alert(
+        'Deduplicated & Cleaned ✨',
+        totalRemoved > 0
+          ? `Permanently removed ${totalRemoved} duplicate charge(s) from Cloudflare D1. ${cleanedCharges.length} unique charge(s) remaining.`
+          : `List is clean! ${cleanedCharges.length} unique charge(s) in Cloudflare D1.`
+      );
+      showBanner('ok', 'Charges deduplicated & permanently saved in D1');
+    } catch (err: any) {
+      showBanner('err', `Dedupe error: ${err?.message || err}`);
+    } finally {
+      setIsD1Syncing(false);
+    }
   };
 
   const handleClearAllD1Charges = () => {

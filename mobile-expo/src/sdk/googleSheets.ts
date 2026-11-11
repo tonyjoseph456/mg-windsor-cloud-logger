@@ -369,6 +369,34 @@ export function deduplicateTripList(trips: TripRecord[]): TripRecord[] {
         isDuplicate = true;
         break;
       }
+
+      // 5. Very close start times (within 180s) and matching distance (within 0.5 km)
+      const sameDistance = Math.abs(tDist - cDist) <= 0.5 && tDist > 0.2;
+      const closeStartTime = Math.abs(tStartSec - cStartSec) <= 180;
+      if (sameDistance && closeStartTime) {
+        const tDuration = Number(t.durationSeconds || (tEndSec - tStartSec) || 0);
+        const cDuration = Number(c.durationSeconds || (cEndSec - cStartSec) || 0);
+        if (tDist > cDist || (tDist === cDist && tDuration > cDuration)) {
+          clean[i] = t;
+        }
+        isDuplicate = true;
+        break;
+      }
+
+      // 6. Overlapping time intervals (overlap >= 50% of duration) and similar distance
+      const overlapStart = Math.max(tStartSec, cStartSec);
+      const overlapEnd = Math.min(tEndSec, cEndSec);
+      const overlapSec = Math.max(0, overlapEnd - overlapStart);
+      const minDuration = Math.min(tEndSec - tStartSec, cEndSec - cStartSec);
+      if (minDuration > 120 && overlapSec >= minDuration * 0.5 && Math.abs(tDist - cDist) <= 1.0) {
+        const tDuration = Number(t.durationSeconds || (tEndSec - tStartSec) || 0);
+        const cDuration = Number(c.durationSeconds || (cEndSec - cStartSec) || 0);
+        if (tDist > cDist || (tDist === cDist && tDuration > cDuration)) {
+          clean[i] = t;
+        }
+        isDuplicate = true;
+        break;
+      }
     }
 
     if (!isDuplicate) {
@@ -971,7 +999,7 @@ export async function fetchD1Trips(date?: string, vinOverride?: string): Promise
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.trips)) {
-      return data.trips.map(mapD1TripToRecord);
+      return deduplicateTripList(data.trips.map(mapD1TripToRecord));
     }
   } catch (err) {
     console.warn('fetchD1Trips error:', err);
@@ -1055,6 +1083,23 @@ export async function clearD1Trips(vinOverride?: string): Promise<boolean> {
   } catch (err) {
     console.warn('clearD1Trips error:', err);
     return false;
+  }
+}
+
+export async function dedupD1Trips(vinOverride?: string): Promise<{ success: boolean; removedCount: number }> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/trips/dedup${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: vin || undefined }),
+    });
+    if (!res.ok) return { success: false, removedCount: 0 };
+    const data = await res.json();
+    return { success: Boolean(data.success), removedCount: Number(data.removedCount) || 0 };
+  } catch (err) {
+    console.warn('dedupD1Trips error:', err);
+    return { success: false, removedCount: 0 };
   }
 }
 
@@ -1213,12 +1258,29 @@ export async function fetchD1Charges(date?: string, vinOverride?: string): Promi
     const data = await res.json();
     const list = data.sessions || data.charges;
     if (data.success && Array.isArray(list)) {
-      return list.map(mapD1ChargeToRecord);
+      return deduplicateChargeList(list.map(mapD1ChargeToRecord));
     }
   } catch (err) {
     console.warn('fetchD1Charges error:', err);
   }
   return [];
+}
+
+export async function dedupD1Charges(vinOverride?: string): Promise<{ success: boolean; removedCount: number }> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/charges/dedup${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: vin || undefined }),
+    });
+    if (!res.ok) return { success: false, removedCount: 0 };
+    const data = await res.json();
+    return { success: Boolean(data.success), removedCount: Number(data.removedCount) || 0 };
+  } catch (err) {
+    console.warn('dedupD1Charges error:', err);
+    return { success: false, removedCount: 0 };
+  }
 }
 
 export async function fetchD1ChargeDates(vinOverride?: string): Promise<string[]> {
