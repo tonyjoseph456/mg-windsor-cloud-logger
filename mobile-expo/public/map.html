@@ -118,6 +118,46 @@
       background: #1E293B;
       color: #6EE7B7;
     }
+    .route-marker-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+      pointer-events: none;
+      transform: translate(-50%, -100%);
+      margin-top: -8px;
+    }
+    .route-marker-pill.start-pill {
+      background: #064E3B;
+      border: 1.5px solid #34D399;
+      color: #ECFDF5;
+    }
+    .route-marker-pill.start-pill .marker-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #34D399;
+      box-shadow: 0 0 8px #34D399;
+    }
+    .route-marker-pill.dest-pill {
+      background: #0C4A6E;
+      border: 1.5px solid #38BDF8;
+      color: #F0F9FF;
+    }
+    .route-marker-pill.dest-pill .marker-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #38BDF8;
+      box-shadow: 0 0 8px #38BDF8;
+    }
   </style>
 </head>
 <body>
@@ -139,6 +179,18 @@
     let heading = parseFloat(params.get('heading')) || 0;
     const apiKey = (params.get('key') || '').trim();
 
+    const mode = params.get('mode'); // 'route' or null
+    let startLat = parseFloat(params.get('startLat'));
+    let startLon = parseFloat(params.get('startLon'));
+    let endLat = parseFloat(params.get('endLat'));
+    let endLon = parseFloat(params.get('endLon'));
+    if (isNaN(startLat)) startLat = lat;
+    if (isNaN(startLon)) startLon = lon;
+    if (isNaN(endLat)) endLat = lat;
+    if (isNaN(endLon)) endLon = lon;
+    const isRouteMode = mode === 'route' || (params.has('startLat') && params.has('endLat'));
+    let routeBounds = null;
+
     let leafletMap = null;
     let leafletMarker = null;
     let gMap = null;
@@ -158,7 +210,13 @@
     }
 
     function recenterMap() {
-      if (gMap && !hasGoogleError) {
+      if (isRouteMode && routeBounds) {
+        if (gMap && !hasGoogleError) {
+          gMap.fitBounds(routeBounds);
+        } else if (leafletMap) {
+          leafletMap.fitBounds(routeBounds, { padding: [36, 36], animate: true });
+        }
+      } else if (gMap && !hasGoogleError) {
         gMap.panTo({ lat: lat, lng: lon });
       } else if (leafletMap) {
         leafletMap.setView([lat, lon], 16, { animate: true });
@@ -166,8 +224,6 @@
     }
 
     // Official Google Maps Authentication Failure Hook
-    // Triggered automatically by Google when the API key is not activated (ApiNotActivatedMapError),
-    // has billing issues, or is unauthorized.
     window.gm_authFailure = function() {
       console.warn('[Google Maps] gm_authFailure fired! Automatically falling back to OpenStreetMap dark basemap.');
       hasGoogleError = true;
@@ -203,49 +259,98 @@
           gDiv.style.display = 'block';
 
           gMap = new google.maps.Map(gDiv, {
-            center: { lat: lat, lng: lon },
-            zoom: 16,
+            center: isRouteMode ? { lat: (startLat + endLat) / 2, lng: (startLon + endLon) / 2 } : { lat: lat, lng: lon },
+            zoom: 15,
             disableDefaultUI: true,
             styles: GOOGLE_DARK_STYLES,
           });
 
-          // Overlay Beacon
-          class BeaconOverlay extends google.maps.OverlayView {
-            constructor(position) {
-              super();
-              this.position = position;
-              this.div = null;
-            }
-            onAdd() {
-              this.div = document.createElement('div');
-              this.div.style.position = 'absolute';
-              this.div.style.pointerEvents = 'none';
-              this.div.innerHTML = createBeaconHtml(heading);
-              const panes = this.getPanes();
-              panes.overlayMouseTarget.appendChild(this.div);
-            }
-            draw() {
-              const overlayProjection = this.getProjection();
-              if (!overlayProjection || !this.div) return;
-              const point = overlayProjection.fromLatLngToDivPixel(this.position);
-              if (point) {
-                this.div.style.left = point.x + 'px';
-                this.div.style.top = point.y + 'px';
-              }
-            }
-            updateHeading(h) {
-              if (this.div) {
-                this.div.innerHTML = createBeaconHtml(h);
-              }
-            }
-            updatePosition(pos) {
-              this.position = pos;
-              this.draw();
-            }
-          }
+          if (isRouteMode) {
+            const startPos = new google.maps.LatLng(startLat, startLon);
+            const endPos = new google.maps.LatLng(endLat, endLon);
+            const bounds = new google.maps.LatLngBounds();
+            bounds.extend(startPos);
+            bounds.extend(endPos);
 
-          gMarker = new BeaconOverlay(new google.maps.LatLng(lat, lon));
-          gMarker.setMap(gMap);
+            new google.maps.Marker({
+              position: startPos,
+              map: gMap,
+              title: 'Start',
+              label: { text: 'S', color: '#0A0E17', fontWeight: '800', fontSize: '11px' },
+              icon: {
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: 13,
+                fillColor: '#10B981',
+                fillOpacity: 1,
+                strokeColor: '#FFFFFF',
+                strokeWeight: 2,
+              }
+            });
+
+            new google.maps.Marker({
+              position: endPos,
+              map: gMap,
+              title: 'Destination',
+              label: { text: 'D', color: '#0A0E17', fontWeight: '800', fontSize: '11px' },
+              icon: {
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: 13,
+                fillColor: '#38BDF8',
+                fillOpacity: 1,
+                strokeColor: '#FFFFFF',
+                strokeWeight: 2,
+              }
+            });
+
+            const poly = new google.maps.Polyline({
+              path: [startPos, endPos],
+              geodesic: true,
+              strokeColor: '#34D399',
+              strokeOpacity: 0.9,
+              strokeWeight: 4,
+            });
+            poly.setMap(gMap);
+            routeBounds = bounds;
+            gMap.fitBounds(bounds, { top: 36, bottom: 36, left: 36, right: 36 });
+          } else {
+            // Overlay Beacon for live vehicle
+            class BeaconOverlay extends google.maps.OverlayView {
+              constructor(position) {
+                super();
+                this.position = position;
+                this.div = null;
+              }
+              onAdd() {
+                this.div = document.createElement('div');
+                this.div.style.position = 'absolute';
+                this.div.style.pointerEvents = 'none';
+                this.div.innerHTML = createBeaconHtml(heading);
+                const panes = this.getPanes();
+                panes.overlayMouseTarget.appendChild(this.div);
+              }
+              draw() {
+                const overlayProjection = this.getProjection();
+                if (!overlayProjection || !this.div) return;
+                const point = overlayProjection.fromLatLngToDivPixel(this.position);
+                if (point) {
+                  this.div.style.left = point.x + 'px';
+                  this.div.style.top = point.y + 'px';
+                }
+              }
+              updateHeading(h) {
+                if (this.div) {
+                  this.div.innerHTML = createBeaconHtml(h);
+                }
+              }
+              updatePosition(pos) {
+                this.position = pos;
+                this.draw();
+              }
+            }
+
+            gMarker = new BeaconOverlay(new google.maps.LatLng(lat, lon));
+            gMarker.setMap(gMap);
+          }
         } catch (err) {
           console.error('[Google Maps] Initialization error:', err);
           hasGoogleError = true;
@@ -274,8 +379,8 @@
 
       if (!leafletMap) {
         leafletMap = L.map('map', {
-          center: [lat, lon],
-          zoom: 16,
+          center: isRouteMode ? [(startLat + endLat) / 2, (startLon + endLon) / 2] : [lat, lon],
+          zoom: 15,
           zoomControl: false,
           attributionControl: false
         });
@@ -286,16 +391,80 @@
           maxZoom: 19
         }).addTo(leafletMap);
 
-        const beaconIcon = L.divIcon({
-          className: 'vehicle-beacon-icon',
-          html: createBeaconHtml(heading),
-          iconSize: [0, 0]
-        });
+        if (isRouteMode) {
+          // 1. Start Marker
+          const startIcon = L.divIcon({
+            className: 'route-marker-wrap',
+            html: `
+              <div class="route-marker-pill start-pill">
+                <span class="marker-dot"></span>
+                <span>Start</span>
+              </div>
+            `,
+            iconSize: [0, 0],
+            iconAnchor: [24, 28]
+          });
+          L.marker([startLat, startLon], { icon: startIcon, title: 'Start' }).addTo(leafletMap);
 
-        leafletMarker = L.marker([lat, lon], { icon: beaconIcon }).addTo(leafletMap);
+          // 2. Destination Marker
+          const endIcon = L.divIcon({
+            className: 'route-marker-wrap',
+            html: `
+              <div class="route-marker-pill dest-pill">
+                <span class="marker-dot"></span>
+                <span>Destination</span>
+              </div>
+            `,
+            iconSize: [0, 0],
+            iconAnchor: [38, 28]
+          });
+          L.marker([endLat, endLon], { icon: endIcon, title: 'Destination' }).addTo(leafletMap);
+
+          // 3. Draw Road Polyline (via OSRM driving geometry or fallback)
+          const distDelta = Math.hypot(startLat - endLat, startLon - endLon);
+          if (distDelta < 0.0001) {
+            leafletMap.setView([startLat, startLon], 16);
+            routeBounds = L.latLngBounds([[startLat, startLon], [endLat, endLon]]);
+          } else {
+            const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson`;
+            fetch(osrmUrl)
+              .then(res => res.json())
+              .then(data => {
+                if (data && data.routes && data.routes[0] && data.routes[0].geometry) {
+                  const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+                  L.polyline(coords, { color: 'rgba(52, 211, 153, 0.28)', weight: 8 }).addTo(leafletMap);
+                  const poly = L.polyline(coords, { color: '#34D399', weight: 4.5, lineCap: 'round', lineJoin: 'round' }).addTo(leafletMap);
+                  routeBounds = poly.getBounds();
+                  leafletMap.fitBounds(routeBounds, { padding: [36, 36] });
+                } else {
+                  fallbackRoute();
+                }
+              })
+              .catch(() => fallbackRoute());
+          }
+
+          function fallbackRoute() {
+            const pts = [[startLat, startLon], [endLat, endLon]];
+            L.polyline(pts, { color: 'rgba(52, 211, 153, 0.28)', weight: 8 }).addTo(leafletMap);
+            const poly = L.polyline(pts, { color: '#34D399', weight: 4, dashArray: '6, 8', lineCap: 'round' }).addTo(leafletMap);
+            routeBounds = poly.getBounds();
+            leafletMap.fitBounds(routeBounds, { padding: [36, 36], maxZoom: 16 });
+          }
+        } else {
+          const beaconIcon = L.divIcon({
+            className: 'vehicle-beacon-icon',
+            html: createBeaconHtml(heading),
+            iconSize: [0, 0]
+          });
+          leafletMarker = L.marker([lat, lon], { icon: beaconIcon }).addTo(leafletMap);
+        }
       } else {
         leafletMap.invalidateSize();
-        leafletMap.setView([lat, lon], 16);
+        if (isRouteMode && routeBounds) {
+          leafletMap.fitBounds(routeBounds, { padding: [36, 36] });
+        } else {
+          leafletMap.setView([lat, lon], 16);
+        }
       }
     }
 

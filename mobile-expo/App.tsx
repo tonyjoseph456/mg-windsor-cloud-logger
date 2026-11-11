@@ -698,6 +698,65 @@ function formatTripDetailSubtitle(trip: TripRecord): string {
   return dateStr;
 }
 
+function parseCoordsFromText(text: string | null | undefined): { lat: number; lng: number } | null {
+  if (!text) return null;
+  const match = text.match(/\(([-\d.]+),\s*([-\d.]+)\)/);
+  if (match) {
+    const lat = parseFloat(match[1]);
+    const lng = parseFloat(match[2]);
+    if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
+      return { lat, lng };
+    }
+  }
+  const bareMatch = text.match(/^([-\d.]+),\s*([-\d.]+)$/);
+  if (bareMatch) {
+    const lat = parseFloat(bareMatch[1]);
+    const lng = parseFloat(bareMatch[2]);
+    if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
+      return { lat, lng };
+    }
+  }
+  return null;
+}
+
+function getTripStartCoordinates(
+  trip: TripRecord,
+  resolved: { lat: number; lng: number } | null,
+  fallbackLat: number,
+  fallbackLng: number
+): { lat: number; lng: number; isEstimated: boolean } {
+  if (trip.startLat != null && trip.startLng != null && (trip.startLat !== 0 || trip.startLng !== 0)) {
+    return { lat: trip.startLat, lng: trip.startLng, isEstimated: false };
+  }
+  const parsed = parseCoordsFromText(trip.startLocation);
+  if (parsed) return { lat: parsed.lat, lng: parsed.lng, isEstimated: false };
+  if (resolved) return { lat: resolved.lat, lng: resolved.lng, isEstimated: false };
+  return { lat: fallbackLat, lng: fallbackLng, isEstimated: true };
+}
+
+function getTripEndCoordinates(
+  trip: TripRecord,
+  resolved: { lat: number; lng: number } | null,
+  startLat: number,
+  startLng: number,
+  fallbackLat: number,
+  fallbackLng: number
+): { lat: number; lng: number; isEstimated: boolean } {
+  if (trip.endLat != null && trip.endLng != null && (trip.endLat !== 0 || trip.endLng !== 0)) {
+    return { lat: trip.endLat, lng: trip.endLng, isEstimated: false };
+  }
+  const parsed = parseCoordsFromText(trip.endLocation);
+  if (parsed) return { lat: parsed.lat, lng: parsed.lng, isEstimated: false };
+  if (resolved) return { lat: resolved.lat, lng: resolved.lng, isEstimated: false };
+  const dist = trip.distanceKm > 0 ? trip.distanceKm : 1.5;
+  const offset = Math.min(0.25, Math.max(0.005, dist * 0.0065));
+  return {
+    lat: Number((startLat + offset).toFixed(6)),
+    lng: Number((startLng + offset * 0.9).toFixed(6)),
+    isEstimated: true,
+  };
+}
+
 function getChargeDateKey(session: ChargeLogRecord): string {
   if (session.startDateTime) {
     const m = session.startDateTime.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
@@ -1282,8 +1341,36 @@ export default function App() {
   const [isTripDetailVisible, setIsTripDetailVisible] = useState<boolean>(false);
   const [selectedTripForDetail, setSelectedTripForDetail] = useState<TripRecord | null>(null);
 
+  const [tripDetailStartCoords, setTripDetailStartCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [tripDetailEndCoords, setTripDetailEndCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!selectedTripForDetail) {
+      setTripDetailStartCoords(null);
+      setTripDetailEndCoords(null);
+      return;
+    }
+    const trip = selectedTripForDetail;
+    if (trip.startLat == null && trip.startLocation && !/\([-\d.]+,\s*[-\d.]+\)/.test(trip.startLocation)) {
+      geocodeAddressCoords(trip.startLocation).then((coords) => {
+        if (mounted && coords) setTripDetailStartCoords(coords);
+      });
+    }
+    if (trip.endLat == null && trip.endLocation && !/\([-\d.]+,\s*[-\d.]+\)/.test(trip.endLocation)) {
+      geocodeAddressCoords(trip.endLocation).then((coords) => {
+        if (mounted && coords) setTripDetailEndCoords(coords);
+      });
+    }
+    return () => {
+      mounted = false;
+    };
+  }, [selectedTripForDetail]);
+
   const handleOpenTripDetail = (trip: TripRecord) => {
     setSelectedTripForDetail(trip);
+    setTripDetailStartCoords(null);
+    setTripDetailEndCoords(null);
     setIsTripDetailVisible(true);
     Animated.timing(tripDetailSlideAnim, {
       toValue: 1,
@@ -1302,6 +1389,8 @@ export default function App() {
     }).start(() => {
       setIsTripDetailVisible(false);
       setSelectedTripForDetail(null);
+      setTripDetailStartCoords(null);
+      setTripDetailEndCoords(null);
     });
   };
 
@@ -7459,232 +7548,249 @@ export default function App() {
       )}
 
       {/* Trip Detail Fullscreen Tween Screen */}
-      {isTripDetailVisible && selectedTripForDetail && (
-        <Animated.View
-          style={[
-            styles.tripDetailScreenLayer,
-            {
-              transform: [{ translateX: tripDetailTranslateX }],
-            },
-          ]}
-        >
-          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
-            <ScrollView
-              style={{ flex: 1, width: '100%' }}
-              contentContainerStyle={styles.tripDetailScrollContent}
-              showsVerticalScrollIndicator={false}
-            >
-              {/* Header */}
-              <View style={styles.tripDetailHeader}>
-                <TouchableOpacity
-                  style={styles.tripDetailBackBtn}
-                  onPress={handleCloseTripDetail}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Back to Trips"
-                  accessibilityRole="button"
-                >
-                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
-                    <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
-                  </Svg>
-                </TouchableOpacity>
+      {isTripDetailVisible && selectedTripForDetail && (() => {
+        const detailStartCoords = getTripStartCoordinates(
+          selectedTripForDetail,
+          tripDetailStartCoords,
+          gpsLat,
+          gpsLon
+        );
+        const detailEndCoords = getTripEndCoordinates(
+          selectedTripForDetail,
+          tripDetailEndCoords,
+          detailStartCoords.lat,
+          detailStartCoords.lng,
+          gpsLat,
+          gpsLon
+        );
 
-                <View style={styles.tripDetailTitleCol}>
-                  <Text style={styles.tripDetailTitle}>Trip</Text>
-                  <Text style={styles.tripDetailSub} numberOfLines={1}>
-                    {formatTripDetailSubtitle(selectedTripForDetail)}
-                  </Text>
-                </View>
+        return (
+          <Animated.View
+            style={[
+              styles.tripDetailScreenLayer,
+              {
+                transform: [{ translateX: tripDetailTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.tripDetailScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* Header */}
+                <View style={styles.tripDetailHeader}>
+                  <TouchableOpacity
+                    style={styles.tripDetailBackBtn}
+                    onPress={handleCloseTripDetail}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Back to Trips"
+                    accessibilityRole="button"
+                  >
+                    <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                      <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                  </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={styles.tripDetailShareBtn}
-                  onPress={() => handleShareTripRecord(selectedTripForDetail)}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Share Trip"
-                  accessibilityRole="button"
-                >
-                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2}>
-                    <Path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
-                    <Polyline points="16 6 12 2 8 6" />
-                    <Line x1="12" y1="2" x2="12" y2="15" />
-                  </Svg>
-                </TouchableOpacity>
-              </View>
-
-              {/* Map Graphic Preview Card */}
-              <View style={styles.tripDetailMapCard}>
-                <Svg width="100%" height="100%" viewBox="0 0 400 160">
-                  {/* Street grid background lines */}
-                  <Line x1="0" y1="30" x2="400" y2="40" stroke="#162032" strokeWidth="12" />
-                  <Line x1="0" y1="80" x2="400" y2="70" stroke="#131B2A" strokeWidth="8" />
-                  <Line x1="0" y1="130" x2="400" y2="135" stroke="#162032" strokeWidth="10" />
-                  <Line x1="80" y1="0" x2="120" y2="160" stroke="#162032" strokeWidth="10" />
-                  <Line x1="220" y1="0" x2="180" y2="160" stroke="#162032" strokeWidth="12" />
-                  <Line x1="330" y1="0" x2="310" y2="160" stroke="#131B2A" strokeWidth="9" />
-
-                  {/* Start Node Halo & Dot */}
-                  <Circle cx="64" cy="116" r="14" fill="rgba(16, 185, 129, 0.25)" />
-                  <Circle cx="64" cy="116" r="6" fill="#34D399" />
-
-                  {/* Glowing Route Polyline */}
-                  <Path
-                    d="M 64 116 C 130 110, 160 68, 230 68 C 280 68, 305 38, 336 32"
-                    stroke="#34D399"
-                    strokeWidth="4"
-                    fill="none"
-                    strokeLinecap="round"
-                  />
-
-                  {/* Destination Node Halo & Dot */}
-                  <Circle cx="336" cy="32" r="14" fill="rgba(16, 185, 129, 0.25)" />
-                  <Circle cx="336" cy="32" r="6" fill="#34D399" />
-                </Svg>
-              </View>
-
-              {/* Big Distance & Odometer */}
-              <Text style={styles.tripDetailHeroDist}>
-                {selectedTripForDetail.distanceKm}
-                <Text style={styles.tripDetailHeroUnit}> km</Text>
-              </Text>
-              <Text style={styles.tripDetailHeroOdo}>
-                {(selectedTripForDetail.startOdometerKm || 0).toLocaleString()} → {(selectedTripForDetail.endOdometerKm || 0).toLocaleString()} km odometer
-              </Text>
-
-              {/* 3-Column Metrics (Duration, Energy, Efficiency) */}
-              <View style={styles.tripDetailMetricsRow}>
-                <View style={styles.tripDetailMetricCol}>
-                  <Text style={styles.tripDetailMetricLabel}>Duration</Text>
-                  <Text style={styles.tripDetailMetricVal}>
-                    {Math.max(1, Math.round((selectedTripForDetail.durationSeconds || (selectedTripForDetail.endTimestampSec - selectedTripForDetail.startTimestampSec) || 60) / 60))} min
-                  </Text>
-                </View>
-
-                <View style={styles.tripDetailMetricCol}>
-                  <Text style={styles.tripDetailMetricLabel}>Energy</Text>
-                  <Text style={styles.tripDetailMetricVal}>
-                    {selectedTripForDetail.energyUsedKwh} kWh
-                  </Text>
-                </View>
-
-                <View style={styles.tripDetailMetricCol}>
-                  <Text style={styles.tripDetailMetricLabel}>Efficiency</Text>
-                  <Text style={styles.tripDetailMetricVal}>
-                    {selectedTripForDetail.efficiencyKmPerKwh > 0
-                      ? selectedTripForDetail.efficiencyKmPerKwh
-                      : (selectedTripForDetail.distanceKm / (selectedTripForDetail.energyUsedKwh || 1)).toFixed(1)}{' '}
-                    km/kWh
-                  </Text>
-                </View>
-              </View>
-
-              {/* Battery SoC Progress Card */}
-              <View style={styles.tripDetailSocCard}>
-                <View style={styles.tripDetailSocTopRow}>
-                  <Text style={styles.tripDetailSocLeft}>
-                    {selectedTripForDetail.startSoc.toFixed(0)}% {selectedTripForDetail.startEnergyKwh.toFixed(1)} kWh
-                  </Text>
-                  <Text style={styles.tripDetailSocRight}>
-                    {selectedTripForDetail.endSoc.toFixed(0)}% {selectedTripForDetail.endEnergyKwh.toFixed(2)} kWh
-                  </Text>
-                </View>
-                <View style={styles.tripDetailSocTrack}>
-                  <View
-                    style={[
-                      styles.tripDetailSocFill,
-                      { width: `${Math.min(100, Math.max(5, selectedTripForDetail.endSoc))}%` },
-                    ]}
-                  />
-                </View>
-              </View>
-
-              {/* Route Nodes Timeline */}
-              <View style={styles.tripDetailTimeline}>
-                {/* Start Node */}
-                <View style={styles.tripDetailNode}>
-                  <View style={styles.tripDetailNodeDotGrey} />
-                  <View style={styles.tripDetailNodeTextCol}>
-                    <Text style={styles.tripDetailNodeLabel}>
-                      Start · {extractTime(selectedTripForDetail.startDateTime)}
+                  <View style={styles.tripDetailTitleCol}>
+                    <Text style={styles.tripDetailTitle}>Trip</Text>
+                    <Text style={styles.tripDetailSub} numberOfLines={1}>
+                      {formatTripDetailSubtitle(selectedTripForDetail)}
                     </Text>
-                    <Text style={styles.tripDetailNodeVal}>
-                      {cleanLocationSummary(selectedTripForDetail.startLocation) || 'Starting point'}
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.tripDetailShareBtn}
+                    onPress={() => handleShareTripRecord(selectedTripForDetail)}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Share Trip"
+                    accessibilityRole="button"
+                  >
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2}>
+                      <Path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                      <Polyline points="16 6 12 2 8 6" />
+                      <Line x1="12" y1="2" x2="12" y2="15" />
+                    </Svg>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Map Route Preview Card (Real GPS Route Map) */}
+                <View style={styles.tripDetailMapCard}>
+                  {Platform.OS === 'web' ? (
+                    <iframe
+                      title="Trip Route Map"
+                      src={`/map.html?mode=route&startLat=${detailStartCoords.lat}&startLon=${detailStartCoords.lng}&endLat=${detailEndCoords.lat}&endLon=${detailEndCoords.lng}&key=${encodeURIComponent(
+                        googleMapsApiKey
+                      )}`}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        border: 'none',
+                        borderRadius: 20,
+                      }}
+                    />
+                  ) : (
+                    <View style={styles.tripDetailMapPlaceholder}>
+                      <Text style={styles.tripDetailMapPlaceholderText}>
+                        📍 {detailStartCoords.lat.toFixed(6)}, {detailStartCoords.lng.toFixed(6)} → {detailEndCoords.lat.toFixed(6)}, {detailEndCoords.lng.toFixed(6)}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Big Distance & Odometer */}
+                <Text style={styles.tripDetailHeroDist}>
+                  {selectedTripForDetail.distanceKm}
+                  <Text style={styles.tripDetailHeroUnit}> km</Text>
+                </Text>
+                <Text style={styles.tripDetailHeroOdo}>
+                  {(selectedTripForDetail.startOdometerKm || 0).toLocaleString()} → {(selectedTripForDetail.endOdometerKm || 0).toLocaleString()} km odometer
+                </Text>
+
+                {/* 3-Column Metrics (Duration, Energy, Efficiency) */}
+                <View style={styles.tripDetailMetricsRow}>
+                  <View style={styles.tripDetailMetricCol}>
+                    <Text style={styles.tripDetailMetricLabel}>Duration</Text>
+                    <Text style={styles.tripDetailMetricVal}>
+                      {Math.max(1, Math.round((selectedTripForDetail.durationSeconds || (selectedTripForDetail.endTimestampSec - selectedTripForDetail.startTimestampSec) || 60) / 60))} min
+                    </Text>
+                  </View>
+
+                  <View style={styles.tripDetailMetricCol}>
+                    <Text style={styles.tripDetailMetricLabel}>Energy</Text>
+                    <Text style={styles.tripDetailMetricVal}>
+                      {selectedTripForDetail.energyUsedKwh} kWh
+                    </Text>
+                  </View>
+
+                  <View style={styles.tripDetailMetricCol}>
+                    <Text style={styles.tripDetailMetricLabel}>Efficiency</Text>
+                    <Text style={styles.tripDetailMetricVal}>
+                      {selectedTripForDetail.efficiencyKmPerKwh > 0
+                        ? selectedTripForDetail.efficiencyKmPerKwh
+                        : (selectedTripForDetail.distanceKm / (selectedTripForDetail.energyUsedKwh || 1)).toFixed(1)}{' '}
+                      km/kWh
                     </Text>
                   </View>
                 </View>
 
-                {/* Connecting Track Line */}
-                <View style={styles.tripDetailNodeTrack} />
-
-                {/* Destination Node */}
-                <View style={styles.tripDetailNode}>
-                  <View style={styles.tripDetailNodeDotGreen} />
-                  <View style={styles.tripDetailNodeTextCol}>
-                    <Text style={styles.tripDetailNodeLabel}>
-                      Destination · {extractTime(selectedTripForDetail.endDateTime)}
+                {/* Battery SoC Progress Card */}
+                <View style={styles.tripDetailSocCard}>
+                  <View style={styles.tripDetailSocTopRow}>
+                    <Text style={styles.tripDetailSocLeft}>
+                      {selectedTripForDetail.startSoc.toFixed(0)}% {selectedTripForDetail.startEnergyKwh.toFixed(1)} kWh
                     </Text>
-                    <Text style={styles.tripDetailNodeVal}>
-                      {cleanLocationSummary(selectedTripForDetail.endLocation) || 'Destination point'}
+                    <Text style={styles.tripDetailSocRight}>
+                      {selectedTripForDetail.endSoc.toFixed(0)}% {selectedTripForDetail.endEnergyKwh.toFixed(2)} kWh
                     </Text>
                   </View>
-                </View>
-              </View>
-
-              {/* Bottom 2-Column Stats Card */}
-              <View style={styles.tripDetailBottomCard}>
-                <View style={styles.tripDetailStatRow}>
-                  <View style={styles.tripDetailStatCol}>
-                    <Text style={styles.tripDetailStatLabel}>Max speed</Text>
-                    <Text style={styles.tripDetailStatVal}>
-                      {selectedTripForDetail.maxSpeedKmh || (selectedTripForDetail.avgSpeedKmh * 1.48).toFixed(1)} km/h
-                    </Text>
-                  </View>
-                  <View style={styles.tripDetailStatCol}>
-                    <Text style={styles.tripDetailStatLabel}>Average speed</Text>
-                    <Text style={styles.tripDetailStatVal}>
-                      {selectedTripForDetail.avgSpeedKmh || (selectedTripForDetail.distanceKm / ((selectedTripForDetail.durationSeconds || 3600) / 3600)).toFixed(1)} km/h
-                    </Text>
+                  <View style={styles.tripDetailSocTrack}>
+                    <View
+                      style={[
+                        styles.tripDetailSocFill,
+                        { width: `${Math.min(100, Math.max(5, selectedTripForDetail.endSoc))}%` },
+                      ]}
+                    />
                   </View>
                 </View>
 
-                <View style={styles.tripDetailDivider} />
-
-                <View style={styles.tripDetailStatRow}>
-                  <View style={styles.tripDetailStatCol}>
-                    <Text style={styles.tripDetailStatLabel}>Cabin</Text>
-                    <Text style={styles.tripDetailStatVal}>
-                      {selectedTripForDetail.startCabinTempC ?? 29}° → {selectedTripForDetail.endCabinTempC ?? 25}°C
-                    </Text>
+                {/* Route Nodes Timeline */}
+                <View style={styles.tripDetailTimeline}>
+                  {/* Start Node */}
+                  <View style={styles.tripDetailNode}>
+                    <View style={styles.tripDetailNodeDotGrey} />
+                    <View style={styles.tripDetailNodeTextCol}>
+                      <Text style={styles.tripDetailNodeLabel}>
+                        Start · {extractTime(selectedTripForDetail.startDateTime)}
+                      </Text>
+                      <Text style={styles.tripDetailNodeVal}>
+                        {cleanLocationSummary(selectedTripForDetail.startLocation) || 'Starting point'}
+                      </Text>
+                      <Text style={styles.tripDetailNodeCoords}>
+                        📍 {detailStartCoords.lat.toFixed(6)}, {detailStartCoords.lng.toFixed(6)}
+                      </Text>
+                    </View>
                   </View>
-                  <View style={styles.tripDetailStatCol}>
-                    <Text style={styles.tripDetailStatLabel}>Outside</Text>
-                    <Text style={styles.tripDetailStatVal}>
-                      {selectedTripForDetail.startExteriorTempC ?? 27}° → {selectedTripForDetail.endExteriorTempC ?? 29}°C
-                    </Text>
+
+                  {/* Connecting Track Line */}
+                  <View style={styles.tripDetailNodeTrack} />
+
+                  {/* Destination Node */}
+                  <View style={styles.tripDetailNode}>
+                    <View style={styles.tripDetailNodeDotGreen} />
+                    <View style={styles.tripDetailNodeTextCol}>
+                      <Text style={styles.tripDetailNodeLabel}>
+                        Destination · {extractTime(selectedTripForDetail.endDateTime)}
+                      </Text>
+                      <Text style={styles.tripDetailNodeVal}>
+                        {cleanLocationSummary(selectedTripForDetail.endLocation) || 'Destination point'}
+                      </Text>
+                      <Text style={styles.tripDetailNodeCoords}>
+                        📍 {detailEndCoords.lat.toFixed(6)}, {detailEndCoords.lng.toFixed(6)}
+                      </Text>
+                    </View>
                   </View>
                 </View>
 
-                <View style={styles.tripDetailDivider} />
-
-                <View style={styles.tripDetailStatRow}>
-                  <View style={styles.tripDetailStatCol}>
-                    <Text style={styles.tripDetailStatLabel}>Idling</Text>
-                    <Text style={styles.tripDetailStatVal}>
-                      {selectedTripForDetail.idleDurationSeconds > 0
-                        ? `${Math.round(selectedTripForDetail.idleDurationSeconds / 60)} min`
-                        : 'None'}
-                    </Text>
+                {/* Bottom 2-Column Stats Card */}
+                <View style={styles.tripDetailBottomCard}>
+                  <View style={styles.tripDetailStatRow}>
+                    <View style={styles.tripDetailStatCol}>
+                      <Text style={styles.tripDetailStatLabel}>Max speed</Text>
+                      <Text style={styles.tripDetailStatVal}>
+                        {selectedTripForDetail.maxSpeedKmh || (selectedTripForDetail.avgSpeedKmh * 1.48).toFixed(1)} km/h
+                      </Text>
+                    </View>
+                    <View style={styles.tripDetailStatCol}>
+                      <Text style={styles.tripDetailStatLabel}>Average speed</Text>
+                      <Text style={styles.tripDetailStatVal}>
+                        {selectedTripForDetail.avgSpeedKmh || (selectedTripForDetail.distanceKm / ((selectedTripForDetail.durationSeconds || 3600) / 3600)).toFixed(1)} km/h
+                      </Text>
+                    </View>
                   </View>
-                  <View style={styles.tripDetailStatCol}>
-                    <Text style={styles.tripDetailStatLabel}>Idle energy</Text>
-                    <Text style={styles.tripDetailStatVal}>
-                      {(selectedTripForDetail.idleEnergyKwh || 0).toFixed(2)} kWh
-                    </Text>
+
+                  <View style={styles.tripDetailDivider} />
+
+                  <View style={styles.tripDetailStatRow}>
+                    <View style={styles.tripDetailStatCol}>
+                      <Text style={styles.tripDetailStatLabel}>Cabin</Text>
+                      <Text style={styles.tripDetailStatVal}>
+                        {selectedTripForDetail.startCabinTempC ?? 29}° → {selectedTripForDetail.endCabinTempC ?? 25}°C
+                      </Text>
+                    </View>
+                    <View style={styles.tripDetailStatCol}>
+                      <Text style={styles.tripDetailStatLabel}>Outside</Text>
+                      <Text style={styles.tripDetailStatVal}>
+                        {selectedTripForDetail.startExteriorTempC ?? 27}° → {selectedTripForDetail.endExteriorTempC ?? 29}°C
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.tripDetailDivider} />
+
+                  <View style={styles.tripDetailStatRow}>
+                    <View style={styles.tripDetailStatCol}>
+                      <Text style={styles.tripDetailStatLabel}>Idling</Text>
+                      <Text style={styles.tripDetailStatVal}>
+                        {selectedTripForDetail.idleDurationSeconds > 0
+                          ? `${Math.round(selectedTripForDetail.idleDurationSeconds / 60)} min`
+                          : 'None'}
+                      </Text>
+                    </View>
+                    <View style={styles.tripDetailStatCol}>
+                      <Text style={styles.tripDetailStatLabel}>Idle energy</Text>
+                      <Text style={styles.tripDetailStatVal}>
+                        {(selectedTripForDetail.idleEnergyKwh || 0).toFixed(2)} kWh
+                      </Text>
+                    </View>
                   </View>
                 </View>
-              </View>
-            </ScrollView>
-          </SafeAreaView>
-        </Animated.View>
-      )}
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
 
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
@@ -11532,8 +11638,9 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     maxWidth: 440,
-    paddingHorizontal: 16,
-    paddingTop: 6,
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 14,
   },
   tripsFixedTopSection: {
     width: '100%',
@@ -11596,6 +11703,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 20,
     paddingTop: 4,
+    paddingHorizontal: 4,
   },
   tripsTitle: {
     color: '#FFFFFF',
@@ -11823,7 +11931,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: 40,
+    paddingBottom: (Platform.OS === 'web' ? 120 : 130),
   },
   planHeader: {
     flexDirection: 'row',
@@ -12089,7 +12197,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: 40,
+    paddingBottom: (Platform.OS === 'web' ? 120 : 130),
   },
   tripDetailHeader: {
     flexDirection: 'row',
@@ -12137,13 +12245,26 @@ const styles = StyleSheet.create({
   },
   tripDetailMapCard: {
     width: '100%',
-    height: 160,
+    height: 190,
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#0B111E',
     borderWidth: 1,
     borderColor: '#1E293B',
     marginBottom: 20,
+  },
+  tripDetailMapPlaceholder: {
+    flex: 1,
+    backgroundColor: '#0B111E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  tripDetailMapPlaceholderText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   tripDetailHeroDist: {
     color: '#FFFFFF',
@@ -12244,7 +12365,7 @@ const styles = StyleSheet.create({
   },
   tripDetailNodeTrack: {
     width: 2,
-    height: 24,
+    height: 36,
     backgroundColor: '#334155',
     marginLeft: 4,
     marginVertical: 4,
@@ -12262,6 +12383,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     marginTop: 2,
+  },
+  tripDetailNodeCoords: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 3,
+    fontFamily: Platform.OS === 'web' ? 'monospace' : undefined,
   },
   tripDetailBottomCard: {
     backgroundColor: '#111827',
