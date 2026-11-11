@@ -3354,6 +3354,181 @@ export default function App() {
     }
   };
 
+  // --- Plan a Trip Effects & Handlers (kept strictly before early returns to comply with Rules of Hooks) ---
+  // Sync initial battery SoC when vehicle telemetry is available
+  useEffect(() => {
+    const s =
+      snapshot?.status?.charge?.soc !== undefined && snapshot?.status?.charge?.soc !== null
+        ? snapshot.status.charge.soc
+        : snapshot?.status?.fuel_level !== undefined && snapshot?.status?.fuel_level !== null
+        ? snapshot.status.fuel_level
+        : null;
+    if (s !== null && s > 0) {
+      setPlanStartSoc(Math.round(Math.min(100, Math.max(0, s))));
+    }
+  }, [snapshot?.status?.charge?.soc, snapshot?.status?.fuel_level]);
+
+  // Debounced autocomplete for Custom Start Location
+  useEffect(() => {
+    if (planOriginMode !== 'custom') {
+      setPlanOriginSuggestions([]);
+      return;
+    }
+    const q = planCustomOrigin.trim();
+    if (q.length < 2 || (planCustomOriginPlace && planCustomOriginPlace.name === q)) {
+      setPlanOriginSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setPlanIsSearchingOrigin(true);
+      try {
+        const near = {
+          lat: snapshot?.status?.gps?.latitude ?? 10.062227,
+          lng: snapshot?.status?.gps?.longitude ?? 76.620519,
+        };
+        const results = await searchDestinationPlaces(q, near, googleMapsApiKey);
+        setPlanOriginSuggestions(results);
+      } catch (_) {
+        setPlanOriginSuggestions([]);
+      } finally {
+        setPlanIsSearchingOrigin(false);
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [
+    planCustomOrigin,
+    planOriginMode,
+    planCustomOriginPlace,
+    snapshot?.status?.gps?.latitude,
+    snapshot?.status?.gps?.longitude,
+    googleMapsApiKey,
+  ]);
+
+  // Debounced autocomplete for Destination
+  useEffect(() => {
+    const q = planDestQuery.trim();
+    if (q.length < 2 || (planSelectedDest && planSelectedDest.name === q)) {
+      setPlanDestSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setPlanIsSearchingDest(true);
+      try {
+        const originPos =
+          planOriginMode === 'custom' && planCustomOriginPlace
+            ? planCustomOriginPlace.position
+            : {
+                lat: snapshot?.status?.gps?.latitude ?? 10.062227,
+                lng: snapshot?.status?.gps?.longitude ?? 76.620519,
+              };
+        const results = await searchDestinationPlaces(q, originPos, googleMapsApiKey);
+        setPlanDestSuggestions(results);
+      } catch (_) {
+        setPlanDestSuggestions([]);
+      } finally {
+        setPlanIsSearchingDest(false);
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [
+    planDestQuery,
+    planSelectedDest,
+    planOriginMode,
+    planCustomOriginPlace,
+    snapshot?.status?.gps?.latitude,
+    snapshot?.status?.gps?.longitude,
+    googleMapsApiKey,
+  ]);
+
+  const handleSelectOriginSuggestion = async (s: PlaceSuggestion) => {
+    try {
+      const resolved = await resolvePlaceSuggestion(s, googleMapsApiKey);
+      setPlanCustomOriginPlace(resolved);
+      setPlanCustomOrigin(resolved.name);
+      setPlanOriginSuggestions([]);
+    } catch (_) {
+      setPlanCustomOrigin(s.title);
+      setPlanOriginSuggestions([]);
+    }
+  };
+
+  const handleSelectDestSuggestion = async (s: PlaceSuggestion) => {
+    try {
+      const resolved = await resolvePlaceSuggestion(s, googleMapsApiKey);
+      setPlanSelectedDest(resolved);
+      setPlanDestQuery(resolved.name);
+      setPlanDestSuggestions([]);
+    } catch (_) {
+      setPlanDestQuery(s.title);
+      setPlanDestSuggestions([]);
+    }
+  };
+
+  const handleExecutePlanRoute = async (targetDest?: NamedPlace) => {
+    const carGps = {
+      lat: snapshot?.status?.gps?.latitude ?? 10.062227,
+      lng: snapshot?.status?.gps?.longitude ?? 76.620519,
+    };
+    let dest = targetDest || planSelectedDest;
+    if (!dest && planDestSuggestions.length > 0) {
+      dest = await resolvePlaceSuggestion(planDestSuggestions[0], googleMapsApiKey);
+      setPlanSelectedDest(dest);
+      setPlanDestQuery(dest.name);
+      setPlanDestSuggestions([]);
+    } else if (!dest && planDestQuery.trim()) {
+      const match = QUICK_DESTINATIONS.find(
+        (q) => q.name.toLowerCase() === planDestQuery.trim().toLowerCase()
+      );
+      if (match) {
+        dest = { placeId: 'quick-dest-' + match.name.toLowerCase(), name: match.name, position: match.position };
+      } else {
+        const list = await searchDestinationPlaces(planDestQuery, carGps, googleMapsApiKey);
+        if (list.length > 0) {
+          dest = await resolvePlaceSuggestion(list[0], googleMapsApiKey);
+          setPlanSelectedDest(dest);
+        } else {
+          setPlanError('Location not found. Please select from the suggestions list.');
+          return;
+        }
+      }
+    }
+    if (!dest) {
+      setPlanError('Please enter or select a destination first.');
+      return;
+    }
+    setPlanError(null);
+    setPlanIsComputing(true);
+    setPlanProgressMsg('Calculating terrain & charging corridor...');
+
+    try {
+      let originPos = carGps;
+      if (planOriginMode === 'custom') {
+        if (planCustomOriginPlace) {
+          originPos = planCustomOriginPlace.position;
+        } else if (planCustomOrigin.trim()) {
+          const startMatches = await searchDestinationPlaces(planCustomOrigin, originPos, googleMapsApiKey);
+          if (startMatches.length > 0) {
+            const resolvedStart = await resolvePlaceSuggestion(startMatches[0], googleMapsApiKey);
+            originPos = resolvedStart.position;
+          }
+        }
+      }
+
+      const choices = await computeTripRouteChoices(
+        originPos,
+        dest,
+        googleMapsApiKey,
+        (msg) => setPlanProgressMsg(msg)
+      );
+      setPlanComputedChoices(choices);
+      setPlanIsComputing(false);
+      showBanner('ok', `Route planned to ${dest.name}!`);
+    } catch (e: any) {
+      setPlanIsComputing(false);
+      setPlanError(e?.message || 'Could not compute route.');
+    }
+  };
+
   // 1. Startup Keychain Check Screen
   if (booting) {
     return (
@@ -3592,149 +3767,6 @@ export default function App() {
   if (status.passenger_window_open) openWindows.push('Passenger');
   if (status.rear_left_window_open) openWindows.push('Rear left');
   if (status.rear_right_window_open) openWindows.push('Rear right');
-
-  // Sync initial battery SoC when vehicle telemetry is available
-  useEffect(() => {
-    if (clampedSoc && clampedSoc > 0) {
-      setPlanStartSoc(Math.round(clampedSoc));
-    }
-  }, [clampedSoc]);
-
-  // Debounced autocomplete for Custom Start Location
-  useEffect(() => {
-    if (planOriginMode !== 'custom') {
-      setPlanOriginSuggestions([]);
-      return;
-    }
-    const q = planCustomOrigin.trim();
-    if (q.length < 2 || (planCustomOriginPlace && planCustomOriginPlace.name === q)) {
-      setPlanOriginSuggestions([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setPlanIsSearchingOrigin(true);
-      try {
-        const near = { lat: gpsLat, lng: gpsLon };
-        const results = await searchDestinationPlaces(q, near, googleMapsApiKey);
-        setPlanOriginSuggestions(results);
-      } catch (_) {
-        setPlanOriginSuggestions([]);
-      } finally {
-        setPlanIsSearchingOrigin(false);
-      }
-    }, 280);
-    return () => clearTimeout(timer);
-  }, [planCustomOrigin, planOriginMode, planCustomOriginPlace, gpsLat, gpsLon, googleMapsApiKey]);
-
-  // Debounced autocomplete for Destination
-  useEffect(() => {
-    const q = planDestQuery.trim();
-    if (q.length < 2 || (planSelectedDest && planSelectedDest.name === q)) {
-      setPlanDestSuggestions([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setPlanIsSearchingDest(true);
-      try {
-        const originPos =
-          planOriginMode === 'custom' && planCustomOriginPlace
-            ? planCustomOriginPlace.position
-            : { lat: gpsLat, lng: gpsLon };
-        const results = await searchDestinationPlaces(q, originPos, googleMapsApiKey);
-        setPlanDestSuggestions(results);
-      } catch (_) {
-        setPlanDestSuggestions([]);
-      } finally {
-        setPlanIsSearchingDest(false);
-      }
-    }, 280);
-    return () => clearTimeout(timer);
-  }, [planDestQuery, planSelectedDest, planOriginMode, planCustomOriginPlace, gpsLat, gpsLon, googleMapsApiKey]);
-
-  const handleSelectOriginSuggestion = async (s: PlaceSuggestion) => {
-    try {
-      const resolved = await resolvePlaceSuggestion(s, googleMapsApiKey);
-      setPlanCustomOriginPlace(resolved);
-      setPlanCustomOrigin(resolved.name);
-      setPlanOriginSuggestions([]);
-    } catch (_) {
-      setPlanCustomOrigin(s.title);
-      setPlanOriginSuggestions([]);
-    }
-  };
-
-  const handleSelectDestSuggestion = async (s: PlaceSuggestion) => {
-    try {
-      const resolved = await resolvePlaceSuggestion(s, googleMapsApiKey);
-      setPlanSelectedDest(resolved);
-      setPlanDestQuery(resolved.name);
-      setPlanDestSuggestions([]);
-    } catch (_) {
-      setPlanDestQuery(s.title);
-      setPlanDestSuggestions([]);
-    }
-  };
-
-  const handleExecutePlanRoute = async (targetDest?: NamedPlace) => {
-    let dest = targetDest || planSelectedDest;
-    if (!dest && planDestSuggestions.length > 0) {
-      dest = await resolvePlaceSuggestion(planDestSuggestions[0], googleMapsApiKey);
-      setPlanSelectedDest(dest);
-      setPlanDestQuery(dest.name);
-      setPlanDestSuggestions([]);
-    } else if (!dest && planDestQuery.trim()) {
-      const match = QUICK_DESTINATIONS.find(
-        (q) => q.name.toLowerCase() === planDestQuery.trim().toLowerCase()
-      );
-      if (match) {
-        dest = { placeId: 'quick-dest-' + match.name.toLowerCase(), name: match.name, position: match.position };
-      } else {
-        const list = await searchDestinationPlaces(planDestQuery, { lat: gpsLat, lng: gpsLon }, googleMapsApiKey);
-        if (list.length > 0) {
-          dest = await resolvePlaceSuggestion(list[0], googleMapsApiKey);
-          setPlanSelectedDest(dest);
-        } else {
-          setPlanError('Location not found. Please select from the suggestions list.');
-          return;
-        }
-      }
-    }
-    if (!dest) {
-      setPlanError('Please enter or select a destination first.');
-      return;
-    }
-    setPlanError(null);
-    setPlanIsComputing(true);
-    setPlanProgressMsg('Calculating terrain & charging corridor...');
-
-    try {
-      let originPos = { lat: gpsLat, lng: gpsLon };
-      if (planOriginMode === 'custom') {
-        if (planCustomOriginPlace) {
-          originPos = planCustomOriginPlace.position;
-        } else if (planCustomOrigin.trim()) {
-          const startMatches = await searchDestinationPlaces(planCustomOrigin, originPos, googleMapsApiKey);
-          if (startMatches.length > 0) {
-            const resolvedStart = await resolvePlaceSuggestion(startMatches[0], googleMapsApiKey);
-            originPos = resolvedStart.position;
-          }
-        }
-      }
-
-      const choices = await computeTripRouteChoices(
-        originPos,
-        dest,
-        googleMapsApiKey,
-        (msg) => setPlanProgressMsg(msg)
-      );
-      setPlanComputedChoices(choices);
-      setPlanIsComputing(false);
-      showBanner('ok', `Route planned to ${dest.name}!`);
-    } catch (e: any) {
-      setPlanIsComputing(false);
-      setPlanError(e?.message || 'Could not compute route.');
-    }
-  };
 
   return (
     <View style={styles.container}>
