@@ -954,13 +954,38 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
   const endSoc = Number(r.end_soc) || startSoc;
   const socAdded = Number(r.soc_added) || Math.max(0, endSoc - startSoc);
   const energyAdded = Number(r.kwh_added ?? r.energy_added_kwh) || Number(((socAdded / 100) * 38).toFixed(2));
-  const energyUsed = Number(r.energy_used_kwh) || Number((energyAdded / (r.charge_type === 'DC' ? 0.94 : 0.88)).toFixed(2));
-  const lossKwh = Number(r.charging_loss_kwh) || Math.max(0, Number((energyUsed - energyAdded).toFixed(2)));
-  const lossPct = energyUsed > 0 ? Number(((lossKwh / energyUsed) * 100).toFixed(1)) : 12;
   const odo = Number(r.start_odometer_km ?? r.odometer_km) || 0;
   const durationSeconds = Number(r.active_duration_seconds ?? r.duration_seconds) || (endSec ? Math.max(0, endSec - startSec) : 0);
-  const chargeType = r.charge_type || (r.charger_type && r.charger_type.includes('DC') ? 'DC Fast' : 'AC Standard');
-  const peakKw = Number(r.peak_power_kw ?? r.peak_kw) || 3.3;
+
+  // Classify charger type based on physical charging power (kW):
+  // - <= 4.0 kW: 3.3 kW AC (standard portable / 15A wall socket)
+  // - 4.1 kW to 11.0 kW: 7.4 kW AC (fast home wallbox / Type 2 AC public)
+  // - > 11.0 kW: DC Fast (CCS2 DC fast charging)
+  const rawPeak = Number(r.peak_power_kw ?? r.peak_kw);
+  const peakKw = Number.isFinite(rawPeak) && rawPeak > 0 ? rawPeak : 0;
+  const rawType = String(r.charge_type || r.charger_type || '').toUpperCase();
+
+  let chargerCategory: '3.3 kW AC' | '7.4 kW AC' | 'DC Fast';
+  if (peakKw > 11.0) {
+    chargerCategory = 'DC Fast';
+  } else if (peakKw > 4.0) {
+    chargerCategory = '7.4 kW AC';
+  } else if (peakKw > 0) {
+    chargerCategory = '3.3 kW AC';
+  } else if (rawType.includes('DC')) {
+    chargerCategory = 'DC Fast';
+  } else if (rawType.includes('7.4') || rawType.includes('7.2')) {
+    chargerCategory = '7.4 kW AC';
+  } else {
+    chargerCategory = '3.3 kW AC';
+  }
+
+  const effectivePeakKw = peakKw > 0 ? peakKw : (chargerCategory === 'DC Fast' ? 30 : (chargerCategory === '7.4 kW AC' ? 7.4 : 3.3));
+  const isDc = chargerCategory === 'DC Fast';
+  const effFactor = isDc ? 0.94 : (chargerCategory === '7.4 kW AC' ? 0.905 : 0.885);
+  const energyUsed = Number(r.energy_used_kwh) || Number((energyAdded / effFactor).toFixed(2));
+  const lossKwh = Number(r.charging_loss_kwh) || Math.max(0, Number((energyUsed - energyAdded).toFixed(2)));
+  const lossPct = energyUsed > 0 ? Number(((lossKwh / energyUsed) * 100).toFixed(1)) : (isDc ? 6.0 : (chargerCategory === '7.4 kW AC' ? 9.5 : 11.5));
 
   return {
     id: String(r.id),
@@ -974,8 +999,8 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
     endEnergyKwh: Number(((endSoc / 100) * 38).toFixed(2)),
     odometerKm: odo,
     distanceToEmptyAfterKm: r.start_range_km ? Math.round(Number(r.start_range_km) + (socAdded * 3.3)) : Math.round((endSoc / 100) * 331),
-    chargerCategory: (chargeType.includes('DC') ? 'DC Fast' : '3.3 kW AC') as any,
-    maxChargingSpeedKw: peakKw,
+    chargerCategory,
+    maxChargingSpeedKw: effectivePeakKw,
     energyAddedToPackKwh: Math.max(0, energyAdded),
     energyConsumedKwh: Math.max(0, energyUsed),
     energyLossPercent: lossPct,

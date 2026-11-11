@@ -9879,6 +9879,12 @@ async function initD1(db) {
     await db.prepare(
       "UPDATE charging_sessions SET peak_power_kw = 3.3 WHERE status = 'completed' AND (peak_power_kw IS NULL OR peak_power_kw = 0)"
     ).run();
+    await db.prepare(
+      "UPDATE charging_sessions SET charge_type = 'AC' WHERE peak_power_kw > 0 AND peak_power_kw <= 11.0 AND charge_type = 'DC'"
+    ).run();
+    await db.prepare(
+      "UPDATE charges SET charge_type = 'AC Standard', charger_type = 'AC Standard' WHERE peak_kw > 0 AND peak_kw <= 11.0 AND (charge_type LIKE '%DC%' OR charger_type LIKE '%DC%')"
+    ).run();
   } catch (_) {
   }
   if (d1InitErrors.length === 0) {
@@ -10860,6 +10866,16 @@ async function d1DeduplicateCharges(env, vin) {
   }
   return { removedCount: duplicateIds.length, duplicateIds };
 }
+function normalizeChargeSessionRow(r) {
+  if (!r) return r;
+  const peakKw = Number(r.peak_power_kw ?? r.peak_kw ?? 0);
+  if (peakKw > 11) {
+    r.charge_type = "DC";
+  } else if (peakKw > 0) {
+    r.charge_type = "AC";
+  }
+  return r;
+}
 async function d1GetCharges(env, date, vin) {
   const v = normVin(vin);
   if (env.DB) {
@@ -10868,17 +10884,17 @@ async function d1GetCharges(env, date, vin) {
       if (!date || date === "all") {
         if (v) {
           const res3 = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
-          return d1DeduplicateChargeRows(res3.results || []).clean;
+          return d1DeduplicateChargeRows((res3.results || []).map(normalizeChargeSessionRow)).clean;
         }
         const res2 = await env.DB.prepare("SELECT * FROM charges ORDER BY start_timestamp DESC LIMIT 150").all();
-        return d1DeduplicateChargeRows(res2.results || []).clean;
+        return d1DeduplicateChargeRows((res2.results || []).map(normalizeChargeSessionRow)).clean;
       }
       if (v) {
         const res2 = await env.DB.prepare("SELECT * FROM charges WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
-        return d1DeduplicateChargeRows(res2.results || []).clean;
+        return d1DeduplicateChargeRows((res2.results || []).map(normalizeChargeSessionRow)).clean;
       }
       const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
-      return d1DeduplicateChargeRows(res.results || []).clean;
+      return d1DeduplicateChargeRows((res.results || []).map(normalizeChargeSessionRow)).clean;
     } catch (_) {
     }
   }
@@ -10887,7 +10903,7 @@ async function d1GetCharges(env, date, vin) {
       let charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
       if (v) charges = charges.filter((c) => normVin(c.vin) === v);
       const filtered = !date || date === "all" ? charges : charges.filter((c) => c.date === date);
-      return d1DeduplicateChargeRows(filtered).clean;
+      return d1DeduplicateChargeRows(filtered.map(normalizeChargeSessionRow)).clean;
     } catch (_) {
     }
   }
@@ -11125,7 +11141,7 @@ async function fetchCarTelemetry(client, vin) {
   const a = Number(ch?.charging_current) || 0;
   const calcKw = v > 0 && a > 0 ? Number((v * a / 1e3).toFixed(2)) : 0;
   const powerKw = calcKw > 0 ? calcKw : isCharging ? 3.3 : 0;
-  const chargeType = powerKw > 11 || ch?.charging_type === 2 ? "DC" : "AC";
+  const chargeType = powerKw > 11 ? "DC" : "AC";
   const rangeKm = Number(ch?.range_km ?? status.range_km) || 0;
   const nowSec = Math.floor(Date.now() / 1e3);
   const rawElapsed = Number(ch?.charge_time_elapsed_s) || 0;
@@ -11354,12 +11370,12 @@ async function d1GetChargingHistory(env, limit = 50, vin) {
         const res2 = await env.DB.prepare(
           "SELECT * FROM charging_sessions WHERE vin = ? ORDER BY start_time DESC LIMIT ?"
         ).bind(v, limit).all();
-        return res2.results || [];
+        return (res2.results || []).map(normalizeChargeSessionRow);
       }
       const res = await env.DB.prepare(
         "SELECT * FROM charging_sessions ORDER BY start_time DESC LIMIT ?"
       ).bind(limit).all();
-      return res.results || [];
+      return (res.results || []).map(normalizeChargeSessionRow);
     } catch (_) {
     }
   }
@@ -11481,7 +11497,7 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
       }
     }
     const actualStartTime = nowSec - bmsElapsedSec;
-    const chargeType = liveTelem.powerKw > 11 || liveTelem.chargeType === "DC" ? "DC" : "AC";
+    const chargeType = liveTelem.powerKw > 11 ? "DC" : "AC";
     const effFactor = chargeType === "DC" ? 0.94 : 0.88;
     const prePollWallKwh = Number((liveTelem.powerKw * (bmsElapsedSec / 3600)).toFixed(3));
     if (startSoc2 >= liveTelem.soc && bmsElapsedSec >= 120) {
@@ -11706,11 +11722,11 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
     const integratedKwh = Number(((Number(activeSession.energy_used_kwh) || 0) + stepKwh).toFixed(3));
     const socAdded = Math.max(0, currentSoc - startSoc);
     const kwhAdded = Number((socAdded / 100 * 38).toFixed(2));
-    const effFactor = activeSession.charge_type === "DC" || liveTelem.powerKw > 11 ? 0.94 : 0.88;
+    const peakKw = Math.max(Number(activeSession.peak_power_kw) || 0, liveTelem.powerKw);
+    const chargeType = peakKw > 11 ? "DC" : "AC";
+    const effFactor = chargeType === "DC" ? 0.94 : 0.88;
     const grossEnergyUsed = Math.max(integratedKwh, Number((kwhAdded / effFactor).toFixed(2)));
     const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-    const peakKw = Math.max(Number(activeSession.peak_power_kw) || 0, liveTelem.powerKw);
-    const chargeType = peakKw > 11 || liveTelem.chargeType === "DC" ? "DC" : "AC";
     const updates = {
       status: "ongoing",
       end_soc: currentSoc,

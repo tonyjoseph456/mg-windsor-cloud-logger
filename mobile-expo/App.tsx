@@ -338,6 +338,22 @@ function normalizeCloudCharge(c: any): ChargeLogRecord {
 
   const eff = dist > 0 && used > 0 ? Number((dist / used).toFixed(2)) : Number(c.efficiencyKmPerKwh || 0);
 
+  const rawKw = Number(c.maxChargingSpeedKw ?? c.peak_power_kw ?? c.peak_kw ?? 0);
+  let chargerCat: '3.3 kW AC' | '7.4 kW AC' | 'DC Fast' = '3.3 kW AC';
+  if (rawKw > 11.0) {
+    chargerCat = 'DC Fast';
+  } else if (rawKw > 4.0) {
+    chargerCat = '7.4 kW AC';
+  } else if (rawKw > 0) {
+    chargerCat = '3.3 kW AC';
+  } else {
+    const rawType = String(c.chargerCategory || c.charge_type || c.charger_type || '').toUpperCase();
+    if (rawType.includes('DC')) chargerCat = 'DC Fast';
+    else if (rawType.includes('7.4') || rawType.includes('7.2')) chargerCat = '7.4 kW AC';
+    else chargerCat = '3.3 kW AC';
+  }
+  const effectiveKw = rawKw > 0 ? rawKw : (chargerCat === 'DC Fast' ? 30 : (chargerCat === '7.4 kW AC' ? 7.4 : 3.3));
+
   return {
     id: String(c.id),
     startTimestampSec: startSec,
@@ -350,8 +366,8 @@ function normalizeCloudCharge(c: any): ChargeLogRecord {
     endEnergyKwh: Number(c.endEnergyKwh ?? (startKwh + added).toFixed(2)),
     odometerKm: Number(c.odometerKm ?? 0),
     distanceToEmptyAfterKm: dte > 0 ? dte : (endSoc > 0 ? Math.round((endSoc / 100) * 320) : 320),
-    chargerCategory: c.chargerCategory || '3.3 kW AC',
-    maxChargingSpeedKw: Number(c.maxChargingSpeedKw ?? 0),
+    chargerCategory: chargerCat,
+    maxChargingSpeedKw: effectiveKw,
     energyAddedToPackKwh: added,
     energyConsumedKwh: Number(c.energyConsumedKwh ?? added),
     energyLossPercent: Number(c.energyLossPercent ?? 0),
@@ -480,10 +496,10 @@ function classifyChargerSpeed(maxKw: number): {
   category: '3.3 kW AC' | '7.4 kW AC' | 'DC Fast';
   lossPct: number;
 } {
-  if (maxKw > 8.0) {
+  if (maxKw > 11.0) {
     return { category: 'DC Fast', lossPct: 6.0 };
   }
-  if (maxKw > 3.7) {
+  if (maxKw > 4.0) {
     return { category: '7.4 kW AC', lossPct: 9.5 };
   }
   return { category: '3.3 kW AC', lossPct: 11.5 };
@@ -4458,10 +4474,13 @@ export default function App() {
               ];
 
               const classifySessionSpeed = (c: ChargeLogRecord): '3.3' | '7.4' | 'dc' => {
-                const cat = (c.chargerCategory || '').toUpperCase();
                 const kw = Number(c.maxChargingSpeedKw) || 0;
-                if (cat.includes('DC') || kw > 11) return 'dc';
-                if (cat.includes('7.4') || cat.includes('7.2') || (kw > 3.7 && kw <= 11)) return '7.4';
+                const cat = (c.chargerCategory || '').toUpperCase();
+                if (kw > 11) return 'dc';
+                if (kw > 4.0 && kw <= 11) return '7.4';
+                if (kw > 0 && kw <= 4.0) return '3.3';
+                if (cat.includes('DC')) return 'dc';
+                if (cat.includes('7.4') || cat.includes('7.2')) return '7.4';
                 return '3.3';
               };
 
