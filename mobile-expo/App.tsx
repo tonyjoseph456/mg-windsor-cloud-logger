@@ -20,7 +20,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import Svg, { Circle, Path, Rect, G, Line, Polyline } from 'react-native-svg';
+import Svg, { Circle, Path, Rect, G, Line, Polyline, Defs, LinearGradient, Stop } from 'react-native-svg';
 import * as SecureStore from './src/storage';
 import { setGlobalFontScale, getGlobalFontScale } from './src/webShims';
 import * as Clipboard from 'expo-clipboard';
@@ -624,6 +624,33 @@ function formatTripRouteTitle(trip: TripRecord): string {
     return `${startPart} - ${endPart}`;
   }
   return startPart || endPart || 'Trip Journey';
+}
+
+function getTripTimeOfDayGroup(trip: TripRecord): 'Morning' | 'Afternoon' | 'Evening' | 'Night' {
+  let hour = -1;
+  if (typeof trip.startTimestampSec === 'number' && trip.startTimestampSec > 0) {
+    hour = new Date(trip.startTimestampSec * 1000).getHours();
+  } else if (trip.startDateTime) {
+    const match12 = trip.startDateTime.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)/i);
+    if (match12) {
+      let h = parseInt(match12[1], 10);
+      const isPm = match12[3].toLowerCase() === 'pm';
+      if (isPm && h < 12) h += 12;
+      if (!isPm && h === 12) h = 0;
+      hour = h;
+    } else {
+      const match24 = trip.startDateTime.match(/(\d{1,2}):(\d{2})/);
+      if (match24) {
+        hour = parseInt(match24[1], 10);
+      }
+    }
+  }
+
+  if (hour < 0) return 'Morning';
+  if (hour >= 4 && hour < 12) return 'Morning';
+  if (hour >= 12 && hour < 17) return 'Afternoon';
+  if (hour >= 17 && hour < 24) return 'Evening';
+  return 'Night';
 }
 
 function formatTripTimeDisplay(trip: TripRecord): string {
@@ -1525,6 +1552,37 @@ export default function App() {
     return () => window.removeEventListener('message', handleMsg);
   }, []);
 
+  // Web Scrollbar styling for thin scroll indicator on Trips list
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const styleId = 'trips-scroller-custom-css';
+    if (!document.getElementById(styleId)) {
+      const styleEl = document.createElement('style');
+      styleEl.id = styleId;
+      styleEl.innerHTML = `
+        .trips-scroller {
+          scrollbar-width: thin !important;
+          scrollbar-color: #334155 transparent !important;
+        }
+        .trips-scroller::-webkit-scrollbar {
+          width: 4px !important;
+          display: block !important;
+        }
+        .trips-scroller::-webkit-scrollbar-track {
+          background: transparent !important;
+        }
+        .trips-scroller::-webkit-scrollbar-thumb {
+          background: #334155 !important;
+          border-radius: 9999px !important;
+        }
+        .trips-scroller::-webkit-scrollbar-thumb:hover {
+          background: #10B981 !important;
+        }
+      `;
+      document.head.appendChild(styleEl);
+    }
+  }, []);
+
   useEffect(() => {
     SecureStore.getItemAsync(COLOR_OVERRIDE_KEY).then((c) => {
       if (c) setCarColorOverride(c);
@@ -1598,6 +1656,83 @@ export default function App() {
     }
     return trips.filter((t) => getTripDateKey(t) === selectedTripDate);
   }, [trips, selectedTripDate]);
+
+  // Group displayed trips by time of day (Evening, Afternoon, Morning, Night)
+  const groupedTrips = useMemo(() => {
+    const groups: { title: string; trips: TripRecord[] }[] = [];
+    let currentGroup: { title: string; trips: TripRecord[] } | null = null;
+
+    for (const trip of displayedTrips) {
+      const timeGroup = getTripTimeOfDayGroup(trip);
+      const groupTitle =
+        selectedTripDate === 'all'
+          ? `${formatDisplayDateKey(getTripDateKey(trip))} · ${timeGroup}`
+          : timeGroup;
+
+      if (!currentGroup || currentGroup.title !== groupTitle) {
+        currentGroup = { title: groupTitle, trips: [trip] };
+        groups.push(currentGroup);
+      } else {
+        currentGroup.trips.push(trip);
+      }
+    }
+
+    return groups;
+  }, [displayedTrips, selectedTripDate]);
+
+  // Flat list of direct children for ScrollView with sticky header indices
+  const { scrollChildren, stickyIndices } = useMemo(() => {
+    const children: React.ReactNode[] = [];
+    const indices: number[] = [];
+
+    groupedTrips.forEach((group, gIdx) => {
+      indices.push(children.length);
+      children.push(
+        <View
+          key={`sticky-header-${group.title}-${gIdx}`}
+          style={styles.tripsStickyHeader}
+        >
+          <Text style={styles.tripsStickyHeaderText}>{group.title}</Text>
+        </View>
+      );
+
+      group.trips.forEach((trip, idx) => {
+        const isLast = gIdx === groupedTrips.length - 1 && idx === group.trips.length - 1;
+        const routeTitle = formatTripRouteTitle(trip);
+        const distStr = formatTripDistDisplay(trip);
+        const subStr = formatTripTimeDisplay(trip);
+
+        children.push(
+          <TouchableOpacity
+            key={trip.id}
+            style={[styles.tripsListItem, isLast && { borderBottomWidth: 0 }]}
+            onPress={() => handleOpenTripDetail(trip)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.tripsListItemMain}>
+              <View style={styles.tripsListItemTopRow}>
+                <Text
+                  style={styles.tripsListItemTitle}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {routeTitle}
+                </Text>
+                <Text style={styles.tripsListItemDist}>
+                  {distStr}
+                </Text>
+              </View>
+              <Text style={styles.tripsListItemSub}>
+                {subStr}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        );
+      });
+    });
+
+    return { scrollChildren: children, stickyIndices: indices };
+  }, [groupedTrips, handleOpenTripDetail]);
 
   const [chargeLogs, setChargeLogs] = useState<ChargeLogRecord[]>([]);
   const [activeCharge, setActiveCharge] = useState<ChargeLogRecord | null>(null);
@@ -3368,26 +3503,422 @@ export default function App() {
         </View>
       )}
 
-      {/* Main Content with Native & Gesture Pull-to-Refresh */}
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={styles.scroll}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onScroll={handleScroll}
-        scrollEventThrottle={16}
-        refreshControl={
-          <RefreshControl
-            refreshing={isSyncing}
-            onRefresh={() => refreshVehicleTelemetry()}
-            tintColor="#10B981"
-            title={isSyncing ? 'Polling vehicle telemetry...' : 'Pull down to sync vehicle'}
-            titleColor="#94A3B8"
-          />
-        }
-      >
+      {tab === 'trips' ? (
+        <View style={styles.tripsScreenRoot}>
+          {/* TAB 3: TRIPS (Fixed Top Header & Day Totals + Scrolling Trip List) */}
+          <Animated.View
+            style={[
+              styles.tripsMainContainer,
+              {
+                transform: [{ translateX: tripsTranslateX }],
+              },
+            ]}
+          >
+            {/* 1. FIXED TOP SECTION: Header, Start/Plan buttons, Date Selector & Day Totals */}
+            <View style={styles.tripsFixedTopSection}>
+              {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
+              <View style={styles.mockupHeader}>
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
+                  <TouchableOpacity
+                    style={styles.mockupSublineRow}
+                    onPress={() => setShowColorPicker(true)}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Change vehicle color"
+                    accessibilityRole="button"
+                  >
+                    <View style={[styles.colorDot, { backgroundColor: activeWindsorColor.hex }]} />
+                    <Text style={styles.mockupSublineText} numberOfLines={1}>
+                      {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap ↻ to sync'}
+                    </Text>
+                    <Text style={styles.colorPencilHint}>▾</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.mockupRefreshBtn}
+                  onPress={() => refreshVehicleTelemetry()}
+                  disabled={isSyncing}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Refresh telemetry"
+                  accessibilityRole="button"
+                >
+                  {isSyncing ? (
+                    <ActivityIndicator size="small" color="#10B981" />
+                  ) : (
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.4}>
+                      <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              {/* 2. Section Header: Title "Trips" and Overflow "•••" Button */}
+              <View style={[styles.tripsHeader, { marginTop: 8, marginBottom: 16 }]}>
+                <Text style={styles.tripsTitle}>Trips</Text>
+                <TouchableOpacity
+                  style={styles.tripsOverflowBtn}
+                  onPress={() => setShowTripsOptionsMenu(true)}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Trips Options"
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.tripsOverflowBtnText}>•••</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 3. Row with 2 Action Buttons: [ ▶ Start trip ] and [ Plan a trip ] */}
+              <View style={styles.tripsActionButtonsRow}>
+                {/* Button 1: Start / End trip */}
+                <TouchableOpacity
+                  style={[
+                    styles.tripsStartBtn,
+                    (liveTripTracking || activeTrip) && styles.tripsStartBtnActive,
+                  ]}
+                  onPress={async () => {
+                    if (liveTripTracking || activeTrip) {
+                      // End active trip
+                      if (activeTrip) {
+                        const durSec =
+                          activeTrip.durationSeconds > 0
+                            ? activeTrip.durationSeconds
+                            : Math.max(60, Math.floor(Date.now() / 1000) - (activeTrip.startTimestampSec || 0));
+                        const finished: TripRecord = {
+                          ...activeTrip,
+                          durationSeconds: durSec,
+                          endDateTime: formatDateTime(Math.floor(Date.now() / 1000)),
+                          status: 'completed',
+                        };
+                        const nextTrips = deduplicateTripList([
+                          finished,
+                          ...tripsRef.current.filter((t) => t.id !== finished.id),
+                        ]);
+                        setTrips(nextTrips);
+                        tripsRef.current = nextTrips;
+                        setActiveTrip(null);
+                        activeTripRef.current = null;
+                        setLiveTripTracking(false);
+                        await Promise.all([
+                          SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips)),
+                          SecureStore.deleteItemAsync(ACTIVE_TRIP_KEY),
+                        ]);
+                        showBanner('ok', 'Trip completed and saved to history');
+                      } else {
+                        setLiveTripTracking(false);
+                        showBanner('ok', 'Live trip tracking stopped');
+                      }
+                    } else {
+                      // Start new trip
+                      setLiveTripTracking(true);
+                      showBanner('ok', 'Live trip recording active');
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Svg width={18} height={18} viewBox="0 0 24 24" fill={liveTripTracking || activeTrip ? '#FFFFFF' : '#0A0E17'} stroke={liveTripTracking || activeTrip ? '#FFFFFF' : '#0A0E17'} strokeWidth={2}>
+                    {liveTripTracking || activeTrip ? (
+                      <Rect x="5" y="5" width="14" height="14" rx="2" />
+                    ) : (
+                      <Path d="M5 3l14 9-14 9V3z" />
+                    )}
+                  </Svg>
+                  <Text
+                    style={[
+                      styles.tripsStartBtnText,
+                      (liveTripTracking || activeTrip) && { color: '#FFFFFF' },
+                    ]}
+                  >
+                    {liveTripTracking || activeTrip ? 'End trip' : 'Start trip'}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Button 2: Plan a trip */}
+                <TouchableOpacity
+                  style={styles.tripsPlanBtn}
+                  onPress={handleOpenPlanScreen}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Plan a trip"
+                  accessibilityRole="button"
+                >
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                    <Path d="M18 6a3 3 0 1 0-3-3v12a3 3 0 1 1-3-3" strokeLinecap="round" strokeLinejoin="round" />
+                    <Path d="M18 6h-6a3 3 0 0 0-3 3v6a3 3 0 0 1-3 3H3" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                  <Text style={styles.tripsPlanBtnText}>Plan a trip</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 4. Date Selector Pill & Trip Count Row */}
+              {(() => {
+                const summaryTrips =
+                  selectedTripDate === 'all'
+                    ? trips.filter((t) => getTripDateKey(t) === todayKey)
+                    : displayedTrips;
+                const totalDistKm = Number(
+                  summaryTrips.reduce((acc, t) => acc + (Number(t.distanceKm) || 0), 0).toFixed(1)
+                );
+                const totalEnergyKwh = Number(
+                  summaryTrips
+                    .reduce((acc, t) => {
+                      const e =
+                        Number(t.energyUsedKwh) > 0
+                          ? Number(t.energyUsedKwh)
+                          : Math.max(0, ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH);
+                      return acc + e;
+                    }, 0)
+                    .toFixed(2)
+                );
+                const avgEff =
+                  totalDistKm > 0 && totalEnergyKwh > 0
+                    ? Number((totalDistKm / totalEnergyKwh).toFixed(2))
+                    : 0;
+
+                return (
+                  <>
+                    <View style={styles.tripsDateRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.tripsDatePill,
+                          showTripCalendar && styles.tripsDatePillActive,
+                        ]}
+                        onPress={() => setShowTripCalendar((v) => !v)}
+                        activeOpacity={0.7}
+                      >
+                        <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                          <Rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                          <Line x1="16" y1="2" x2="16" y2="6" />
+                          <Line x1="8" y1="2" x2="8" y2="6" />
+                          <Line x1="3" y1="10" x2="21" y2="10" />
+                        </Svg>
+                        <Text style={styles.tripsDatePillText}>
+                          {selectedTripDate === 'all'
+                            ? 'All Dates'
+                            : formatDisplayDateKey(selectedTripDate)}
+                        </Text>
+                        <Text style={styles.tripsDatePillChevron}>
+                          {showTripCalendar ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      <Text style={styles.tripsCountText}>
+                        {summaryTrips.length} {summaryTrips.length === 1 ? 'trip' : 'trips'}
+                      </Text>
+                    </View>
+
+                    {/* Interactive Calendar Dropdown (if toggled) */}
+                    {showTripCalendar && (
+                      <View style={{ marginBottom: 16 }}>
+                        <TripCalendar
+                          selectedDateKey={selectedTripDate}
+                          tripDateKeys={tripDateKeysSet}
+                          onSelectDate={(dateKey) => {
+                            setSelectedTripDate(dateKey);
+                            setShowTripCalendar(false);
+                          }}
+                          onShowAll={() => {
+                            setSelectedTripDate('all');
+                            setShowTripCalendar(false);
+                          }}
+                          onClose={() => setShowTripCalendar(false)}
+                        />
+                      </View>
+                    )}
+
+                    {/* Daily / Selected Date Total Distance & Energy Usage Hero */}
+                    <View style={styles.tripsHeroStats}>
+                      <View style={styles.tripsHeroNumbersRow}>
+                        <View style={styles.tripsHeroStatCol}>
+                          <Text style={styles.tripsHeroNumber}>
+                            {totalDistKm}
+                            <Text style={styles.tripsHeroUnit}> km</Text>
+                          </Text>
+                          <Text style={styles.tripsHeroSub}>
+                            Average {avgEff > 0 ? avgEff : '7.54'} km/kWh
+                          </Text>
+                        </View>
+
+                        <View style={styles.tripsHeroStatColRight}>
+                          <Text style={styles.tripsHeroNumber}>
+                            {totalEnergyKwh}
+                            <Text style={styles.tripsHeroUnit}> kWh</Text>
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  </>
+                );
+              })()}
+            </View>
+
+            {/* 5. SCROLLING TRIP LIST CONTAINER */}
+            <View style={styles.tripsListScrollWrapper}>
+              <ScrollView
+                style={styles.tripsListScrollView}
+                contentContainerStyle={styles.tripsListScrollContent}
+                showsVerticalScrollIndicator={true}
+                persistentScrollbar={true}
+                indicatorStyle="white"
+                stickyHeaderIndices={stickyIndices}
+                {...(Platform.OS === 'web' ? ({ className: 'trips-scroller' } as any) : {})}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={isSyncing}
+                    onRefresh={() => refreshVehicleTelemetry()}
+                    tintColor="#10B981"
+                  />
+                }
+              >
+                {displayedTrips.length === 0 ? (
+                  <View style={styles.tripEmptyContainer}>
+                    <Text style={styles.tripEmptyIcon}>🗓️</Text>
+                    <Text style={styles.tripEmptyTitle}>
+                      {selectedTripDate === todayKey
+                        ? 'No Trips Recorded Today'
+                        : selectedTripDate === 'all'
+                        ? 'No Completed Trips Saved Yet'
+                        : `No Trips on ${formatDisplayDateKey(selectedTripDate)}`}
+                    </Text>
+                    <Text style={styles.tripEmptySubtitle}>
+                      Trips are recorded automatically when your car drives (or tap &quot;Start trip&quot; / &quot;•••&quot; to log a trip).
+                    </Text>
+                    {selectedTripDate !== todayKey && (
+                      <TouchableOpacity
+                        style={styles.tripEmptyActionBtn}
+                        onPress={() => {
+                          setSelectedTripDate(todayKey);
+                          setShowTripCalendar(false);
+                        }}
+                      >
+                        <Text style={styles.tripEmptyActionBtnText}>📅 Show Today&apos;s Trips</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ) : (
+                  scrollChildren
+                )}
+              </ScrollView>
+
+              {/* Scroll Hint: Bottom Fade Out above the bottom nav bar */}
+              {displayedTrips.length > 2 && (
+                <View pointerEvents="none" style={styles.tripsBottomFadeHint}>
+                  <Svg width="100%" height={48} style={{ width: '100%', height: 48 }}>
+                    <Defs>
+                      <LinearGradient id="tripsBottomFadeGrad" x1="0" y1="0" x2="0" y2="1">
+                        <Stop offset="0%" stopColor="#0A0E17" stopOpacity="0" />
+                        <Stop offset="35%" stopColor="#0A0E17" stopOpacity="0.35" />
+                        <Stop offset="75%" stopColor="#0A0E17" stopOpacity="0.85" />
+                        <Stop offset="100%" stopColor="#0A0E17" stopOpacity="1" />
+                      </LinearGradient>
+                    </Defs>
+                    <Rect x="0" y="0" width="100%" height={48} fill="url(#tripsBottomFadeGrad)" />
+                  </Svg>
+                </View>
+              )}
+            </View>
+
+            {/* Overflow Options Modal for Cloudflare D1 & Syncing */}
+            <Modal visible={showTripsOptionsMenu} transparent animationType="fade">
+              <TouchableOpacity
+                style={styles.modalBackdrop}
+                activeOpacity={1}
+                onPress={() => setShowTripsOptionsMenu(false)}
+              >
+                <View style={styles.tripsOptionsBox}>
+                  <Text style={styles.tripsOptionsTitle}>Trips Database & Management</Text>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleSyncTripsToD1();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>☁️  Sync Trips to Cloudflare D1</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleRefreshD1Trips();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>🔄  Refresh Trips from Cloudflare D1</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleCleanAndDeduplicateD1();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>🧹  Clean & Deduplicate D1 Trips</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleManualLogTrip();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>➕  Log Current Trip Telemetry Now</Text>
+                  </TouchableOpacity>
+
+                  {googleConfig?.accessToken && googleConfig?.spreadsheetId && (
+                    <TouchableOpacity
+                      style={styles.tripsOptionItem}
+                      onPress={() => {
+                        setShowTripsOptionsMenu(false);
+                        handleSyncGoogleSheetNow();
+                      }}
+                    >
+                      <Text style={styles.tripsOptionItemText}>📊  Sync Trips to Google Sheets</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    style={[styles.tripsOptionItem, { borderBottomWidth: 0 }]}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleClearAllD1Trips();
+                    }}
+                  >
+                    <Text style={[styles.tripsOptionItemText, { color: '#F87171' }]}>🗑️  Clear All Cloudflare D1 Trips</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionsCancelBtn}
+                    onPress={() => setShowTripsOptionsMenu(false)}
+                  >
+                    <Text style={styles.tripsOptionsCancelText}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </TouchableOpacity>
+            </Modal>
+          </Animated.View>
+        </View>
+      ) : (
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.scroll}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+          refreshControl={
+            <RefreshControl
+              refreshing={isSyncing}
+              onRefresh={() => refreshVehicleTelemetry()}
+              tintColor="#10B981"
+              title={isSyncing ? 'Polling vehicle telemetry...' : 'Pull down to sync vehicle'}
+              titleColor="#94A3B8"
+            />
+          }
+        >
         {/* Tap-to-Refresh & Pull-to-Refresh banner (non-home tabs) */}
-        {tab !== 'home' && tab !== 'trips' && (
+        {tab !== 'home' && (
           <TouchableOpacity
             style={styles.pullHint}
             onPress={() => refreshVehicleTelemetry()}
@@ -4324,392 +4855,7 @@ export default function App() {
           </>
         )}
 
-        {/* TAB 3: TRIPS (Redesigned Screen matching Figma Mockup) */}
-        {tab === 'trips' && (
-          <Animated.View
-            style={[
-              styles.tripsMainContainer,
-              {
-                transform: [{ translateX: tripsTranslateX }],
-              },
-            ]}
-          >
-            {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ (matching Home screen) */}
-            <View style={styles.mockupHeader}>
-              <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
-                <TouchableOpacity
-                  style={styles.mockupSublineRow}
-                  onPress={() => setShowColorPicker(true)}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Change vehicle color"
-                  accessibilityRole="button"
-                >
-                  <View style={[styles.colorDot, { backgroundColor: activeWindsorColor.hex }]} />
-                  <Text style={styles.mockupSublineText} numberOfLines={1}>
-                    {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap ↻ to sync'}
-                  </Text>
-                  <Text style={styles.colorPencilHint}>▾</Text>
-                </TouchableOpacity>
-              </View>
 
-              <TouchableOpacity
-                style={styles.mockupRefreshBtn}
-                onPress={() => refreshVehicleTelemetry()}
-                disabled={isSyncing}
-                activeOpacity={0.7}
-                accessibilityLabel="Refresh telemetry"
-                accessibilityRole="button"
-              >
-                {isSyncing ? (
-                  <ActivityIndicator size="small" color="#10B981" />
-                ) : (
-                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.4}>
-                    <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
-                  </Svg>
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {/* 2. Section Header: Title "Trips" and Overflow "•••" Button */}
-            <View style={[styles.tripsHeader, { marginTop: 8, marginBottom: 16 }]}>
-              <Text style={styles.tripsTitle}>Trips</Text>
-              <TouchableOpacity
-                style={styles.tripsOverflowBtn}
-                onPress={() => setShowTripsOptionsMenu(true)}
-                activeOpacity={0.7}
-                accessibilityLabel="Trips Options"
-                accessibilityRole="button"
-              >
-                <Text style={styles.tripsOverflowBtnText}>•••</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Row with 2 Action Buttons: [ ▶ Start trip ] and [ Plan a trip ] */}
-            <View style={styles.tripsActionButtonsRow}>
-              {/* Button 1: Start / End trip */}
-              <TouchableOpacity
-                style={[
-                  styles.tripsStartBtn,
-                  (liveTripTracking || activeTrip) && styles.tripsStartBtnActive,
-                ]}
-                onPress={async () => {
-                  if (liveTripTracking || activeTrip) {
-                    // End active trip
-                    if (activeTrip) {
-                      const durSec =
-                        activeTrip.durationSeconds > 0
-                          ? activeTrip.durationSeconds
-                          : Math.max(60, Math.floor(Date.now() / 1000) - (activeTrip.startTimestampSec || 0));
-                      const finished: TripRecord = {
-                        ...activeTrip,
-                        durationSeconds: durSec,
-                        endDateTime: formatDateTime(Math.floor(Date.now() / 1000)),
-                        status: 'completed',
-                      };
-                      const nextTrips = deduplicateTripList([
-                        finished,
-                        ...tripsRef.current.filter((t) => t.id !== finished.id),
-                      ]);
-                      setTrips(nextTrips);
-                      tripsRef.current = nextTrips;
-                      setActiveTrip(null);
-                      activeTripRef.current = null;
-                      setLiveTripTracking(false);
-                      await Promise.all([
-                        SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips)),
-                        SecureStore.deleteItemAsync(ACTIVE_TRIP_KEY),
-                      ]);
-                      showBanner('ok', 'Trip completed and saved to history');
-                    } else {
-                      setLiveTripTracking(false);
-                      showBanner('ok', 'Live trip tracking stopped');
-                    }
-                  } else {
-                    // Start new trip
-                    setLiveTripTracking(true);
-                    showBanner('ok', 'Live trip recording active');
-                  }
-                }}
-                activeOpacity={0.8}
-              >
-                <Svg width={18} height={18} viewBox="0 0 24 24" fill={liveTripTracking || activeTrip ? '#FFFFFF' : '#0A0E17'} stroke={liveTripTracking || activeTrip ? '#FFFFFF' : '#0A0E17'} strokeWidth={2}>
-                  {liveTripTracking || activeTrip ? (
-                    <Rect x="5" y="5" width="14" height="14" rx="2" />
-                  ) : (
-                    <Path d="M5 3l14 9-14 9V3z" />
-                  )}
-                </Svg>
-                <Text
-                  style={[
-                    styles.tripsStartBtnText,
-                    (liveTripTracking || activeTrip) && { color: '#FFFFFF' },
-                  ]}
-                >
-                  {liveTripTracking || activeTrip ? 'End trip' : 'Start trip'}
-                </Text>
-              </TouchableOpacity>
-
-              {/* Button 2: Plan a trip */}
-              <TouchableOpacity
-                style={styles.tripsPlanBtn}
-                onPress={handleOpenPlanScreen}
-                activeOpacity={0.7}
-                accessibilityLabel="Plan a trip"
-                accessibilityRole="button"
-              >
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
-                  <Path d="M18 6a3 3 0 1 0-3-3v12a3 3 0 1 1-3-3" strokeLinecap="round" strokeLinejoin="round" />
-                  <Path d="M18 6h-6a3 3 0 0 0-3 3v6a3 3 0 0 1-3 3H3" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-                <Text style={styles.tripsPlanBtnText}>Plan a trip</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Date Selector Pill & Trip Count Row */}
-            {(() => {
-              const summaryTrips =
-                selectedTripDate === 'all'
-                  ? trips.filter((t) => getTripDateKey(t) === todayKey)
-                  : displayedTrips;
-              const totalDistKm = Number(
-                summaryTrips.reduce((acc, t) => acc + (Number(t.distanceKm) || 0), 0).toFixed(1)
-              );
-              const totalEnergyKwh = Number(
-                summaryTrips
-                  .reduce((acc, t) => {
-                    const e =
-                      Number(t.energyUsedKwh) > 0
-                        ? Number(t.energyUsedKwh)
-                        : Math.max(0, ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH);
-                    return acc + e;
-                  }, 0)
-                  .toFixed(2)
-              );
-              const avgEff =
-                totalDistKm > 0 && totalEnergyKwh > 0
-                  ? Number((totalDistKm / totalEnergyKwh).toFixed(2))
-                  : 0;
-
-              return (
-                <>
-                  <View style={styles.tripsDateRow}>
-                    <TouchableOpacity
-                      style={[
-                        styles.tripsDatePill,
-                        showTripCalendar && styles.tripsDatePillActive,
-                      ]}
-                      onPress={() => setShowTripCalendar((v) => !v)}
-                      activeOpacity={0.7}
-                    >
-                      <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
-                        <Rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-                        <Line x1="16" y1="2" x2="16" y2="6" />
-                        <Line x1="8" y1="2" x2="8" y2="6" />
-                        <Line x1="3" y1="10" x2="21" y2="10" />
-                      </Svg>
-                      <Text style={styles.tripsDatePillText}>
-                        {selectedTripDate === 'all'
-                          ? 'All Dates'
-                          : formatDisplayDateKey(selectedTripDate)}
-                      </Text>
-                      <Text style={styles.tripsDatePillChevron}>
-                        {showTripCalendar ? '▲' : '▼'}
-                      </Text>
-                    </TouchableOpacity>
-
-                    <Text style={styles.tripsCountText}>
-                      {summaryTrips.length} {summaryTrips.length === 1 ? 'trip' : 'trips'}
-                    </Text>
-                  </View>
-
-                  {/* Interactive Calendar Dropdown (if toggled) */}
-                  {showTripCalendar && (
-                    <View style={{ marginBottom: 16 }}>
-                      <TripCalendar
-                        selectedDateKey={selectedTripDate}
-                        tripDateKeys={tripDateKeysSet}
-                        onSelectDate={(dateKey) => {
-                          setSelectedTripDate(dateKey);
-                          setShowTripCalendar(false);
-                        }}
-                        onShowAll={() => {
-                          setSelectedTripDate('all');
-                          setShowTripCalendar(false);
-                        }}
-                        onClose={() => setShowTripCalendar(false)}
-                      />
-                    </View>
-                  )}
-
-                  {/* Daily / Selected Date Total Distance & Energy Usage Hero */}
-                  <View style={styles.tripsHeroStats}>
-                    <View style={styles.tripsHeroNumbersRow}>
-                      <View style={styles.tripsHeroStatCol}>
-                        <Text style={styles.tripsHeroNumber}>
-                          {totalDistKm}
-                          <Text style={styles.tripsHeroUnit}> km</Text>
-                        </Text>
-                        <Text style={styles.tripsHeroSub}>
-                          Average {avgEff > 0 ? avgEff : '7.54'} km/kWh
-                        </Text>
-                      </View>
-
-                      <View style={styles.tripsHeroStatColRight}>
-                        <Text style={styles.tripsHeroNumber}>
-                          {totalEnergyKwh}
-                          <Text style={styles.tripsHeroUnit}> kWh</Text>
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                </>
-              );
-            })()}
-
-            {/* Completed Trips List */}
-            <View style={styles.tripsListContainer}>
-              {displayedTrips.length === 0 ? (
-                <View style={styles.tripEmptyContainer}>
-                  <Text style={styles.tripEmptyIcon}>🗓️</Text>
-                  <Text style={styles.tripEmptyTitle}>
-                    {selectedTripDate === todayKey
-                      ? 'No Trips Recorded Today'
-                      : selectedTripDate === 'all'
-                      ? 'No Completed Trips Saved Yet'
-                      : `No Trips on ${formatDisplayDateKey(selectedTripDate)}`}
-                  </Text>
-                  <Text style={styles.tripEmptySubtitle}>
-                    Trips are recorded automatically when your car drives (or tap &quot;Start trip&quot; / &quot;•••&quot; to log a trip).
-                  </Text>
-                  {selectedTripDate !== todayKey && (
-                    <TouchableOpacity
-                      style={styles.tripEmptyActionBtn}
-                      onPress={() => {
-                        setSelectedTripDate(todayKey);
-                        setShowTripCalendar(false);
-                      }}
-                    >
-                      <Text style={styles.tripEmptyActionBtnText}>📅 Show Today&apos;s Trips</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              ) : (
-                displayedTrips.map((trip, idx) => {
-                  const isLast = idx === displayedTrips.length - 1;
-                  const routeTitle = formatTripRouteTitle(trip);
-                  const distStr = formatTripDistDisplay(trip);
-                  const subStr = formatTripTimeDisplay(trip);
-
-                  return (
-                    <TouchableOpacity
-                      key={trip.id}
-                      style={[styles.tripsListItem, isLast && { borderBottomWidth: 0 }]}
-                      onPress={() => handleOpenTripDetail(trip)}
-                      activeOpacity={0.7}
-                    >
-                      <View style={styles.tripsListItemMain}>
-                        <View style={styles.tripsListItemTopRow}>
-                          <Text style={styles.tripsListItemTitle} numberOfLines={1}>
-                            {routeTitle}
-                          </Text>
-                          <Text style={styles.tripsListItemDist}>
-                            {distStr}
-                          </Text>
-                        </View>
-                        <Text style={styles.tripsListItemSub}>
-                          {subStr}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })
-              )}
-            </View>
-
-            {/* Overflow Options Modal for Cloudflare D1 & Syncing */}
-            <Modal visible={showTripsOptionsMenu} transparent animationType="fade">
-              <TouchableOpacity
-                style={styles.modalBackdrop}
-                activeOpacity={1}
-                onPress={() => setShowTripsOptionsMenu(false)}
-              >
-                <View style={styles.tripsOptionsBox}>
-                  <Text style={styles.tripsOptionsTitle}>Trips Database & Management</Text>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleSyncTripsToD1();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>☁️  Sync Trips to Cloudflare D1</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleRefreshD1Trips();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>🔄  Refresh Trips from Cloudflare D1</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleCleanAndDeduplicateD1();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>🧹  Clean & Deduplicate D1 Trips</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleManualLogTrip();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>➕  Log Current Trip Telemetry Now</Text>
-                  </TouchableOpacity>
-
-                  {googleConfig?.accessToken && googleConfig?.spreadsheetId && (
-                    <TouchableOpacity
-                      style={styles.tripsOptionItem}
-                      onPress={() => {
-                        setShowTripsOptionsMenu(false);
-                        handleSyncGoogleSheetNow();
-                      }}
-                    >
-                      <Text style={styles.tripsOptionItemText}>📊  Sync Trips to Google Sheets</Text>
-                    </TouchableOpacity>
-                  )}
-
-                  <TouchableOpacity
-                    style={[styles.tripsOptionItem, { borderBottomWidth: 0 }]}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleClearAllD1Trips();
-                    }}
-                  >
-                    <Text style={[styles.tripsOptionItemText, { color: '#F87171' }]}>🗑️  Clear All Cloudflare D1 Trips</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionsCancelBtn}
-                    onPress={() => setShowTripsOptionsMenu(false)}
-                  >
-                    <Text style={styles.tripsOptionsCancelText}>Close</Text>
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
-            </Modal>
-          </Animated.View>
-        )}
 
         {/* TAB 6: ACCOUNT & LOGOUT */}
         {tab === 'account' && (
@@ -6396,6 +6542,7 @@ export default function App() {
           </>
         )}
       </ScrollView>
+    )}
 
       {/* Tyres & Closures Fullscreen Tween Screen */}
       {isTyresScreenVisible && (
@@ -11376,9 +11523,72 @@ const styles = StyleSheet.create({
   },
 
   // Trips Screen (Redesigned Mockup) Styles
-  tripsMainContainer: {
+  tripsScreenRoot: {
+    flex: 1,
     width: '100%',
-    paddingBottom: 24,
+    alignItems: 'center',
+  },
+  tripsMainContainer: {
+    flex: 1,
+    width: '100%',
+    maxWidth: 440,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+  },
+  tripsFixedTopSection: {
+    width: '100%',
+    backgroundColor: '#0A0E17',
+    zIndex: 5,
+  },
+  tripsListScrollWrapper: {
+    flex: 1,
+    width: '100%',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  tripsListScrollView: {
+    flex: 1,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? ({
+          scrollbarWidth: 'thin',
+          scrollbarColor: '#334155 transparent',
+        } as any)
+      : {}),
+  },
+  tripsListScrollContent: {
+    paddingBottom: (Platform.OS === 'web' ? 120 : 128),
+  },
+  tripsStickyHeader: {
+    backgroundColor: '#0A0E17',
+    paddingTop: 12,
+    paddingBottom: 6,
+    paddingHorizontal: 2,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(30, 41, 59, 0.45)',
+    zIndex: 10,
+    ...(Platform.OS === 'web'
+      ? ({
+          position: 'sticky',
+          top: 0,
+        } as any)
+      : {}),
+  },
+  tripsStickyHeaderText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  tripsBottomFadeHint: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: (Platform.OS === 'web' ? 76 : Platform.OS === 'ios' ? 82 : 76),
+    height: 48,
+    pointerEvents: 'none',
+    zIndex: 15,
   },
   tripsHeader: {
     flexDirection: 'row',
@@ -11532,18 +11742,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 4,
+    width: '100%',
   },
   tripsListItemTitle: {
     color: '#F8FAFC',
     fontSize: 16.5,
     fontWeight: '700',
     flex: 1,
-    paddingRight: 12,
+    flexShrink: 1,
+    marginRight: 24,
+    maxWidth: '74%',
   },
   tripsListItemDist: {
     color: '#F8FAFC',
     fontSize: 16.5,
     fontWeight: '800',
+    flexShrink: 0,
+    textAlign: 'right',
   },
   tripsListItemSub: {
     color: '#94A3B8',
