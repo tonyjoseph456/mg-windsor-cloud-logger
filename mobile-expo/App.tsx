@@ -2755,13 +2755,9 @@ export default function App() {
 
   // Active Windsor EV Exterior Color:
   // Derived from user override if selected, else matched to server vehicle color name from iSMART
-  const activeWindsorColor = useMemo(() => {
-    if (carColorOverride) {
-      const found = WINDSOR_COLORS.find((c) => c.key === carColorOverride);
-      if (found) return found;
-    }
-    return matchWindsorColor(rawVehicle?.color_name || snapshot?.vehicle?.color_name);
-  }, [carColorOverride, rawVehicle?.color_name, snapshot?.vehicle?.color_name]);
+  const activeWindsorColor =
+    (carColorOverride && WINDSOR_COLORS.find((c) => c.key === carColorOverride)) ||
+    matchWindsorColor(rawVehicle?.color_name || snapshot?.vehicle?.color_name);
 
   const handleSelectCarColor = async (colorKey: string | null) => {
     if (colorKey) {
