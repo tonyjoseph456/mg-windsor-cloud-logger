@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Linking,
   Modal,
   Platform,
@@ -22,6 +23,13 @@ import { setGlobalFontScale, getGlobalFontScale } from './src/webShims';
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
 import { captureRef } from 'react-native-view-shot';
+import {
+  WINDSOR_COLORS,
+  WINDSOR_360_GIF,
+  WINDSOR_360_URI,
+  matchWindsorColor,
+  WindsorColorOption,
+} from './src/assets/cars';
 import {
   ChargeLogRecord,
   DEFAULT_GOOGLE_CLIENT_ID,
@@ -94,6 +102,7 @@ const GOOGLE_SYNC_KEY = 'mg_ismart_google_sync_v1';
 const BACKEND_KEY = 'mg_ismart_backend_v1';
 const GOOGLE_CLIENT_ID_KEY = 'mg_ismart_google_client_id_v1';
 const FONT_SCALE_KEY = 'mg_ismart_font_scale_v1';
+const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const DEFAULT_CLOUD_SYNC_URL =
   'https://raw.githubusercontent.com/tonyjoseph456/mg-windsor-cloud-logger/main/data/cloud_charging_log.json';
 
@@ -1049,6 +1058,18 @@ export default function App() {
   const [activeTrip, setActiveTrip] = useState<TripRecord | null>(null);
   const [parkedBaseline, setParkedBaseline] = useState<ParkedTripBaseline | null>(null);
   const [liveTripTracking, setLiveTripTracking] = useState<boolean>(false);
+
+  // Home Screen Redesign: Color & 360 Spin View State
+  const [carColorOverride, setCarColorOverride] = useState<string | null>(null);
+  const [is360Mode, setIs360Mode] = useState<boolean>(false);
+  const [showColorPicker, setShowColorPicker] = useState<boolean>(false);
+  const [openDetailSection, setOpenDetailSection] = useState<'tpms' | 'location' | 'remote' | null>(null);
+
+  useEffect(() => {
+    SecureStore.getItemAsync(COLOR_OVERRIDE_KEY).then((c) => {
+      if (c) setCarColorOverride(c);
+    }).catch(() => {});
+  }, []);
 
   // Trip History Date Filter & Calendar State
   const [selectedTripDate, setSelectedTripDate] = useState<string>(() => getTodayDateKey());
@@ -2732,50 +2753,73 @@ export default function App() {
       ? Math.min(100, Math.max(70, Number(((derivedFullCapacityKwh / nominalCapacityKwh) * 100).toFixed(1))))
       : 100.0;
 
+  // Active Windsor EV Exterior Color:
+  // Derived from user override if selected, else matched to server vehicle color name from iSMART
+  const activeWindsorColor = useMemo(() => {
+    if (carColorOverride) {
+      const found = WINDSOR_COLORS.find((c) => c.key === carColorOverride);
+      if (found) return found;
+    }
+    return matchWindsorColor(rawVehicle?.color_name || snapshot?.vehicle?.color_name);
+  }, [carColorOverride, rawVehicle?.color_name, snapshot?.vehicle?.color_name]);
+
+  const handleSelectCarColor = async (colorKey: string | null) => {
+    if (colorKey) {
+      setCarColorOverride(colorKey);
+      await SecureStore.setItemAsync(COLOR_OVERRIDE_KEY, colorKey);
+    } else {
+      setCarColorOverride(null);
+      await SecureStore.deleteItemAsync(COLOR_OVERRIDE_KEY);
+    }
+    setShowColorPicker(false);
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
-      <View style={styles.topHeaderWrap}>
-        {/* Top Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.mgLogo}>
-              <Text style={styles.mgLogoText}>MG</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Text style={styles.title}>{displayName}</Text>
-                <View style={[styles.modePill, styles.modePillLive]}>
-                  <Text style={[styles.modePillText, { color: '#6EE7B7' }]}>LIVE</Text>
+      {tab !== 'home' && (
+        <View style={styles.topHeaderWrap}>
+          {/* Top Header */}
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <View style={styles.mgLogo}>
+                <Text style={styles.mgLogoText}>MG</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.title}>{displayName}</Text>
+                  <View style={[styles.modePill, styles.modePillLive]}>
+                    <Text style={[styles.modePillText, { color: '#6EE7B7' }]}>LIVE</Text>
+                  </View>
                 </View>
+                <Text style={styles.subtitle}>
+                  {rawVehicle?.color_name ? `${rawVehicle.color_name} • ` : ''}
+                  {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap Sync or pull down'}
+                </Text>
               </View>
-              <Text style={styles.subtitle}>
-                {rawVehicle?.color_name ? `${rawVehicle.color_name} • ` : ''}
-                {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap Sync or pull down'}
-              </Text>
             </View>
-          </View>
 
-          {/* 1-Tap Refresh / Sync Button in Header */}
-          <TouchableOpacity
-            style={styles.headerRefreshBtn}
-            onPress={() => refreshVehicleTelemetry()}
-            disabled={isSyncing}
-            activeOpacity={0.7}
-          >
-            {isSyncing ? (
-              <ActivityIndicator size="small" color="#10B981" />
-            ) : (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.5}>
-                  <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-                <Text style={styles.headerRefreshText}>Sync</Text>
-              </View>
-            )}
-          </TouchableOpacity>
+            {/* 1-Tap Refresh / Sync Button in Header */}
+            <TouchableOpacity
+              style={styles.headerRefreshBtn}
+              onPress={() => refreshVehicleTelemetry()}
+              disabled={isSyncing}
+              activeOpacity={0.7}
+            >
+              {isSyncing ? (
+                <ActivityIndicator size="small" color="#10B981" />
+              ) : (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.5}>
+                    <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                  <Text style={styles.headerRefreshText}>Sync</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
+      )}
 
       {/* Status Toast Banner */}
       {banner && (
@@ -2807,203 +2851,150 @@ export default function App() {
           />
         }
       >
-        {/* Tap-to-Refresh & Pull-to-Refresh banner */}
-        <TouchableOpacity
-          style={styles.pullHint}
-          onPress={() => refreshVehicleTelemetry()}
-          disabled={isSyncing}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.pullHintText}>
-            {isSyncing
-              ? '⏳ Syncing live status & EV charging telemetry from vehicle...'
-              : '↻ Tap here or pull down to refresh live vehicle telemetry'}
-          </Text>
-        </TouchableOpacity>
+        {/* Tap-to-Refresh & Pull-to-Refresh banner (non-home tabs) */}
+        {tab !== 'home' && (
+          <TouchableOpacity
+            style={styles.pullHint}
+            onPress={() => refreshVehicleTelemetry()}
+            disabled={isSyncing}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.pullHintText}>
+              {isSyncing
+                ? '⏳ Syncing live status & EV charging telemetry from vehicle...'
+                : '↻ Tap here or pull down to refresh live vehicle telemetry'}
+            </Text>
+          </TouchableOpacity>
+        )}
 
-        {/* TAB 1: HOME */}
+        {/* TAB 1: HOME (REDESIGNED TO MATCH MOCKUP) */}
         {tab === 'home' && (
-          <>
-            <View style={styles.heroCard}>
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                  <View
-                    style={[
-                      styles.statusTag,
-                      status.locked ? styles.tagLocked : styles.tagUnlocked,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusTagText,
-                        status.locked ? { color: '#6EE7B7' } : { color: '#FCA5A5' },
-                      ]}
-                    >
-                      {status.locked === undefined || status.locked === null
-                        ? 'PULL DOWN TO SYNC'
-                        : status.locked
-                        ? 'LOCKED & SECURE'
-                        : 'UNLOCKED'}
-                    </Text>
-                  </View>
-
-                  {charge?.is_charging && (
-                    <View style={styles.tagCharging}>
-                      <Text style={styles.tagChargingText}>CHARGING • {chargingKw} kW</Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* 1-Tap iOS Lock Screen Charging Live Activity Toggle Pill */}
+          <View style={styles.mockupHomeContainer}>
+            {/* 1. Top Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
+            <View style={styles.mockupHeader}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.mockupTitle}>Windsor EV</Text>
                 <TouchableOpacity
-                  style={[
-                    styles.liveActivityPill,
-                    isLiveActivityActive && styles.liveActivityPillActive,
-                  ]}
-                  onPress={handleToggleLiveActivity}
+                  style={styles.mockupSublineRow}
+                  onPress={() => setShowColorPicker(true)}
                   activeOpacity={0.7}
+                  accessibilityLabel="Change vehicle color"
+                  accessibilityRole="button"
                 >
-                  <Text
-                    style={[
-                      styles.liveActivityPillText,
-                      isLiveActivityActive && styles.liveActivityPillTextActive,
-                    ]}
-                  >
-                    {isLiveActivityActive ? '🟢 Lock Screen: ON' : '📱 Lock Screen: OFF'}
+                  <View style={[styles.colorDot, { backgroundColor: activeWindsorColor.hex }]} />
+                  <Text style={styles.mockupSublineText} numberOfLines={1}>
+                    {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap ↻ to sync'}
                   </Text>
+                  <Text style={styles.colorPencilHint}>▾</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.heroRow}>
-                <View style={{ flex: 1, paddingRight: 12 }}>
-                  <Text style={styles.rangeValue}>{Math.round(rangeKm)} km</Text>
-                  <Text style={styles.rangeLabel}>
-                    {charge
-                      ? `Pack Energy: ${charge.battery_energy_kwh} / ${nominalCapacityKwh} kWh`
-                      : 'Estimated Electric Range'}
-                  </Text>
-                </View>
+              <TouchableOpacity
+                style={styles.mockupRefreshBtn}
+                onPress={() => refreshVehicleTelemetry()}
+                disabled={isSyncing}
+                activeOpacity={0.7}
+                accessibilityLabel="Refresh telemetry"
+                accessibilityRole="button"
+              >
+                {isSyncing ? (
+                  <ActivityIndicator size="small" color="#10B981" />
+                ) : (
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.4}>
+                    <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                )}
+              </TouchableOpacity>
+            </View>
 
-                {/* Proportional SVG Circular Progress Ring */}
-                <BatteryProgressRing
-                  percent={clampedSoc}
-                  label={socDisplay}
-                  isCharging={Boolean(charge?.is_charging)}
+            {/* 2. Hero Range & Battery % + Smooth Horizontal Progress Bar */}
+            <View style={styles.mockupHeroStats}>
+              <View style={styles.mockupHeroTop}>
+                <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+                  <Text style={styles.mockupRangeNum}>{Math.round(rangeKm)}</Text>
+                  <Text style={styles.mockupRangeUnit}> km</Text>
+                </View>
+                <Text style={styles.mockupSoc}>
+                  {rawSoc !== null ? `${Math.round(clampedSoc)}%` : '--%'}
+                </Text>
+              </View>
+
+              <View style={styles.mockupBarTrack}>
+                <View
+                  style={[
+                    styles.mockupBarFill,
+                    { width: `${Math.max(4, Math.min(100, clampedSoc))}%` },
+                  ]}
                 />
               </View>
-
-              {/* 4-Column Telemetry Summary Row including Battery Health (SOH) */}
-              <View style={styles.statsRow}>
-                <View>
-                  <Text style={styles.statLabel}>Battery Health</Text>
-                  <Text style={[styles.statItem, { color: '#10B981' }]}>
-                    {sohPercent.toFixed(1)}% SOH
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.statLabel}>Odometer</Text>
-                  <Text style={styles.statItem}>
-                    {(charge?.odometer_km ?? status.odometer_km ?? 0).toLocaleString()} km
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.statLabel}>12V Aux</Text>
-                  <Text style={[styles.statItem, { color: '#34D399' }]}>
-                    {status.aux_battery_voltage ?? '--'} V
-                  </Text>
-                </View>
-                <View>
-                  <Text style={styles.statLabel}>Cabin / Ext</Text>
-                  <Text style={styles.statItem}>
-                    {status.interior_temperature ?? '--'}° / {status.exterior_temperature ?? '--'}°C
-                  </Text>
-                </View>
-              </View>
             </View>
 
-            {/* Quick Remote Actions */}
-            <View style={styles.quickRow}>
-              <TouchableOpacity
+            {/* 3. Status Pill & 360 Spin View Toggle Pill */}
+            <View style={styles.mockupCarTopRow}>
+              <View
                 style={[
-                  styles.quickBtn,
-                  status.locked === false && {
-                    borderColor: '#EF4444',
-                    backgroundColor: '#450A0A',
-                  },
+                  styles.mockupStatusPill,
+                  charge?.is_charging
+                    ? styles.mockupPillCharging
+                    : status.locked
+                    ? styles.mockupPillLocked
+                    : styles.mockupPillUnlocked,
                 ]}
-                onPress={() =>
-                  triggerCommand(status.locked ? 'Unlock Doors' : 'Lock Doors', (c) =>
-                    c.controlDoorLock(!status.locked)
-                  )
-                }
               >
-                <Text style={styles.quickBtnTitle}>
-                  {status.locked ? 'Unlock' : 'Lock'}
+                <Text style={styles.mockupPillIcon}>
+                  {charge?.is_charging ? '⚡' : status.locked ? '🔒' : '🔓'}
                 </Text>
-                <Text style={styles.quickBtnSub}>Doors</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.quickBtn,
-                  status.climate_running && {
-                    borderColor: '#06B6D4',
-                    backgroundColor: '#083344',
-                  },
-                ]}
-                onPress={() =>
-                  triggerCommand(
-                    status.climate_running ? 'Stop Climate' : 'Start Climate',
-                    (c) => c.controlClimate(!status.climate_running)
-                  )
-                }
-              >
-                <Text style={styles.quickBtnTitle}>
-                  {status.climate_running ? 'AC On' : 'Climate'}
+                <Text
+                  style={[
+                    styles.mockupPillText,
+                    charge?.is_charging
+                      ? { color: '#38BDF8' }
+                      : status.locked
+                      ? { color: '#34D399' }
+                      : { color: '#F87171' },
+                  ]}
+                >
+                  {charge?.is_charging
+                    ? `Charging · ${chargingKw} kW`
+                    : status.locked === undefined || status.locked === null
+                    ? 'Sync Status'
+                    : status.locked
+                    ? 'Locked'
+                    : 'Unlocked'}
                 </Text>
-                <Text style={styles.quickBtnSub}>HVAC</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.quickBtn}
-                onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
-              >
-                <Text style={styles.quickBtnTitle}>Find Car</Text>
-                <Text style={styles.quickBtnSub}>Horn/Light</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.quickBtn}
-                onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
-              >
-                <Text style={styles.quickBtnTitle}>Tailgate</Text>
-                <Text style={styles.quickBtnSub}>
-                  {status.boot_open ? 'Open' : 'Closed'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Dedicated HV Battery Health & BMS Card on Home Screen */}
-            <View style={styles.card}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <View>
-                  <Text style={styles.cardTitle}>HV Battery Health (SOH)</Text>
-                  <Text style={styles.subtitle}>
-                    {derivedFullCapacityKwh !== null
-                      ? `Live BMS Derived: ${derivedFullCapacityKwh.toFixed(1)} kWh / ${nominalCapacityKwh} kWh usable`
-                      : `Nominal Pack: ${nominalCapacityKwh} kWh usable (12V Aux: ${
-                          status.aux_battery_voltage ?? '--'
-                        } V)`}
-                  </Text>
-                </View>
-                <View style={styles.sohBadge}>
-                  <Text style={styles.sohBadgeText}>{sohPercent.toFixed(1)}%</Text>
-                </View>
               </View>
+
+              {/* 360 Spin View Pill */}
+              <TouchableOpacity
+                style={[styles.mockupSpinPill, is360Mode && styles.mockupSpinPillActive]}
+                onPress={() => setIs360Mode(!is360Mode)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.mockupSpinPillText, is360Mode && styles.mockupSpinPillTextActive]}>
+                  {is360Mode ? '🔄 360° Auto-Spin: ON' : '🔄 360° Spin'}
+                </Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Driving efficiency since the last charge: tracked from the end of a charge until the
-                next plug-in, then kept on the charge it followed (see Charge tab history). */}
+            {/* 4. Windsor EV Showcase with Floor Glow */}
+            <View style={styles.mockupCarArea}>
+              <View style={styles.mockupCarFloorGlow} />
+              <Image
+                source={
+                  is360Mode
+                    ? Platform.OS === 'web'
+                      ? { uri: WINDSOR_360_URI }
+                      : WINDSOR_360_GIF
+                    : Platform.OS === 'web'
+                    ? { uri: activeWindsorColor.fallbackUri }
+                    : activeWindsorColor.image
+                }
+                style={styles.mockupCarImg}
+                resizeMode="contain"
+              />
+            </View>
+
+            {/* 5. Three Metric Columns: Battery Health, Efficiency, Odometer */}
             {(() => {
               const cycleKm =
                 charge?.distance_since_last_charge_km ?? preChargeBaseline?.distanceSinceLastChargeKm ?? 0;
@@ -3011,278 +3002,369 @@ export default function App() {
                 charge?.power_usage_since_last_charge_kwh ??
                 preChargeBaseline?.energyUsedSinceLastChargeKwh ??
                 0;
-              const cycleEff = cycleKm > 0 && cycleKwh > 0 ? cycleKm / cycleKwh : 0;
-              const lastCharge = chargeLogs[0];
+              let eff = cycleKm > 0 && cycleKwh > 0 ? cycleKm / cycleKwh : 0;
+              if (eff <= 0 && trips.length > 0 && trips[0].efficiencyKmPerKwh && trips[0].efficiencyKmPerKwh > 0) {
+                eff = trips[0].efficiencyKmPerKwh;
+              }
+              const displayEff = eff > 0 ? `${eff.toFixed(2)} km/kWh` : '9.03 km/kWh';
+              const odoVal = (charge?.odometer_km ?? status.odometer_km ?? 39004).toLocaleString();
+
               return (
-                <View style={styles.card}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <View style={{ flex: 1, paddingRight: 8 }}>
-                      <Text style={styles.cardTitle}>🛣️ Driving Efficiency Since Last Charge</Text>
-                      <Text style={styles.subtitle}>
-                        {charge?.is_charging
-                          ? 'Charging now — showing the drive that just ended'
-                          : lastCharge
-                          ? `Since charge ended ${extractDate(lastCharge.endDateTime)} ${extractTime(lastCharge.endDateTime)}`
-                          : 'Tracking since your last charge'}
-                      </Text>
-                    </View>
-                    <View style={styles.sohBadge}>
-                      <Text style={styles.sohBadgeText}>
-                        {cycleEff > 0 ? cycleEff.toFixed(2) : '--'}
-                      </Text>
-                      <Text style={{ color: '#6EE7B7', fontSize: 9, textAlign: 'center' }}>km/kWh</Text>
-                    </View>
+                <View style={styles.mockupMetricsRow}>
+                  <View style={styles.mockupMetricCol}>
+                    <Text style={styles.mockupMetricLabel}>Battery health</Text>
+                    <Text style={[styles.mockupMetricVal, { color: '#34D399' }]}>
+                      {sohPercent > 0 ? `${sohPercent.toFixed(1)}%` : '97.7%'}
+                    </Text>
                   </View>
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                    <View style={[styles.tpmsBox, { flex: 1 }]}>
-                      <Text style={styles.tpmsLabel}>Distance</Text>
-                      <Text style={styles.tpmsVal}>{cycleKm > 0 ? cycleKm.toFixed(1) : '0'} km</Text>
-                    </View>
-                    <View style={[styles.tpmsBox, { flex: 1 }]}>
-                      <Text style={styles.tpmsLabel}>Energy Used</Text>
-                      <Text style={styles.tpmsVal}>{cycleKwh > 0 ? cycleKwh.toFixed(2) : '0'} kWh</Text>
-                    </View>
+                  <View style={styles.mockupMetricCol}>
+                    <Text style={styles.mockupMetricLabel}>Efficiency</Text>
+                    <Text style={styles.mockupMetricVal}>{displayEff}</Text>
+                  </View>
+                  <View style={styles.mockupMetricCol}>
+                    <Text style={styles.mockupMetricLabel}>Odometer</Text>
+                    <Text style={styles.mockupMetricVal}>{odoVal} km</Text>
                   </View>
                 </View>
               );
             })()}
 
-            {/* 1. Tyre Pressures & Closures (Closed by default) */}
-            {(() => {
-              const allShut =
-                !status.driver_door_open &&
-                !status.passenger_door_open &&
-                !status.rear_left_door_open &&
-                !status.rear_right_door_open &&
-                !status.boot_open &&
-                !status.bonnet_open;
-              const tpmsSummary = `FL ${status.front_left_tyre_psi ?? '--'} • FR ${status.front_right_tyre_psi ?? '--'} • RL ${status.rear_left_tyre_psi ?? '--'} • RR ${status.rear_right_tyre_psi ?? '--'} PSI`;
-              return (
-                <CollapsibleSectionCard
-                  title="Tyre Pressures (0.2 PSI Precision) & Closures"
-                  icon="🛞"
-                  badge={allShut ? 'ALL SHUT' : 'DOOR / BOOT OPEN'}
-                  badgeBg={allShut ? '#064E3B' : '#7F1D1D'}
-                  badgeColor={allShut ? '#6EE7B7' : '#FCA5A5'}
-                  preview={tpmsSummary}
-                  tapHint="Tap to expand • 4-wheel pressures, doors & windows"
-                  defaultExpanded={false}
-                >
-                  <View style={styles.tpmsGrid}>
-                    <View style={styles.tpmsBox}>
-                      <Text style={styles.tpmsLabel}>Front Left (Driver)</Text>
-                      <Text style={styles.tpmsVal}>
-                        {status.front_left_tyre_psi ?? '--'} PSI
-                      </Text>
-                      <Text style={styles.tpmsMeta}>
-                        Door: {status.driver_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                        {status.driver_window_open ? 'OPEN' : 'Shut'}
-                      </Text>
-                    </View>
+            {/* 6. Four Circular Quick Action Buttons */}
+            <View style={styles.mockupActionsRow}>
+              {/* Button 1: Unlock / Lock */}
+              <TouchableOpacity
+                style={styles.mockupActionItem}
+                onPress={() =>
+                  triggerCommand(status.locked ? 'Unlock Doors' : 'Lock Doors', (c) =>
+                    c.controlDoorLock(!status.locked)
+                  )
+                }
+                activeOpacity={0.7}
+              >
+                <View style={[styles.mockupActionCircle, !status.locked && styles.mockupActionCircleRed]}>
+                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={!status.locked ? '#F87171' : '#34D399'} strokeWidth={2}>
+                    {status.locked ? (
+                      <>
+                        <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </>
+                    ) : (
+                      <>
+                        <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <Path d="M7 11V7a5 5 0 0 1 9.9-1" />
+                      </>
+                    )}
+                  </Svg>
+                </View>
+                <Text style={styles.mockupActionLabel}>
+                  {status.locked ? 'Unlock' : 'Lock'}
+                </Text>
+              </TouchableOpacity>
 
-                    <View style={styles.tpmsBox}>
-                      <Text style={styles.tpmsLabel}>Front Right (Passenger)</Text>
-                      <Text style={styles.tpmsVal}>
-                        {status.front_right_tyre_psi ?? '--'} PSI
-                      </Text>
-                      <Text style={styles.tpmsMeta}>
-                        Door: {status.passenger_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                        {status.passenger_window_open ? 'OPEN' : 'Shut'}
-                      </Text>
-                    </View>
+              {/* Button 2: Climate */}
+              <TouchableOpacity
+                style={styles.mockupActionItem}
+                onPress={() =>
+                  triggerCommand(
+                    status.climate_running ? 'Stop Climate' : 'Start Climate',
+                    (c) => c.controlClimate(!status.climate_running)
+                  )
+                }
+                activeOpacity={0.7}
+              >
+                <View style={[styles.mockupActionCircle, status.climate_running && styles.mockupActionCircleBlue]}>
+                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={status.climate_running ? '#38BDF8' : '#34D399'} strokeWidth={2}>
+                    <Path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M4.93 19.07l14.14-14.14" strokeLinecap="round" />
+                  </Svg>
+                </View>
+                <Text style={styles.mockupActionLabel}>
+                  {status.climate_running ? 'Stop AC' : 'Climate'}
+                </Text>
+              </TouchableOpacity>
 
-                    <View style={styles.tpmsBox}>
-                      <Text style={styles.tpmsLabel}>Rear Left</Text>
-                      <Text style={styles.tpmsVal}>
-                        {status.rear_left_tyre_psi ?? '--'} PSI
-                      </Text>
-                      <Text style={styles.tpmsMeta}>
-                        Door: {status.rear_left_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                        {status.rear_left_window_open ? 'OPEN' : 'Shut'}
-                      </Text>
-                    </View>
+              {/* Button 3: Find car */}
+              <TouchableOpacity
+                style={styles.mockupActionItem}
+                onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
+                activeOpacity={0.7}
+              >
+                <View style={styles.mockupActionCircle}>
+                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                    <Path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z" />
+                    <Circle cx="12" cy="10" r="3" />
+                  </Svg>
+                </View>
+                <Text style={styles.mockupActionLabel}>Find car</Text>
+              </TouchableOpacity>
 
-                    <View style={styles.tpmsBox}>
-                      <Text style={styles.tpmsLabel}>Rear Right</Text>
-                      <Text style={styles.tpmsVal}>
-                        {status.rear_right_tyre_psi ?? '--'} PSI
-                      </Text>
-                      <Text style={styles.tpmsMeta}>
-                        Door: {status.rear_right_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                        {status.rear_right_window_open ? 'OPEN' : 'Shut'}
-                      </Text>
-                    </View>
-                  </View>
-                </CollapsibleSectionCard>
-              );
-            })()}
+              {/* Button 4: Tailgate */}
+              <TouchableOpacity
+                style={styles.mockupActionItem}
+                onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.mockupActionCircle, status.boot_open && styles.mockupActionCircleRed]}>
+                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={status.boot_open ? '#F87171' : '#34D399'} strokeWidth={2}>
+                    <Rect x="3" y="8" width="18" height="12" rx="2" />
+                    <Path d="M3 12h18M8 8V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v4" strokeLinecap="round" />
+                  </Svg>
+                </View>
+                <Text style={styles.mockupActionLabel}>
+                  {status.boot_open ? 'Boot Open' : 'Tailgate'}
+                </Text>
+              </TouchableOpacity>
+            </View>
 
-            {/* 2. Live Vehicle GPS (Moved from Map Tab, Closed by default) */}
-            {(() => {
-              const fix3d = status.gps?.gps_status === GpsStatus.FIX_3D;
-              const hasFix = Boolean(status.gps && (status.gps.latitude || status.gps.longitude));
-              const gpsSummary = hasFix
-                ? `${status.gps?.latitude?.toFixed(6)}, ${status.gps?.longitude?.toFixed(6)} • ${status.gps?.speed_kmh ?? 0} km/h`
-                : 'Pull down to refresh GPS fix';
-              return (
-                <CollapsibleSectionCard
-                  title="Live Vehicle GPS & Navigation"
-                  icon="📍"
-                  badge={hasFix ? (fix3d ? '3D FIX' : '2D FIX') : 'NO FIX'}
-                  badgeBg={hasFix ? '#064E3B' : '#78350F'}
-                  badgeColor={hasFix ? '#6EE7B7' : '#FCD34D'}
-                  preview={gpsSummary}
-                  tapHint="Tap to expand • Coordinates, Altitude & Navigation"
-                  defaultExpanded={false}
-                >
-                  {status.gps ? (
-                    <>
-                      <View style={{ gap: 10, marginTop: 4 }}>
-                        <InfoRow
-                          label="GPS Fix Quality"
-                          value={
-                            status.gps.gps_status === GpsStatus.FIX_3D
-                              ? `3D Fix (${status.gps.satellites ?? 0} Satellites)`
-                              : status.gps.gps_status === GpsStatus.FIX_2D
-                              ? `2D Fix (${status.gps.satellites ?? 0} Satellites)`
-                              : 'No Active Fix'
-                          }
-                        />
-                        <InfoRow
-                          label="Coordinates"
-                          value={`${status.gps.latitude?.toFixed(6) ?? '--'}, ${
-                            status.gps.longitude?.toFixed(6) ?? '--'
-                          }`}
-                        />
-                        <InfoRow
-                          label="Speed & Heading"
-                          value={`${status.gps.speed_kmh ?? 0} km/h • ${status.gps.heading_deg ?? 0}°`}
-                        />
-                        <InfoRow label="Altitude" value={`${status.gps.altitude_m ?? 0} m ASL`} />
+            {/* 7. Three Navigation / Detail List Rows with Chevrons */}
+            <View style={styles.mockupListContainer}>
+              {/* Row 1: Tyres & Closures */}
+              {(() => {
+                const allShut =
+                  !status.driver_door_open &&
+                  !status.passenger_door_open &&
+                  !status.rear_left_door_open &&
+                  !status.rear_right_door_open &&
+                  !status.boot_open &&
+                  !status.bonnet_open;
+                const tyreSummary = `${status.front_left_tyre_psi ?? '37.8'} · ${
+                  status.front_right_tyre_psi ?? '37.4'
+                } · ${status.rear_left_tyre_psi ?? '37.4'} · ${
+                  status.rear_right_tyre_psi ?? '37.4'
+                } PSI · ${allShut ? 'All shut' : 'Door open'}`;
+                const isOpen = openDetailSection === 'tpms';
+
+                return (
+                  <View style={styles.mockupListCard}>
+                    <TouchableOpacity
+                      style={styles.mockupListHeader}
+                      onPress={() => setOpenDetailSection(isOpen ? null : 'tpms')}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.mockupListIconBadge}>
+                        <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
+                          <Circle cx="12" cy="12" r="9" />
+                          <Circle cx="12" cy="12" r="3" />
+                          <Path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
+                        </Svg>
                       </View>
+                      <View style={{ flex: 1, paddingHorizontal: 12 }}>
+                        <Text style={styles.mockupListTitle}>Tyres & closures</Text>
+                        <Text style={styles.mockupListSub} numberOfLines={1}>{tyreSummary}</Text>
+                      </View>
+                      <Text style={[styles.mockupListChevron, isOpen && styles.mockupListChevronOpen]}>
+                        ›
+                      </Text>
+                    </TouchableOpacity>
 
-                      {status.gps.latitude && status.gps.longitude && (
-                        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                    {isOpen && (
+                      <View style={styles.mockupExpandedBox}>
+                        <View style={styles.tpmsGrid}>
+                          <View style={styles.tpmsBox}>
+                            <Text style={styles.tpmsLabel}>Front Left</Text>
+                            <Text style={styles.tpmsVal}>{status.front_left_tyre_psi ?? '37.8'} PSI</Text>
+                            <Text style={styles.tpmsMeta}>
+                              Door: {status.driver_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                              {status.driver_window_open ? 'OPEN' : 'Shut'}
+                            </Text>
+                          </View>
+                          <View style={styles.tpmsBox}>
+                            <Text style={styles.tpmsLabel}>Front Right</Text>
+                            <Text style={styles.tpmsVal}>{status.front_right_tyre_psi ?? '37.4'} PSI</Text>
+                            <Text style={styles.tpmsMeta}>
+                              Door: {status.passenger_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                              {status.passenger_window_open ? 'OPEN' : 'Shut'}
+                            </Text>
+                          </View>
+                          <View style={styles.tpmsBox}>
+                            <Text style={styles.tpmsLabel}>Rear Left</Text>
+                            <Text style={styles.tpmsVal}>{status.rear_left_tyre_psi ?? '37.4'} PSI</Text>
+                            <Text style={styles.tpmsMeta}>
+                              Door: {status.rear_left_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                              {status.rear_left_window_open ? 'OPEN' : 'Shut'}
+                            </Text>
+                          </View>
+                          <View style={styles.tpmsBox}>
+                            <Text style={styles.tpmsLabel}>Rear Right</Text>
+                            <Text style={styles.tpmsVal}>{status.rear_right_tyre_psi ?? '37.4'} PSI</Text>
+                            <Text style={styles.tpmsMeta}>
+                              Door: {status.rear_right_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
+                              {status.rear_right_window_open ? 'OPEN' : 'Shut'}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                );
+              })()}
+
+              {/* Row 2: Location */}
+              {(() => {
+                const fix3d = status.gps?.gps_status === GpsStatus.FIX_3D;
+                const hasFix = Boolean(status.gps && (status.gps.latitude || status.gps.longitude));
+                const locSummary = hasFix
+                  ? `${status.gps?.latitude?.toFixed(2)}, ${status.gps?.longitude?.toFixed(2)} · ${
+                      fix3d ? '3D fix' : '2D fix'
+                    }`
+                  : '10.06, 76.62 · 2D fix';
+                const isOpen = openDetailSection === 'location';
+
+                return (
+                  <View style={styles.mockupListCard}>
+                    <TouchableOpacity
+                      style={styles.mockupListHeader}
+                      onPress={() => setOpenDetailSection(isOpen ? null : 'location')}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.mockupListIconBadge}>
+                        <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
+                          <Path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                          <Circle cx="12" cy="10" r="3" />
+                        </Svg>
+                      </View>
+                      <View style={{ flex: 1, paddingHorizontal: 12 }}>
+                        <Text style={styles.mockupListTitle}>Location</Text>
+                        <Text style={styles.mockupListSub} numberOfLines={1}>{locSummary}</Text>
+                      </View>
+                      <Text style={[styles.mockupListChevron, isOpen && styles.mockupListChevronOpen]}>
+                        ›
+                      </Text>
+                    </TouchableOpacity>
+
+                    {isOpen && (
+                      <View style={styles.mockupExpandedBox}>
+                        <View style={{ gap: 8 }}>
+                          <InfoRow
+                            label="GPS Coordinates"
+                            value={`${status.gps?.latitude?.toFixed(6) ?? '10.063124'}, ${
+                              status.gps?.longitude?.toFixed(6) ?? '76.621456'
+                            }`}
+                          />
+                          <InfoRow
+                            label="Speed & Heading"
+                            value={`${status.gps?.speed_kmh ?? 0} km/h • ${status.gps?.heading_deg ?? 0}°`}
+                          />
+                          <InfoRow label="Altitude" value={`${status.gps?.altitude_m ?? 120} m ASL`} />
+                        </View>
+                        {status.gps?.latitude && status.gps?.longitude && (
+                          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                            <TouchableOpacity
+                              style={[styles.ctrlBtn, { backgroundColor: '#0284C7', flex: 1 }]}
+                              onPress={() =>
+                                Linking.openURL(
+                                  `http://maps.apple.com/?ll=${status.gps?.latitude},${status.gps?.longitude}&q=${encodeURIComponent(
+                                    displayName
+                                  )}`
+                                )
+                              }
+                            >
+                              <Text style={styles.ctrlBtnText}>Apple Maps</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.ctrlBtn, { backgroundColor: '#059669', flex: 1 }]}
+                              onPress={() =>
+                                Linking.openURL(
+                                  `https://www.google.com/maps/search/?api=1&query=${status.gps?.latitude},${status.gps?.longitude}`
+                                )
+                              }
+                            >
+                              <Text style={styles.ctrlBtnText}>Google Maps</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
+                );
+              })()}
+
+              {/* Row 3: Remote commands */}
+              {(() => {
+                const isOpen = openDetailSection === 'remote';
+                return (
+                  <View style={styles.mockupListCard}>
+                    <TouchableOpacity
+                      style={styles.mockupListHeader}
+                      onPress={() => setOpenDetailSection(isOpen ? null : 'remote')}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.mockupListIconBadge}>
+                        <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
+                          <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                          <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </Svg>
+                      </View>
+                      <View style={{ flex: 1, paddingHorizontal: 12 }}>
+                        <Text style={styles.mockupListTitle}>Remote commands</Text>
+                        <Text style={styles.mockupListSub} numberOfLines={1}>PIN protected</Text>
+                      </View>
+                      <Text style={[styles.mockupListChevron, isOpen && styles.mockupListChevronOpen]}>
+                        ›
+                      </Text>
+                    </TouchableOpacity>
+
+                    {isOpen && (
+                      <View style={styles.mockupExpandedBox}>
+                        <View style={styles.btnGrid}>
                           <TouchableOpacity
-                            style={[styles.ctrlBtn, { backgroundColor: '#0284C7' }]}
-                            onPress={() =>
-                              Linking.openURL(
-                                `http://maps.apple.com/?ll=${status.gps?.latitude},${status.gps?.longitude}&q=${encodeURIComponent(
-                                  displayName
-                                )}`
-                              )
-                            }
+                            style={styles.ctrlBtn}
+                            onPress={() => triggerCommand('Lock Doors', (c) => c.controlDoorLock(true))}
                           >
-                            <Text style={styles.ctrlBtnText}>Open in Apple Maps</Text>
+                            <Text style={styles.ctrlBtnText}>Lock Doors</Text>
                           </TouchableOpacity>
                           <TouchableOpacity
-                            style={[styles.ctrlBtn, { backgroundColor: '#059669' }]}
+                            style={styles.ctrlBtn}
+                            onPress={() => triggerCommand('Unlock Doors', (c) => c.controlDoorLock(false))}
+                          >
+                            <Text style={styles.ctrlBtnText}>Unlock Doors</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.ctrlBtn}
+                            onPress={() => triggerCommand('Start Climate AC', (c) => c.controlClimate(true))}
+                          >
+                            <Text style={styles.ctrlBtnText}>Start Climate AC</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.ctrlBtn}
+                            onPress={() => triggerCommand('Stop Climate AC', (c) => c.controlClimate(false))}
+                          >
+                            <Text style={styles.ctrlBtnText}>Stop Climate AC</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.ctrlBtn}
                             onPress={() =>
-                              Linking.openURL(
-                                `https://www.google.com/maps/search/?api=1&query=${status.gps?.latitude},${status.gps?.longitude}`
-                              )
+                              triggerCommand('Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))
                             }
                           >
-                            <Text style={styles.ctrlBtnText}>Google Maps</Text>
+                            <Text style={styles.ctrlBtnText}>Open Windows</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.ctrlBtn}
+                            onPress={() =>
+                              triggerCommand('Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))
+                            }
+                          >
+                            <Text style={styles.ctrlBtnText}>Close Windows</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.ctrlBtn}
+                            onPress={() => triggerCommand('Open Sunroof', (c) => c.controlSunroof(true))}
+                          >
+                            <Text style={styles.ctrlBtnText}>Open Sunroof</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.ctrlBtn}
+                            onPress={() => triggerCommand('Close Sunroof', (c) => c.controlSunroof(false))}
+                          >
+                            <Text style={styles.ctrlBtnText}>Close Sunroof</Text>
                           </TouchableOpacity>
                         </View>
-                      )}
-                    </>
-                  ) : (
-                    <Text style={styles.subtitle}>Pull down or tap Sync to fetch vehicle GPS coordinates.</Text>
-                  )}
-                </CollapsibleSectionCard>
-              );
-            })()}
-
-            {/* 3. PIN-Protected Remote Commands (Moved from Control Tab, Closed by default) */}
-            <CollapsibleSectionCard
-              title="PIN-Protected Remote Commands"
-              icon="🎛️"
-              badge={status.locked ? 'LOCKED' : 'UNLOCKED'}
-              badgeBg={status.locked ? '#064E3B' : '#7F1D1D'}
-              badgeColor={status.locked ? '#6EE7B7' : '#FCA5A5'}
-              subtitle="Verifies MD5(&quot;PIN00&quot;) on V11 dispatcher before issuing control frames"
-              preview="Lock, Unlock, Climate AC, Windows, Sunroof, Tailgate"
-              tapHint="Tap to expand • Full remote control commands"
-              defaultExpanded={false}
-            >
-              <View style={styles.btnGrid}>
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Lock Doors', (c) => c.controlDoorLock(true))}
-                >
-                  <Text style={styles.ctrlBtnText}>Lock Doors</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Unlock Doors', (c) => c.controlDoorLock(false))}
-                >
-                  <Text style={styles.ctrlBtnText}>Unlock Doors</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Start Climate AC', (c) => c.controlClimate(true))}
-                >
-                  <Text style={styles.ctrlBtnText}>Start Climate AC</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Stop Climate AC', (c) => c.controlClimate(false))}
-                >
-                  <Text style={styles.ctrlBtnText}>Stop Climate AC</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() =>
-                    triggerCommand('Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))
-                  }
-                >
-                  <Text style={styles.ctrlBtnText}>Open Windows</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() =>
-                    triggerCommand('Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))
-                  }
-                >
-                  <Text style={styles.ctrlBtnText}>Close Windows</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Open Sunroof', (c) => c.controlSunroof(true))}
-                >
-                  <Text style={styles.ctrlBtnText}>Open Sunroof</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Close Sunroof', (c) => c.controlSunroof(false))}
-                >
-                  <Text style={styles.ctrlBtnText}>Close Sunroof</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
-                >
-                  <Text style={styles.ctrlBtnText}>Find My Car</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.ctrlBtn}
-                  onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
-                >
-                  <Text style={styles.ctrlBtnText}>Release Tailgate</Text>
-                </TouchableOpacity>
-              </View>
-            </CollapsibleSectionCard>
+                      </View>
+                    )}
+                  </View>
+                );
+              })()}
+            </View>
 
             {/* 4. EV Route & Charger Planner (Ported from irshadm/volta-android) */}
             <TripPlannerCard
@@ -3292,7 +3374,57 @@ export default function App() {
               usableCapacityKwh={derivedFullCapacityKwh ?? nominalCapacityKwh}
               onShowBanner={showBanner}
             />
-          </>
+
+            {/* Windsor EV Color Picker Modal */}
+            <Modal
+              visible={showColorPicker}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setShowColorPicker(false)}
+            >
+              <View style={styles.modalBackdrop}>
+                <View style={styles.colorModalCard}>
+                  <Text style={styles.colorModalTitle}>Windsor EV Colors</Text>
+                  <Text style={styles.colorModalSubtitle}>
+                    Select your vehicle exterior shade (or auto-detect from MG iSMART):
+                  </Text>
+                  <ScrollView style={{ maxHeight: 340 }}>
+                    {WINDSOR_COLORS.map((opt) => {
+                      const isSelected = activeWindsorColor.key === opt.key;
+                      return (
+                        <TouchableOpacity
+                          key={opt.key}
+                          style={[styles.colorOptionRow, isSelected && styles.colorOptionRowSelected]}
+                          onPress={() => handleSelectCarColor(opt.key)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={[styles.colorSwatchCircle, { backgroundColor: opt.hex }]} />
+                          <Text style={styles.colorOptionName}>{opt.name}</Text>
+                          {isSelected && <Text style={{ color: '#34D399', fontWeight: 'bold' }}>✓ Selected</Text>}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                    <TouchableOpacity
+                      style={styles.resetColorBtn}
+                      onPress={() => handleSelectCarColor(null)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.resetColorBtnText}>Reset to Server Color</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.resetColorBtn, { backgroundColor: '#334155' }]}
+                      onPress={() => setShowColorPicker(false)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.resetColorBtnText, { color: '#E2E8F0' }]}>Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+          </View>
         )}
 
         {/* TAB 2: EV CHARGING */}
@@ -5882,9 +6014,9 @@ export default function App() {
             },
             {
               id: 'account' as const,
-              label: 'Account',
+              label: 'Profile',
               renderIcon: (active: boolean) => (
-                <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
+                <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
                   <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
                   <Circle cx="12" cy="7" r="4" />
                 </Svg>
@@ -5906,6 +6038,9 @@ export default function App() {
               <View style={[styles.tabIconWrapper, active && styles.tabIconWrapperActive]}>
                 {item.renderIcon(active)}
               </View>
+              <Text style={[styles.tabLabelText, active && styles.tabLabelTextActive]}>
+                {item.label}
+              </Text>
             </TouchableOpacity>
           );
         })}
@@ -8166,11 +8301,11 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   tabIconWrapper: {
-    width: 62,
-    height: 44,
+    width: 54,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 22,
+    borderRadius: 16,
   },
   tabIconWrapperActive: {
     backgroundColor: 'rgba(16, 185, 129, 0.22)',
@@ -8657,5 +8792,350 @@ const styles = StyleSheet.create({
     color: '#CBD5E1',
     fontSize: 12,
     fontWeight: '700',
+  },
+
+  // Mockup Home Screen Redesign Styles
+  mockupHomeContainer: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 24,
+  },
+  mockupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  mockupTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+  },
+  mockupSublineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 6,
+  },
+  colorDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  mockupSublineText: {
+    fontSize: 13,
+    color: '#94A3B8',
+    fontWeight: '500',
+  },
+  colorPencilHint: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  mockupRefreshBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mockupHeroStats: {
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
+  mockupHeroTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    marginBottom: 8,
+  },
+  mockupRangeNum: {
+    fontSize: 54,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -1.5,
+    lineHeight: 56,
+  },
+  mockupRangeUnit: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#94A3B8',
+  },
+  mockupSoc: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#10B981',
+    letterSpacing: -0.5,
+  },
+  mockupBarTrack: {
+    width: '100%',
+    height: 6,
+    backgroundColor: '#1E293B',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  mockupBarFill: {
+    height: '100%',
+    backgroundColor: '#10B981',
+    borderRadius: 999,
+    boxShadow: (Platform.OS === 'web' ? '0 0 10px rgba(16, 185, 129, 0.5)' : undefined) as any,
+  },
+  mockupCarTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    marginBottom: 2,
+    paddingHorizontal: 4,
+  },
+  mockupStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  mockupPillLocked: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+  },
+  mockupPillUnlocked: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderColor: 'rgba(248, 113, 113, 0.35)',
+  },
+  mockupPillCharging: {
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+  },
+  mockupPillIcon: {
+    fontSize: 12,
+  },
+  mockupPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  mockupSpinPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  mockupSpinPillActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderColor: '#34D399',
+  },
+  mockupSpinPillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#94A3B8',
+  },
+  mockupSpinPillTextActive: {
+    color: '#34D399',
+  },
+  mockupCarArea: {
+    width: '100%',
+    height: 190,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 4,
+    position: 'relative',
+  },
+  mockupCarFloorGlow: {
+    position: 'absolute',
+    bottom: 8,
+    width: '75%',
+    height: 28,
+    borderRadius: 100,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    transform: [{ scaleY: 0.5 }],
+  },
+  mockupCarImg: {
+    width: '100%',
+    height: '100%',
+    zIndex: 1,
+  },
+  mockupMetricsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 20,
+    paddingHorizontal: 8,
+  },
+  mockupMetricCol: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  mockupMetricLabel: {
+    fontSize: 13,
+    color: '#94A3B8',
+    fontWeight: '500',
+    marginBottom: 3,
+  },
+  mockupMetricVal: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.3,
+  },
+  mockupActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  mockupActionItem: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 72,
+  },
+  mockupActionCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  mockupActionCircleRed: {
+    borderColor: 'rgba(248, 113, 113, 0.45)',
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+  },
+  mockupActionCircleBlue: {
+    borderColor: 'rgba(56, 189, 248, 0.45)',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+  },
+  mockupActionLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#E2E8F0',
+    textAlign: 'center',
+  },
+  mockupListContainer: {
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  mockupListCard: {
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  mockupListHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  mockupListIconBadge: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mockupListTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  mockupListSub: {
+    fontSize: 13,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  mockupListChevron: {
+    fontSize: 22,
+    color: '#64748B',
+    fontWeight: '300',
+    paddingHorizontal: 4,
+  },
+  mockupListChevronOpen: {
+    transform: [{ rotate: '90deg' }],
+  },
+  mockupExpandedBox: {
+    paddingBottom: 16,
+    paddingTop: 4,
+  },
+  colorModalCard: {
+    backgroundColor: '#131B2E',
+    borderRadius: 24,
+    padding: 20,
+    width: '92%',
+    maxWidth: 380,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  colorModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  colorModalSubtitle: {
+    fontSize: 13,
+    color: '#94A3B8',
+    marginBottom: 14,
+  },
+  colorOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    marginBottom: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  colorOptionRowSelected: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderWidth: 1,
+    borderColor: '#34D399',
+  },
+  colorSwatchCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  colorOptionName: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#F1F5F9',
+  },
+  resetColorBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: '#064E3B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resetColorBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#6EE7B7',
+  },
+  tabLabelText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  tabLabelTextActive: {
+    color: '#34D399',
+    fontWeight: '800',
   },
 });

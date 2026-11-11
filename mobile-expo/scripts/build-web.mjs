@@ -15,9 +15,8 @@ execSync(`"${process.execPath}" node_modules/expo/bin/cli export -p web --output
   env: envWithNode,
 });
 
-fs.copyFileSync('public/icon.svg', path.join(out, 'icon.svg'));
-if (fs.existsSync('public/sw.js')) {
-  fs.copyFileSync('public/sw.js', path.join(out, 'sw.js'));
+if (fs.existsSync('public')) {
+  fs.cpSync('public', out, { recursive: true });
 }
 fs.writeFileSync(
   path.join(out, 'manifest.json'),
