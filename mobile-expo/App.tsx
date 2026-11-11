@@ -124,6 +124,22 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return outputArray;
 }
 
+function getCardinalDirection(deg: number): string {
+  const normalized = ((deg % 360) + 360) % 360;
+  const directions = [
+    'North',
+    'North-east',
+    'East',
+    'South-east',
+    'South',
+    'South-west',
+    'West',
+    'North-west',
+  ];
+  const index = Math.round(normalized / 45) % 8;
+  return directions[index];
+}
+
 interface PreChargeBaseline {
   timestampSec: number;
   soc: number;
@@ -1063,7 +1079,7 @@ export default function App() {
   // Home Screen Redesign: Color & Detail Sections State
   const [carColorOverride, setCarColorOverride] = useState<string | null>(null);
   const [showColorPicker, setShowColorPicker] = useState<boolean>(false);
-  const [openDetailSection, setOpenDetailSection] = useState<'location' | 'remote' | null>(null);
+  const [openDetailSection, setOpenDetailSection] = useState<'remote' | null>(null);
 
   // Tyres & Closures Screen Horizontal Tween Animation State
   const tyreSlideAnim = useRef(new Animated.Value(0)).current;
@@ -1087,6 +1103,31 @@ export default function App() {
       useNativeDriver: Platform.OS !== 'web',
     }).start(() => {
       setIsTyresScreenVisible(false);
+    });
+  };
+
+  // Location Screen Horizontal Tween Animation State
+  const locationSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isLocationScreenVisible, setIsLocationScreenVisible] = useState<boolean>(false);
+
+  const handleOpenLocationScreen = () => {
+    setIsLocationScreenVisible(true);
+    Animated.timing(locationSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseLocationScreen = () => {
+    Animated.timing(locationSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsLocationScreenVisible(false);
     });
   };
 
@@ -2795,18 +2836,36 @@ export default function App() {
     setShowColorPicker(false);
   };
 
-  // Screen Width for Horizontal Tween Animations between Home and Tyres & Closures
+  // Screen Width for Horizontal Tween Animations between Home, Tyres, and Location
   const screenWidth = Math.max(Dimensions.get('window').width || 420, 500);
 
-  const homeTranslateX = tyreSlideAnim.interpolate({
+  const activeSlideAnim = Animated.add(tyreSlideAnim, locationSlideAnim);
+
+  const homeTranslateX = activeSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0, -screenWidth],
+    extrapolate: 'clamp',
   });
 
   const tyresTranslateX = tyreSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
+
+  const locationTranslateX = locationSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  // GPS Metrics for Location Screen
+  const gpsLat = status.gps?.latitude ?? 10.062227;
+  const gpsLon = status.gps?.longitude ?? 76.620519;
+  const gpsSpeed = Math.round(status.gps?.speed_kmh ?? 0);
+  const gpsHeading = Math.round(status.gps?.heading_deg ?? 55);
+  const gpsAltitude = Math.round(status.gps?.altitude_m ?? 8);
+  const gpsSatellites = status.gps?.satellites ?? 7;
+  const gpsFixType = status.gps?.gps_status === GpsStatus.FIX_3D ? '3D' : '2D';
+  const gpsCardinal = getCardinalDirection(gpsHeading);
 
   // Doors & Windows open status helpers for Tyres & Closures screen
   const openDoors: string[] = [];
@@ -3236,7 +3295,7 @@ export default function App() {
                 );
               })()}
 
-              {/* Row 2: Location */}
+              {/* Row 2: Location (Slides to dedicated Location screen) */}
               {(() => {
                 const fix3d = status.gps?.gps_status === GpsStatus.FIX_3D;
                 const hasFix = Boolean(status.gps && (status.gps.latitude || status.gps.longitude));
@@ -3245,14 +3304,15 @@ export default function App() {
                       fix3d ? '3D fix' : '2D fix'
                     }`
                   : '10.06, 76.62 · 2D fix';
-                const isOpen = openDetailSection === 'location';
 
                 return (
                   <View style={styles.mockupListCard}>
                     <TouchableOpacity
                       style={styles.mockupListHeader}
-                      onPress={() => setOpenDetailSection(isOpen ? null : 'location')}
+                      onPress={handleOpenLocationScreen}
                       activeOpacity={0.7}
+                      accessibilityLabel="Open Location screen"
+                      accessibilityRole="button"
                     >
                       <View style={styles.mockupListIconBadge}>
                         <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
@@ -3264,54 +3324,8 @@ export default function App() {
                         <Text style={styles.mockupListTitle}>Location</Text>
                         <Text style={styles.mockupListSub} numberOfLines={1}>{locSummary}</Text>
                       </View>
-                      <Text style={[styles.mockupListChevron, isOpen && styles.mockupListChevronOpen]}>
-                        ›
-                      </Text>
+                      <Text style={styles.mockupListChevron}>›</Text>
                     </TouchableOpacity>
-
-                    {isOpen && (
-                      <View style={styles.mockupExpandedBox}>
-                        <View style={{ gap: 8 }}>
-                          <InfoRow
-                            label="GPS Coordinates"
-                            value={`${status.gps?.latitude?.toFixed(6) ?? '10.063124'}, ${
-                              status.gps?.longitude?.toFixed(6) ?? '76.621456'
-                            }`}
-                          />
-                          <InfoRow
-                            label="Speed & Heading"
-                            value={`${status.gps?.speed_kmh ?? 0} km/h • ${status.gps?.heading_deg ?? 0}°`}
-                          />
-                          <InfoRow label="Altitude" value={`${status.gps?.altitude_m ?? 120} m ASL`} />
-                        </View>
-                        {status.gps?.latitude && status.gps?.longitude && (
-                          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-                            <TouchableOpacity
-                              style={[styles.ctrlBtn, { backgroundColor: '#0284C7', flex: 1 }]}
-                              onPress={() =>
-                                Linking.openURL(
-                                  `http://maps.apple.com/?ll=${status.gps?.latitude},${status.gps?.longitude}&q=${encodeURIComponent(
-                                    displayName
-                                  )}`
-                                )
-                              }
-                            >
-                              <Text style={styles.ctrlBtnText}>Apple Maps</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={[styles.ctrlBtn, { backgroundColor: '#059669', flex: 1 }]}
-                              onPress={() =>
-                                Linking.openURL(
-                                  `https://www.google.com/maps/search/?api=1&query=${status.gps?.latitude},${status.gps?.longitude}`
-                                )
-                              }
-                            >
-                              <Text style={styles.ctrlBtnText}>Google Maps</Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
-                      </View>
-                    )}
                   </View>
                 );
               })()}
@@ -6111,6 +6125,168 @@ export default function App() {
         </Animated.View>
       )}
 
+      {/* Location Fullscreen Tween Screen */}
+      {isLocationScreenVisible && (
+        <Animated.View
+          style={[
+            styles.locScreenLayer,
+            {
+              transform: [{ translateX: locationTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <ScrollView
+              style={{ flex: 1, width: '100%' }}
+              contentContainerStyle={styles.locScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Header */}
+              <View style={styles.locHeader}>
+                <TouchableOpacity
+                  style={styles.locBackBtn}
+                  onPress={handleCloseLocationScreen}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Back to Home"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                    <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                </TouchableOpacity>
+
+                <Text style={styles.locTitle}>Location</Text>
+
+                <View style={styles.locBadge}>
+                  <Text style={styles.locBadgeText}>
+                    {gpsFixType} fix · {gpsSatellites} sats
+                  </Text>
+                </View>
+              </View>
+
+              {/* Map Card */}
+              <View style={styles.locMapCard}>
+                {Platform.OS === 'web' ? (
+                  <iframe
+                    title="Vehicle Live GPS Map"
+                    src={`/map.html?lat=${gpsLat}&lon=${gpsLon}&heading=${gpsHeading}`}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      border: 'none',
+                      borderRadius: 24,
+                    }}
+                  />
+                ) : (
+                  <View style={styles.locMapNativePlaceholder}>
+                    <Image
+                      source={{
+                        uri: `https://staticmap.openstreetmap.de/staticmap.php?center=${gpsLat},${gpsLon}&zoom=16&size=600x400&maptype=mapnik`,
+                      }}
+                      style={styles.locMapNativeImg}
+                    />
+                    <View style={styles.locNativeBeacon}>
+                      <View style={styles.locNativeHalo} />
+                      <View
+                        style={[
+                          styles.locNativeArrowWrap,
+                          { transform: [{ rotate: `${gpsHeading}deg` }] },
+                        ]}
+                      >
+                        <View style={styles.locNativeArrow} />
+                      </View>
+                      <View style={styles.locNativeDot} />
+                    </View>
+                  </View>
+                )}
+
+                {/* Floating Parked Badge in bottom-left */}
+                <View style={styles.locParkedBadge}>
+                  <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.5}>
+                    <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </Svg>
+                  <Text style={styles.locParkedBadgeText}>
+                    {gpsSpeed === 0 ? 'Parked' : `Driving ${gpsSpeed} km/h`}
+                  </Text>
+                </View>
+              </View>
+
+              {/* 3-Column Metrics: Speed, Heading, Altitude */}
+              <View style={styles.locStatsRow}>
+                <View style={styles.locStatCol}>
+                  <Text style={styles.locStatLabel}>Speed</Text>
+                  <Text style={styles.locStatVal}>{gpsSpeed} km/h</Text>
+                  <Text style={styles.locStatSub}>{gpsSpeed === 0 ? 'Stationary' : 'Moving'}</Text>
+                </View>
+
+                <View style={styles.locStatCol}>
+                  <Text style={styles.locStatLabel}>Heading</Text>
+                  <Text style={styles.locStatVal}>{gpsHeading}°</Text>
+                  <Text style={styles.locStatSub}>{gpsCardinal}</Text>
+                </View>
+
+                <View style={styles.locStatCol}>
+                  <Text style={styles.locStatLabel}>Altitude</Text>
+                  <Text style={styles.locStatVal}>{gpsAltitude} m</Text>
+                  <Text style={styles.locStatSub}>Above sea level</Text>
+                </View>
+              </View>
+
+              {/* Summary Card: Coordinates & GPS Fix */}
+              <View style={styles.locSummaryCard}>
+                <View style={styles.locSummaryLine}>
+                  <Text style={styles.locSummaryLabel}>Coordinates</Text>
+                  <Text style={styles.locSummaryVal}>
+                    {gpsLat.toFixed(6)}, {gpsLon.toFixed(6)}
+                  </Text>
+                </View>
+
+                <View style={styles.locSummarySep} />
+
+                <View style={styles.locSummaryLine}>
+                  <Text style={styles.locSummaryLabel}>GPS fix</Text>
+                  <Text style={styles.locSummaryVal}>
+                    {gpsFixType} · {gpsSatellites} satellites
+                  </Text>
+                </View>
+              </View>
+
+              {/* Bottom Action Buttons: Apple Maps & Google Maps */}
+              <View style={styles.locActionButtonsRow}>
+                <TouchableOpacity
+                  style={styles.locAppleBtn}
+                  onPress={() =>
+                    Linking.openURL(
+                      `http://maps.apple.com/?ll=${gpsLat},${gpsLon}&q=${encodeURIComponent(displayName)}`
+                    )
+                  }
+                  activeOpacity={0.7}
+                  accessibilityLabel="Open in Apple Maps"
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.locAppleBtnText}>Apple Maps</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.locGoogleBtn}
+                  onPress={() =>
+                    Linking.openURL(
+                      `https://www.google.com/maps/search/?api=1&query=${gpsLat},${gpsLon}`
+                    )
+                  }
+                  activeOpacity={0.7}
+                  accessibilityLabel="Open in Google Maps"
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.locGoogleBtnText}>Google Maps</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -6199,6 +6375,10 @@ export default function App() {
                 if (isTyresScreenVisible) {
                   setIsTyresScreenVisible(false);
                   tyreSlideAnim.setValue(0);
+                }
+                if (isLocationScreenVisible) {
+                  setIsLocationScreenVisible(false);
+                  locationSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -9528,5 +9708,238 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#1E293B',
     marginVertical: 12,
+  },
+
+  // Location Dedicated Screen Styles
+  locScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  locScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: 40,
+  },
+  locHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingTop: 8,
+  },
+  locBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locTitle: {
+    color: '#F8FAFC',
+    fontSize: 24,
+    fontWeight: '800',
+    flex: 1,
+    marginLeft: 14,
+    letterSpacing: -0.3,
+  },
+  locBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  locBadgeText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  locMapCard: {
+    width: '100%',
+    height: 340,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: '#0B111E',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    position: 'relative',
+    marginBottom: 20,
+  },
+  locMapNativePlaceholder: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locMapNativeImg: {
+    width: '100%',
+    height: '100%',
+  },
+  locNativeBeacon: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locNativeHalo: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(52, 211, 153, 0.5)',
+  },
+  locNativeArrowWrap: {
+    position: 'absolute',
+    width: 52,
+    height: 52,
+    alignItems: 'center',
+  },
+  locNativeArrow: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderBottomWidth: 12,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#34D399',
+    marginTop: 2,
+  },
+  locNativeDot: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#34D399',
+    borderWidth: 2,
+    borderColor: '#064E3B',
+  },
+  locParkedBadge: {
+    position: 'absolute',
+    bottom: 14,
+    left: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: 'rgba(11, 17, 30, 0.88)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    zIndex: 10,
+    ...(Platform.OS === 'web'
+      ? ({ backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' } as any)
+      : {}),
+  },
+  locParkedBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  locStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    paddingHorizontal: 4,
+  },
+  locStatCol: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  locStatLabel: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  locStatVal: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+    marginBottom: 2,
+  },
+  locStatSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  locSummaryCard: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 18,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    marginBottom: 24,
+  },
+  locSummaryLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  locSummaryLabel: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  locSummaryVal: {
+    color: '#FFFFFF',
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
+  locSummarySep: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginVertical: 13,
+  },
+  locActionButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
+  },
+  locAppleBtn: {
+    flex: 1,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#0F172A',
+    borderWidth: 1.5,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locAppleBtnText: {
+    color: '#38BDF8',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  locGoogleBtn: {
+    flex: 1,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#0F172A',
+    borderWidth: 1.5,
+    borderColor: '#059669',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locGoogleBtnText: {
+    color: '#34D399',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

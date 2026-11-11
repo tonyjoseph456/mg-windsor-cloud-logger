@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Vehicle Live GPS Map</title>
+  <link rel="stylesheet" href="/leaflet/leaflet.css" />
+  <script src="/leaflet/leaflet.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #map {
+      width: 100%;
+      height: 100%;
+      background: #0A0E17;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .leaflet-control-attribution {
+      display: none !important;
+    }
+    .leaflet-bar {
+      border: 1px solid #1E293B !important;
+      border-radius: 8px !important;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important;
+    }
+    .leaflet-bar a {
+      background-color: #0F172A !important;
+      color: #94A3B8 !important;
+      border-bottom: 1px solid #1E293B !important;
+    }
+    .leaflet-bar a:hover {
+      background-color: #1E293B !important;
+      color: #F8FAFC !important;
+    }
+    .beacon-wrapper {
+      position: relative;
+      width: 64px;
+      height: 64px;
+      margin-left: -32px;
+      margin-top: -32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+    .beacon-halo {
+      position: absolute;
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: rgba(16, 185, 129, 0.18);
+      border: 1.5px solid rgba(52, 211, 153, 0.45);
+      animation: beaconPulse 2.4s ease-in-out infinite;
+    }
+    .beacon-cone-rotator {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      top: 0;
+      left: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+    .beacon-arrow {
+      position: absolute;
+      top: 4px;
+      width: 0;
+      height: 0;
+      border-left: 7px solid transparent;
+      border-right: 7px solid transparent;
+      border-bottom: 14px solid #34D399;
+      filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.8));
+    }
+    .beacon-dot {
+      position: relative;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #34D399;
+      box-shadow: 0 0 10px #34D399, 0 0 20px rgba(52, 211, 153, 0.6);
+      border: 2.5px solid #064E3B;
+      z-index: 2;
+    }
+    @keyframes beaconPulse {
+      0% { transform: scale(0.9); opacity: 0.8; }
+      50% { transform: scale(1.12); opacity: 0.4; }
+      100% { transform: scale(0.9); opacity: 0.8; }
+    }
+    .recenter-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 1000;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid #1E293B;
+      border-radius: 20px;
+      padding: 6px 12px;
+      color: #38BDF8;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      transition: all 0.2s;
+    }
+    .recenter-btn:hover {
+      background: #1E293B;
+      color: #6EE7B7;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <button id="recenterBtn" class="recenter-btn" onclick="recenterMap()">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <circle cx="12" cy="12" r="9"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+    Recenter
+  </button>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    let lat = parseFloat(params.get('lat')) || 10.062227;
+    let lon = parseFloat(params.get('lon')) || 76.620519;
+    let heading = parseFloat(params.get('heading')) || 55;
+
+    const map = L.map('map', {
+      center: [lat, lon],
+      zoom: 16,
+      zoomControl: false,
+      attributionControl: false
+    });
+
+    // Dark Matter basemap from Carto with automatic OpenStreetMap fallback
+    const darkTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd',
+      maxZoom: 19
+    });
+    darkTileLayer.addTo(map);
+
+    // Custom pulse beacon marker with heading arrow
+    function createBeaconHtml(h) {
+      return `
+        <div class="beacon-wrapper">
+          <div class="beacon-halo"></div>
+          <div class="beacon-cone-rotator" style="transform: rotate(${h}deg);">
+            <div class="beacon-arrow"></div>
+          </div>
+          <div class="beacon-dot"></div>
+        </div>
+      `;
+    }
+
+    const beaconIcon = L.divIcon({
+      className: 'vehicle-beacon-icon',
+      html: createBeaconHtml(heading),
+      iconSize: [0, 0]
+    });
+
+    const marker = L.marker([lat, lon], { icon: beaconIcon }).addTo(map);
+
+    function recenterMap() {
+      map.setView([lat, lon], 16, { animate: true });
+    }
+
+    // Support dynamic updates via postMessage from parent React Native app
+    window.addEventListener('message', (event) => {
+      try {
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data && data.lat && data.lon) {
+          lat = data.lat;
+          lon = data.lon;
+          if (data.heading !== undefined) heading = data.heading;
+          marker.setLatLng([lat, lon]);
+          beaconIcon.options.html = createBeaconHtml(heading);
+          marker.setIcon(beaconIcon);
+          if (data.recenter) {
+            map.setView([lat, lon], 16, { animate: true });
+          }
+        }
+      } catch (e) {}
+    });
+  </script>
+</body>
+</html>
