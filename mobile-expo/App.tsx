@@ -87,6 +87,9 @@ import {
   computeTripRouteChoices,
   NamedPlace,
   RouteChoice,
+  PlaceSuggestion,
+  searchDestinationPlaces,
+  resolvePlaceSuggestion,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 
@@ -757,6 +760,96 @@ function getTripEndCoordinates(
   };
 }
 
+interface PlanSliderProps {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  onChange: (val: number) => void;
+}
+
+function PlanSliderRow({
+  label,
+  value,
+  min = 0,
+  max = 100,
+  step = 1,
+  unit = '%',
+  onChange,
+}: PlanSliderProps) {
+  const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+
+  const handleWebChange = (e: any) => {
+    const next = Number(e.target.value);
+    if (!isNaN(next)) {
+      onChange(Math.max(min, Math.min(max, next)));
+    }
+  };
+
+  const handleTouch = (evt: any) => {
+    const { locationX } = evt.nativeEvent;
+    const width = evt.nativeEvent.layout?.width || 320;
+    if (width > 0) {
+      const ratio = Math.max(0, Math.min(1, locationX / width));
+      const raw = min + ratio * (max - min);
+      const stepped = Math.round(raw / step) * step;
+      onChange(Math.max(min, Math.min(max, stepped)));
+    }
+  };
+
+  return (
+    <View style={styles.planSliderRow}>
+      <View style={styles.planSliderHeader}>
+        <Text style={styles.planSliderLabel}>{label}</Text>
+        <Text style={styles.planSliderVal}>{value}{unit}</Text>
+      </View>
+
+      <View
+        style={styles.planSliderTrackWrap}
+        onStartShouldSetResponder={() => true}
+        onResponderMove={handleTouch}
+        onResponderGrant={handleTouch}
+      >
+        <View style={styles.planSliderTrackBg}>
+          <View style={[styles.planSliderTrackFill, { width: `${pct}%` }]} />
+        </View>
+
+        <View
+          style={[
+            styles.planSliderThumb,
+            { left: `${pct}%` },
+          ]}
+        />
+
+        {Platform.OS === 'web' && (
+          <input
+            type="range"
+            min={min}
+            max={max}
+            step={step}
+            value={value}
+            onChange={handleWebChange}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: 32,
+              opacity: 0,
+              cursor: 'pointer',
+              margin: 0,
+              padding: 0,
+              zIndex: 10,
+            }}
+          />
+        )}
+      </View>
+    </View>
+  );
+}
+
 function getChargeDateKey(session: ChargeLogRecord): string {
   if (session.startDateTime) {
     const m = session.startDateTime.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
@@ -1400,58 +1493,25 @@ export default function App() {
   // Plan a Trip Parameters State
   const [planOriginMode, setPlanOriginMode] = useState<'car' | 'custom'>('car');
   const [planCustomOrigin, setPlanCustomOrigin] = useState<string>('');
+  const [planCustomOriginPlace, setPlanCustomOriginPlace] = useState<NamedPlace | null>(null);
+  const [planOriginSuggestions, setPlanOriginSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [planIsSearchingOrigin, setPlanIsSearchingOrigin] = useState<boolean>(false);
+
   const [planStrategy, setPlanStrategy] = useState<'fastest' | 'fixed100'>('fixed100');
   const [planStartSoc, setPlanStartSoc] = useState<number>(90);
   const [planMinCharger, setPlanMinCharger] = useState<number>(25);
   const [planMinDest, setPlanMinDest] = useState<number>(50);
   const [planChargeTo, setPlanChargeTo] = useState<number>(100);
+
   const [planDestQuery, setPlanDestQuery] = useState<string>('');
   const [planSelectedDest, setPlanSelectedDest] = useState<NamedPlace | null>(null);
+  const [planDestSuggestions, setPlanDestSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [planIsSearchingDest, setPlanIsSearchingDest] = useState<boolean>(false);
+
   const [planIsComputing, setPlanIsComputing] = useState<boolean>(false);
   const [planProgressMsg, setPlanProgressMsg] = useState<string>('');
   const [planError, setPlanError] = useState<string | null>(null);
   const [planComputedChoices, setPlanComputedChoices] = useState<RouteChoice[]>([]);
-
-  const handleExecutePlanRoute = async (targetDest?: NamedPlace) => {
-    let dest = targetDest || planSelectedDest;
-    if (!dest && planDestQuery.trim()) {
-      const match = QUICK_DESTINATIONS.find(
-        (q) => q.name.toLowerCase() === planDestQuery.trim().toLowerCase()
-      );
-      if (match) {
-        dest = { placeId: 'quick-dest-' + match.name.toLowerCase(), name: match.name, position: match.position };
-      } else {
-        dest = { placeId: 'custom-dest-' + Date.now(), name: planDestQuery.trim(), position: { lat: 10.0889, lng: 77.0595 } };
-      }
-    }
-    if (!dest) {
-      setPlanError('Please enter or select a destination first.');
-      return;
-    }
-    setPlanError(null);
-    setPlanIsComputing(true);
-    setPlanProgressMsg('Calculating terrain & charging corridor...');
-
-    try {
-      const originPos =
-        planOriginMode === 'car' && status.gps?.latitude && status.gps?.longitude
-          ? { lat: status.gps.latitude, lng: status.gps.longitude }
-          : { lat: 10.062227, lng: 76.620519 };
-
-      const choices = await computeTripRouteChoices(
-        originPos,
-        dest,
-        googleMapsApiKey,
-        (msg) => setPlanProgressMsg(msg)
-      );
-      setPlanComputedChoices(choices);
-      setPlanIsComputing(false);
-      showBanner('ok', `Route planned to ${dest.name}!`);
-    } catch (e: any) {
-      setPlanIsComputing(false);
-      setPlanError(e?.message || 'Could not compute route.');
-    }
-  };
 
   const handleShareTripRecord = async (trip: TripRecord) => {
     try {
@@ -3532,6 +3592,149 @@ export default function App() {
   if (status.passenger_window_open) openWindows.push('Passenger');
   if (status.rear_left_window_open) openWindows.push('Rear left');
   if (status.rear_right_window_open) openWindows.push('Rear right');
+
+  // Sync initial battery SoC when vehicle telemetry is available
+  useEffect(() => {
+    if (clampedSoc && clampedSoc > 0) {
+      setPlanStartSoc(Math.round(clampedSoc));
+    }
+  }, [clampedSoc]);
+
+  // Debounced autocomplete for Custom Start Location
+  useEffect(() => {
+    if (planOriginMode !== 'custom') {
+      setPlanOriginSuggestions([]);
+      return;
+    }
+    const q = planCustomOrigin.trim();
+    if (q.length < 2 || (planCustomOriginPlace && planCustomOriginPlace.name === q)) {
+      setPlanOriginSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setPlanIsSearchingOrigin(true);
+      try {
+        const near = { lat: gpsLat, lng: gpsLon };
+        const results = await searchDestinationPlaces(q, near, googleMapsApiKey);
+        setPlanOriginSuggestions(results);
+      } catch (_) {
+        setPlanOriginSuggestions([]);
+      } finally {
+        setPlanIsSearchingOrigin(false);
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [planCustomOrigin, planOriginMode, planCustomOriginPlace, gpsLat, gpsLon, googleMapsApiKey]);
+
+  // Debounced autocomplete for Destination
+  useEffect(() => {
+    const q = planDestQuery.trim();
+    if (q.length < 2 || (planSelectedDest && planSelectedDest.name === q)) {
+      setPlanDestSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setPlanIsSearchingDest(true);
+      try {
+        const originPos =
+          planOriginMode === 'custom' && planCustomOriginPlace
+            ? planCustomOriginPlace.position
+            : { lat: gpsLat, lng: gpsLon };
+        const results = await searchDestinationPlaces(q, originPos, googleMapsApiKey);
+        setPlanDestSuggestions(results);
+      } catch (_) {
+        setPlanDestSuggestions([]);
+      } finally {
+        setPlanIsSearchingDest(false);
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [planDestQuery, planSelectedDest, planOriginMode, planCustomOriginPlace, gpsLat, gpsLon, googleMapsApiKey]);
+
+  const handleSelectOriginSuggestion = async (s: PlaceSuggestion) => {
+    try {
+      const resolved = await resolvePlaceSuggestion(s, googleMapsApiKey);
+      setPlanCustomOriginPlace(resolved);
+      setPlanCustomOrigin(resolved.name);
+      setPlanOriginSuggestions([]);
+    } catch (_) {
+      setPlanCustomOrigin(s.title);
+      setPlanOriginSuggestions([]);
+    }
+  };
+
+  const handleSelectDestSuggestion = async (s: PlaceSuggestion) => {
+    try {
+      const resolved = await resolvePlaceSuggestion(s, googleMapsApiKey);
+      setPlanSelectedDest(resolved);
+      setPlanDestQuery(resolved.name);
+      setPlanDestSuggestions([]);
+    } catch (_) {
+      setPlanDestQuery(s.title);
+      setPlanDestSuggestions([]);
+    }
+  };
+
+  const handleExecutePlanRoute = async (targetDest?: NamedPlace) => {
+    let dest = targetDest || planSelectedDest;
+    if (!dest && planDestSuggestions.length > 0) {
+      dest = await resolvePlaceSuggestion(planDestSuggestions[0], googleMapsApiKey);
+      setPlanSelectedDest(dest);
+      setPlanDestQuery(dest.name);
+      setPlanDestSuggestions([]);
+    } else if (!dest && planDestQuery.trim()) {
+      const match = QUICK_DESTINATIONS.find(
+        (q) => q.name.toLowerCase() === planDestQuery.trim().toLowerCase()
+      );
+      if (match) {
+        dest = { placeId: 'quick-dest-' + match.name.toLowerCase(), name: match.name, position: match.position };
+      } else {
+        const list = await searchDestinationPlaces(planDestQuery, { lat: gpsLat, lng: gpsLon }, googleMapsApiKey);
+        if (list.length > 0) {
+          dest = await resolvePlaceSuggestion(list[0], googleMapsApiKey);
+          setPlanSelectedDest(dest);
+        } else {
+          setPlanError('Location not found. Please select from the suggestions list.');
+          return;
+        }
+      }
+    }
+    if (!dest) {
+      setPlanError('Please enter or select a destination first.');
+      return;
+    }
+    setPlanError(null);
+    setPlanIsComputing(true);
+    setPlanProgressMsg('Calculating terrain & charging corridor...');
+
+    try {
+      let originPos = { lat: gpsLat, lng: gpsLon };
+      if (planOriginMode === 'custom') {
+        if (planCustomOriginPlace) {
+          originPos = planCustomOriginPlace.position;
+        } else if (planCustomOrigin.trim()) {
+          const startMatches = await searchDestinationPlaces(planCustomOrigin, originPos, googleMapsApiKey);
+          if (startMatches.length > 0) {
+            const resolvedStart = await resolvePlaceSuggestion(startMatches[0], googleMapsApiKey);
+            originPos = resolvedStart.position;
+          }
+        }
+      }
+
+      const choices = await computeTripRouteChoices(
+        originPos,
+        dest,
+        googleMapsApiKey,
+        (msg) => setPlanProgressMsg(msg)
+      );
+      setPlanComputedChoices(choices);
+      setPlanIsComputing(false);
+      showBanner('ok', `Route planned to ${dest.name}!`);
+    } catch (e: any) {
+      setPlanIsComputing(false);
+      setPlanError(e?.message || 'Could not compute route.');
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -7287,13 +7490,43 @@ export default function App() {
               </View>
 
               {planOriginMode === 'custom' && (
-                <TextInput
-                  style={styles.planCustomInput}
-                  placeholder="Enter starting city/location"
-                  placeholderTextColor="#64748B"
-                  value={planCustomOrigin}
-                  onChangeText={setPlanCustomOrigin}
-                />
+                <View style={{ marginTop: 10 }}>
+                  <TextInput
+                    style={styles.planDestInput}
+                    placeholder="Enter starting city/location"
+                    placeholderTextColor="#64748B"
+                    value={planCustomOrigin}
+                    onChangeText={(txt) => {
+                      setPlanCustomOrigin(txt);
+                      if (planCustomOriginPlace && txt !== planCustomOriginPlace.name) {
+                        setPlanCustomOriginPlace(null);
+                      }
+                    }}
+                  />
+                  {planIsSearchingOrigin && (
+                    <ActivityIndicator size="small" color="#34D399" style={{ marginVertical: 6 }} />
+                  )}
+                  {planOriginSuggestions.length > 0 && (
+                    <View style={styles.planSuggestionsBox}>
+                      {planOriginSuggestions.map((s) => (
+                        <TouchableOpacity
+                          key={s.placeId}
+                          style={styles.planSuggestionItem}
+                          onPress={() => handleSelectOriginSuggestion(s)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={{ flex: 1, paddingRight: 8 }}>
+                            <Text style={styles.planSuggestionTitle}>📍 {s.title}</Text>
+                            {s.subtitle ? <Text style={styles.planSuggestionSub}>{s.subtitle}</Text> : null}
+                          </View>
+                          {s.distanceM != null && (
+                            <Text style={styles.planSuggestionDist}>{(s.distanceM / 1000).toFixed(0)} km</Text>
+                          )}
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                </View>
               )}
 
               {/* Charging Strategy Section */}
@@ -7336,63 +7569,44 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              {/* 4 Parameter Metric Tiles (2x2 Grid) */}
-              <View style={styles.planMetricsGrid}>
-                {/* Tile 1: Start SoC */}
-                <TouchableOpacity
-                  style={styles.planMetricTile}
-                  onPress={() => {
-                    const next = planStartSoc >= 100 ? 70 : planStartSoc + 10;
-                    setPlanStartSoc(next);
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.planMetricTileLabel}>Start SoC</Text>
-                  <Text style={styles.planMetricTileVal}>{planStartSoc}%</Text>
-                </TouchableOpacity>
-
-                {/* Tile 2: Min at charger */}
-                <TouchableOpacity
-                  style={styles.planMetricTile}
-                  onPress={() => {
-                    const list = [10, 15, 20, 25];
-                    const idx = list.indexOf(planMinCharger);
-                    setPlanMinCharger(list[(idx + 1) % list.length]);
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.planMetricTileLabel}>Min at charger</Text>
-                  <Text style={styles.planMetricTileVal}>{planMinCharger}%</Text>
-                </TouchableOpacity>
-
-                {/* Tile 3: Min at destination */}
-                <TouchableOpacity
-                  style={styles.planMetricTile}
-                  onPress={() => {
-                    const list = [15, 20, 30, 50];
-                    const idx = list.indexOf(planMinDest);
-                    setPlanMinDest(list[(idx + 1) % list.length]);
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.planMetricTileLabel}>Min at destination</Text>
-                  <Text style={styles.planMetricTileVal}>{planMinDest}%</Text>
-                </TouchableOpacity>
-
-                {/* Tile 4: Charge to */}
-                <TouchableOpacity
-                  style={styles.planMetricTile}
-                  onPress={() => {
-                    const list = [80, 90, 100];
-                    const idx = list.indexOf(planChargeTo);
-                    setPlanChargeTo(list[(idx + 1) % list.length]);
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.planMetricTileLabel}>Charge to</Text>
-                  <Text style={styles.planMetricTileVal}>{planChargeTo}%</Text>
-                </TouchableOpacity>
+              {/* 4 Parameter Sliders Card */}
+              <View style={styles.planSliderCard}>
+                <PlanSliderRow
+                  label="Start SoC"
+                  value={planStartSoc}
+                  min={0}
+                  max={100}
+                  step={1}
+                  onChange={setPlanStartSoc}
+                />
+                <PlanSliderRow
+                  label="Min at charger"
+                  value={planMinCharger}
+                  min={0}
+                  max={100}
+                  step={1}
+                  onChange={setPlanMinCharger}
+                />
+                <PlanSliderRow
+                  label="Min at destination"
+                  value={planMinDest}
+                  min={0}
+                  max={100}
+                  step={1}
+                  onChange={setPlanMinDest}
+                />
+                <PlanSliderRow
+                  label="Charge to"
+                  value={planChargeTo}
+                  min={0}
+                  max={100}
+                  step={1}
+                  onChange={setPlanChargeTo}
+                />
               </View>
+              <Text style={styles.planSlidersHint}>
+                Drag to set each value from 0 to 100%. Start SoC begins at your car's current battery ({Math.round(clampedSoc || 90)}%).
+              </Text>
 
               {/* Destination Section */}
               <View style={styles.planDestHeaderRow}>
@@ -7422,13 +7636,43 @@ export default function App() {
               </View>
 
               {/* Destination Input Box */}
-              <TextInput
-                style={styles.planDestInput}
-                placeholder="Where to? e.g. Munnar"
-                placeholderTextColor="#64748B"
-                value={planDestQuery}
-                onChangeText={setPlanDestQuery}
-              />
+              <View style={{ marginTop: 8 }}>
+                <TextInput
+                  style={styles.planDestInput}
+                  placeholder="Where to? e.g. Munnar"
+                  placeholderTextColor="#64748B"
+                  value={planDestQuery}
+                  onChangeText={(txt) => {
+                    setPlanDestQuery(txt);
+                    if (planSelectedDest && txt !== planSelectedDest.name) {
+                      setPlanSelectedDest(null);
+                    }
+                  }}
+                />
+                {planIsSearchingDest && (
+                  <ActivityIndicator size="small" color="#34D399" style={{ marginVertical: 6 }} />
+                )}
+                {planDestSuggestions.length > 0 && (
+                  <View style={styles.planSuggestionsBox}>
+                    {planDestSuggestions.map((s) => (
+                      <TouchableOpacity
+                        key={s.placeId}
+                        style={styles.planSuggestionItem}
+                        onPress={() => handleSelectDestSuggestion(s)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={{ flex: 1, paddingRight: 8 }}>
+                          <Text style={styles.planSuggestionTitle}>📍 {s.title}</Text>
+                          {s.subtitle ? <Text style={styles.planSuggestionSub}>{s.subtitle}</Text> : null}
+                        </View>
+                        {s.distanceM != null && (
+                          <Text style={styles.planSuggestionDist}>{(s.distanceM / 1000).toFixed(0)} km</Text>
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
 
               {/* Preset Destination Pills */}
               <View style={styles.planChipsRow}>
@@ -7446,6 +7690,7 @@ export default function App() {
                         name: chip.name,
                         position: chip.position,
                       });
+                      setPlanDestSuggestions([]);
                     }}
                     activeOpacity={0.7}
                   >
@@ -12018,33 +12263,113 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginBottom: 10,
   },
-  planMetricsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginVertical: 12,
-  },
-  planMetricTile: {
-    width: '48%',
-    flexGrow: 1,
-    backgroundColor: '#0F172A',
+  planSliderCard: {
+    backgroundColor: '#111827',
     borderWidth: 1,
     borderColor: '#1E293B',
-    borderRadius: 18,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 6,
+    marginVertical: 14,
   },
-  planMetricTileLabel: {
+  planSliderRow: {
+    marginBottom: 16,
+  },
+  planSliderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  planSliderLabel: {
     color: '#94A3B8',
-    fontSize: 12.5,
+    fontSize: 14,
     fontWeight: '500',
-    marginBottom: 4,
   },
-  planMetricTileVal: {
+  planSliderVal: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: '800',
-    letterSpacing: -0.3,
+  },
+  planSliderTrackWrap: {
+    position: 'relative',
+    height: 30,
+    justifyContent: 'center',
+  },
+  planSliderTrackBg: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#1E293B',
+    width: '100%',
+    overflow: 'hidden',
+  },
+  planSliderTrackFill: {
+    height: '100%',
+    backgroundColor: '#34D399',
+    borderRadius: 3,
+  },
+  planSliderThumb: {
+    position: 'absolute',
+    top: 5,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    marginLeft: -10,
+    shadowColor: '#34D399',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    elevation: 4,
+    pointerEvents: 'none',
+  },
+  planSlidersHint: {
+    color: '#64748B',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 16,
+    paddingHorizontal: 2,
+  },
+  planSuggestionsBox: {
+    marginTop: 6,
+    marginBottom: 12,
+    backgroundColor: '#0F172A',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+    overflow: 'hidden',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 8,
+    zIndex: 100,
+  },
+  planSuggestionItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  planSuggestionTitle: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  planSuggestionSub: {
+    color: '#64748B',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  planSuggestionDist: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 10,
   },
   planDestHeaderRow: {
     flexDirection: 'row',
