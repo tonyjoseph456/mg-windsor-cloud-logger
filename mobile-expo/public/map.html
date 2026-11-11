@@ -8,15 +8,19 @@
   <script src="/leaflet/leaflet.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body, #map {
+    html, body, #map, #google-map {
       width: 100%;
       height: 100%;
       background: #0A0E17;
       overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
-    .leaflet-control-attribution {
+    .leaflet-control-attribution, .gm-style-cc, a[href^="https://maps.google.com/maps"] {
       display: none !important;
+    }
+    /* Dark night mode filter for OpenStreetMap tiles (100% free, zero API key needed) */
+    .osm-dark-layer .leaflet-tile {
+      filter: invert(90%) hue-rotate(180deg) brightness(95%) contrast(92%);
     }
     .leaflet-bar {
       border: 1px solid #1E293B !important;
@@ -118,6 +122,8 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="google-map" style="display: none;"></div>
+
   <button id="recenterBtn" class="recenter-btn" onclick="recenterMap()">
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
       <circle cx="12" cy="12" r="9"/>
@@ -131,22 +137,13 @@
     let lat = parseFloat(params.get('lat')) || 10.062227;
     let lon = parseFloat(params.get('lon')) || 76.620519;
     let heading = parseFloat(params.get('heading')) || 55;
+    const apiKey = (params.get('key') || '').trim();
 
-    const map = L.map('map', {
-      center: [lat, lon],
-      zoom: 16,
-      zoomControl: false,
-      attributionControl: false
-    });
+    let leafletMap = null;
+    let leafletMarker = null;
+    let gMap = null;
+    let gMarker = null;
 
-    // Dark Matter basemap from Carto with automatic OpenStreetMap fallback
-    const darkTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
-      maxZoom: 19
-    });
-    darkTileLayer.addTo(map);
-
-    // Custom pulse beacon marker with heading arrow
     function createBeaconHtml(h) {
       return `
         <div class="beacon-wrapper">
@@ -159,19 +156,124 @@
       `;
     }
 
-    const beaconIcon = L.divIcon({
-      className: 'vehicle-beacon-icon',
-      html: createBeaconHtml(heading),
-      iconSize: [0, 0]
-    });
-
-    const marker = L.marker([lat, lon], { icon: beaconIcon }).addTo(map);
-
     function recenterMap() {
-      map.setView([lat, lon], 16, { animate: true });
+      if (gMap) {
+        gMap.panTo({ lat: lat, lng: lon });
+      } else if (leafletMap) {
+        leafletMap.setView([lat, lon], 16, { animate: true });
+      }
     }
 
-    // Support dynamic updates via postMessage from parent React Native app
+    // Google Maps Night Mode Style
+    const GOOGLE_DARK_STYLES = [
+      { elementType: "geometry", stylers: [{ color: "#0B111E" }] },
+      { elementType: "labels.text.stroke", stylers: [{ color: "#0B111E" }] },
+      { elementType: "labels.text.fill", stylers: [{ color: "#94A3B8" }] },
+      { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#CBD5E1" }] },
+      { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#64748B" }] },
+      { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#0A1F1C" }] },
+      { featureType: "road", elementType: "geometry", stylers: [{ color: "#1E293B" }] },
+      { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#0F172A" }] },
+      { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#94A3B8" }] },
+      { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#2E3B52" }] },
+      { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#1E293B" }] },
+      { featureType: "water", elementType: "geometry", stylers: [{ color: "#080D17" }] },
+      { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#3B82F6" }] }
+    ];
+
+    if (apiKey) {
+      // Load Google Maps API with user's key
+      window.initGoogleMap = function() {
+        document.getElementById('map').style.display = 'none';
+        const gDiv = document.getElementById('google-map');
+        gDiv.style.display = 'block';
+
+        gMap = new google.maps.Map(gDiv, {
+          center: { lat: lat, lng: lon },
+          zoom: 16,
+          disableDefaultUI: true,
+          styles: GOOGLE_DARK_STYLES,
+        });
+
+        // Overlay Beacon
+        class BeaconOverlay extends google.maps.OverlayView {
+          constructor(position) {
+            super();
+            this.position = position;
+            this.div = null;
+          }
+          onAdd() {
+            this.div = document.createElement('div');
+            this.div.style.position = 'absolute';
+            this.div.style.pointerEvents = 'none';
+            this.div.innerHTML = createBeaconHtml(heading);
+            const panes = this.getPanes();
+            panes.overlayMouseTarget.appendChild(this.div);
+          }
+          draw() {
+            const overlayProjection = this.getProjection();
+            if (!overlayProjection || !this.div) return;
+            const point = overlayProjection.fromLatLngToDivPixel(this.position);
+            if (point) {
+              this.div.style.left = point.x + 'px';
+              this.div.style.top = point.y + 'px';
+            }
+          }
+          updateHeading(h) {
+            if (this.div) {
+              this.div.innerHTML = createBeaconHtml(h);
+            }
+          }
+          updatePosition(pos) {
+            this.position = pos;
+            this.draw();
+          }
+        }
+
+        gMarker = new BeaconOverlay(new google.maps.LatLng(lat, lon));
+        gMarker.setMap(gMap);
+      };
+
+      const gScript = document.createElement('script');
+      gScript.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initGoogleMap`;
+      gScript.async = true;
+      gScript.onerror = function() {
+        // Fallback to Leaflet OpenStreetMap if Google Maps key fails
+        initLeafletMap();
+      };
+      document.head.appendChild(gScript);
+    } else {
+      initLeafletMap();
+    }
+
+    function initLeafletMap() {
+      document.getElementById('google-map').style.display = 'none';
+      const lDiv = document.getElementById('map');
+      lDiv.style.display = 'block';
+
+      leafletMap = L.map('map', {
+        center: [lat, lon],
+        zoom: 16,
+        zoomControl: false,
+        attributionControl: false
+      });
+
+      // Standard OpenStreetMap tiles with dark inversion filter (free forever, zero API keys)
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        className: 'osm-dark-layer',
+        maxZoom: 19
+      }).addTo(leafletMap);
+
+      const beaconIcon = L.divIcon({
+        className: 'vehicle-beacon-icon',
+        html: createBeaconHtml(heading),
+        iconSize: [0, 0]
+      });
+
+      leafletMarker = L.marker([lat, lon], { icon: beaconIcon }).addTo(leafletMap);
+    }
+
+    // Dynamic updates via postMessage
     window.addEventListener('message', (event) => {
       try {
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
@@ -179,11 +281,18 @@
           lat = data.lat;
           lon = data.lon;
           if (data.heading !== undefined) heading = data.heading;
-          marker.setLatLng([lat, lon]);
-          beaconIcon.options.html = createBeaconHtml(heading);
-          marker.setIcon(beaconIcon);
-          if (data.recenter) {
-            map.setView([lat, lon], 16, { animate: true });
+          if (gMarker) {
+            gMarker.updatePosition(new google.maps.LatLng(lat, lon));
+            gMarker.updateHeading(heading);
+            if (data.recenter) gMap.panTo({ lat, lng: lon });
+          } else if (leafletMarker) {
+            leafletMarker.setLatLng([lat, lon]);
+            leafletMarker.setIcon(L.divIcon({
+              className: 'vehicle-beacon-icon',
+              html: createBeaconHtml(heading),
+              iconSize: [0, 0]
+            }));
+            if (data.recenter) leafletMap.setView([lat, lon], 16, { animate: true });
           }
         }
       } catch (e) {}

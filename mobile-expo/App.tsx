@@ -103,6 +103,7 @@ const GOOGLE_SYNC_KEY = 'mg_ismart_google_sync_v1';
 const BACKEND_KEY = 'mg_ismart_backend_v1';
 const GOOGLE_CLIENT_ID_KEY = 'mg_ismart_google_client_id_v1';
 const FONT_SCALE_KEY = 'mg_ismart_font_scale_v1';
+const GOOGLE_MAPS_API_KEY_KEY = 'mg_ismart_google_maps_api_key_v1';
 const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const DEFAULT_CLOUD_SYNC_URL =
   'https://raw.githubusercontent.com/tonyjoseph456/mg-windsor-cloud-logger/main/data/cloud_charging_log.json';
@@ -1131,9 +1132,34 @@ export default function App() {
     });
   };
 
+  // Google Maps API Key State
+  const [googleMapsApiKey, setGoogleMapsApiKey] = useState<string>('');
+  const [tempMapsApiKey, setTempMapsApiKey] = useState<string>('');
+  const [isMapsKeySaved, setIsMapsKeySaved] = useState<boolean>(false);
+
+  const handleSaveMapsApiKey = async (val: string) => {
+    const trimmed = val.trim();
+    setGoogleMapsApiKey(trimmed);
+    setTempMapsApiKey(trimmed);
+    if (trimmed) {
+      await SecureStore.setItemAsync(GOOGLE_MAPS_API_KEY_KEY, trimmed);
+      setIsMapsKeySaved(true);
+      setTimeout(() => setIsMapsKeySaved(false), 3000);
+    } else {
+      await SecureStore.deleteItemAsync(GOOGLE_MAPS_API_KEY_KEY);
+    }
+  };
+
   useEffect(() => {
     SecureStore.getItemAsync(COLOR_OVERRIDE_KEY).then((c) => {
       if (c) setCarColorOverride(c);
+    }).catch(() => {});
+
+    SecureStore.getItemAsync(GOOGLE_MAPS_API_KEY_KEY).then((k) => {
+      if (k) {
+        setGoogleMapsApiKey(k);
+        setTempMapsApiKey(k);
+      }
     }).catch(() => {});
   }, []);
 
@@ -4631,6 +4657,76 @@ export default function App() {
               )}
             </AccountSectionCard>
 
+            {/* CARD: GOOGLE MAPS API KEY */}
+            <AccountSectionCard
+              title="Google Maps API Key"
+              icon="🗺️"
+              badge={googleMapsApiKey ? 'Configured' : 'Optional'}
+              badgeBg={googleMapsApiKey ? '#064E3B' : '#1E293B'}
+              badgeColor={googleMapsApiKey ? '#34D399' : '#94A3B8'}
+              preview={
+                googleMapsApiKey
+                  ? 'Using personal Google Maps API Key (Custom Dark Mode)'
+                  : 'Using OpenStreetMap Dark Basemap (Zero API Key Needed)'
+              }
+            >
+              <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
+                Enter your Google Maps JavaScript API key to render official Google Maps with custom dark night mode on the Location screen.
+                If left blank, the app automatically uses free OpenStreetMap dark tiles with zero API keys required.
+              </Text>
+
+              <View style={{ marginBottom: 10 }}>
+                <Text style={{ color: '#64748B', fontSize: 11, fontWeight: '700', marginBottom: 6, letterSpacing: 0.5 }}>
+                  GOOGLE MAPS JAVASCRIPT API KEY
+                </Text>
+                <TextInput
+                  style={[styles.input, { fontFamily: Platform.OS === 'web' ? 'monospace' : undefined, fontSize: 13 }]}
+                  placeholder="e.g. AIzaSy..."
+                  placeholderTextColor="#64748B"
+                  value={tempMapsApiKey}
+                  onChangeText={setTempMapsApiKey}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry={false}
+                />
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+                <TouchableOpacity
+                  style={[styles.ctrlBtn, styles.activeBtn, { flex: 1 }]}
+                  onPress={() => handleSaveMapsApiKey(tempMapsApiKey)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.ctrlBtnText}>
+                    {isMapsKeySaved ? '✓ Saved!' : 'Save API Key'}
+                  </Text>
+                </TouchableOpacity>
+
+                {googleMapsApiKey ? (
+                  <TouchableOpacity
+                    style={[styles.ctrlBtn, { backgroundColor: '#7F1D1D25', borderColor: '#EF444450' }]}
+                    onPress={() => handleSaveMapsApiKey('')}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.ctrlBtnText, { color: '#FCA5A5' }]}>Remove</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              <View style={{ marginTop: 12, padding: 10, backgroundColor: '#0B111E', borderRadius: 10, borderWidth: 1, borderColor: '#1E293B' }}>
+                <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 16 }}>
+                  💡 <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Where to get an API key:</Text> Go to{' '}
+                  <Text
+                    style={{ color: '#34D399', textDecorationLine: 'underline' }}
+                    onPress={() => Linking.openURL('https://console.cloud.google.com/google/maps-apis/overview')}
+                  >
+                    Google Cloud Console
+                  </Text>{' '}
+                  and enable "Maps JavaScript API". Google includes $200 free monthly credit (~28,000 map loads/month).
+                </Text>
+              </View>
+            </AccountSectionCard>
+
             {/* CARD 2: MONTHLY DRIVING & CHARGING ANALYTICS */}
             {(() => {
               const MONTHS_LIST = [
@@ -6169,7 +6265,9 @@ export default function App() {
                 {Platform.OS === 'web' ? (
                   <iframe
                     title="Vehicle Live GPS Map"
-                    src={`/map.html?lat=${gpsLat}&lon=${gpsLon}&heading=${gpsHeading}`}
+                    src={`/map.html?lat=${gpsLat}&lon=${gpsLon}&heading=${gpsHeading}&key=${encodeURIComponent(
+                      googleMapsApiKey
+                    )}`}
                     style={{
                       width: '100%',
                       height: '100%',
@@ -6211,6 +6309,29 @@ export default function App() {
                   </Text>
                 </View>
               </View>
+
+              {/* Map Provider / API Key Status Bar */}
+              <TouchableOpacity
+                style={styles.locProviderBar}
+                onPress={() => {
+                  handleCloseLocationScreen();
+                  setTab('account');
+                }}
+                activeOpacity={0.7}
+                accessibilityLabel="Configure Google Maps API Key in Profile"
+                accessibilityRole="button"
+              >
+                <Text style={styles.locProviderBarText}>
+                  {googleMapsApiKey ? (
+                    <Text style={{ color: '#34D399', fontWeight: '700' }}>✓ Google Maps Active · Tap to manage</Text>
+                  ) : (
+                    <Text>
+                      🌐 Free OpenStreetMap Active ·{' '}
+                      <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Tap to add Google Maps Key</Text>
+                    </Text>
+                  )}
+                </Text>
+              </TouchableOpacity>
 
               {/* 3-Column Metrics: Speed, Heading, Altitude */}
               <View style={styles.locStatsRow}>
@@ -9849,6 +9970,22 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
+  },
+  locProviderBar: {
+    alignSelf: 'center',
+    marginTop: -8,
+    marginBottom: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#111827',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  locProviderBarText: {
+    color: '#94A3B8',
+    fontSize: 11.5,
+    fontWeight: '500',
   },
   locStatsRow: {
     flexDirection: 'row',
