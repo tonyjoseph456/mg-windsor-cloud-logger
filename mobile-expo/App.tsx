@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Dimensions,
+  Easing,
   Image,
   Linking,
   Modal,
@@ -1060,7 +1063,32 @@ export default function App() {
   // Home Screen Redesign: Color & Detail Sections State
   const [carColorOverride, setCarColorOverride] = useState<string | null>(null);
   const [showColorPicker, setShowColorPicker] = useState<boolean>(false);
-  const [openDetailSection, setOpenDetailSection] = useState<'tpms' | 'location' | 'remote' | null>(null);
+  const [openDetailSection, setOpenDetailSection] = useState<'location' | 'remote' | null>(null);
+
+  // Tyres & Closures Screen Horizontal Tween Animation State
+  const tyreSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isTyresScreenVisible, setIsTyresScreenVisible] = useState<boolean>(false);
+
+  const handleOpenTyresScreen = () => {
+    setIsTyresScreenVisible(true);
+    Animated.timing(tyreSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseTyresScreen = () => {
+    Animated.timing(tyreSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsTyresScreenVisible(false);
+    });
+  };
 
   useEffect(() => {
     SecureStore.getItemAsync(COLOR_OVERRIDE_KEY).then((c) => {
@@ -2767,6 +2795,34 @@ export default function App() {
     setShowColorPicker(false);
   };
 
+  // Screen Width for Horizontal Tween Animations between Home and Tyres & Closures
+  const screenWidth = Math.max(Dimensions.get('window').width || 420, 500);
+
+  const homeTranslateX = tyreSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -screenWidth],
+  });
+
+  const tyresTranslateX = tyreSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  // Doors & Windows open status helpers for Tyres & Closures screen
+  const openDoors: string[] = [];
+  if (status.driver_door_open) openDoors.push('Driver');
+  if (status.passenger_door_open) openDoors.push('Passenger');
+  if (status.rear_left_door_open) openDoors.push('Rear left');
+  if (status.rear_right_door_open) openDoors.push('Rear right');
+  if (status.boot_open) openDoors.push('Boot');
+  if (status.bonnet_open) openDoors.push('Bonnet');
+
+  const openWindows: string[] = [];
+  if (status.driver_window_open) openWindows.push('Driver');
+  if (status.passenger_window_open) openWindows.push('Passenger');
+  if (status.rear_left_window_open) openWindows.push('Rear left');
+  if (status.rear_right_window_open) openWindows.push('Rear right');
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -2862,7 +2918,14 @@ export default function App() {
 
         {/* TAB 1: HOME (REDESIGNED TO MATCH MOCKUP) */}
         {tab === 'home' && (
-          <View style={styles.mockupHomeContainer}>
+          <Animated.View
+            style={[
+              styles.mockupHomeContainer,
+              {
+                transform: [{ translateX: homeTranslateX }],
+              },
+            ]}
+          >
             {/* 1. Top Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
             <View style={styles.mockupHeader}>
               <View style={{ flex: 1, paddingRight: 8 }}>
@@ -3132,7 +3195,7 @@ export default function App() {
 
             {/* 7. Three Navigation / Detail List Rows with Chevrons */}
             <View style={styles.mockupListContainer}>
-              {/* Row 1: Tyres & Closures */}
+              {/* Row 1: Tyres & closures (Slides to dedicated screen) */}
               {(() => {
                 const allShut =
                   !status.driver_door_open &&
@@ -3146,14 +3209,15 @@ export default function App() {
                 } · ${status.rear_left_tyre_psi ?? '37.4'} · ${
                   status.rear_right_tyre_psi ?? '37.4'
                 } PSI · ${allShut ? 'All shut' : 'Door open'}`;
-                const isOpen = openDetailSection === 'tpms';
 
                 return (
                   <View style={styles.mockupListCard}>
                     <TouchableOpacity
                       style={styles.mockupListHeader}
-                      onPress={() => setOpenDetailSection(isOpen ? null : 'tpms')}
+                      onPress={handleOpenTyresScreen}
                       activeOpacity={0.7}
+                      accessibilityLabel="Open Tyres and closures screen"
+                      accessibilityRole="button"
                     >
                       <View style={styles.mockupListIconBadge}>
                         <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
@@ -3166,49 +3230,8 @@ export default function App() {
                         <Text style={styles.mockupListTitle}>Tyres & closures</Text>
                         <Text style={styles.mockupListSub} numberOfLines={1}>{tyreSummary}</Text>
                       </View>
-                      <Text style={[styles.mockupListChevron, isOpen && styles.mockupListChevronOpen]}>
-                        ›
-                      </Text>
+                      <Text style={styles.mockupListChevron}>›</Text>
                     </TouchableOpacity>
-
-                    {isOpen && (
-                      <View style={styles.mockupExpandedBox}>
-                        <View style={styles.tpmsGrid}>
-                          <View style={styles.tpmsBox}>
-                            <Text style={styles.tpmsLabel}>Front Left</Text>
-                            <Text style={styles.tpmsVal}>{status.front_left_tyre_psi ?? '37.8'} PSI</Text>
-                            <Text style={styles.tpmsMeta}>
-                              Door: {status.driver_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                              {status.driver_window_open ? 'OPEN' : 'Shut'}
-                            </Text>
-                          </View>
-                          <View style={styles.tpmsBox}>
-                            <Text style={styles.tpmsLabel}>Front Right</Text>
-                            <Text style={styles.tpmsVal}>{status.front_right_tyre_psi ?? '37.4'} PSI</Text>
-                            <Text style={styles.tpmsMeta}>
-                              Door: {status.passenger_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                              {status.passenger_window_open ? 'OPEN' : 'Shut'}
-                            </Text>
-                          </View>
-                          <View style={styles.tpmsBox}>
-                            <Text style={styles.tpmsLabel}>Rear Left</Text>
-                            <Text style={styles.tpmsVal}>{status.rear_left_tyre_psi ?? '37.4'} PSI</Text>
-                            <Text style={styles.tpmsMeta}>
-                              Door: {status.rear_left_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                              {status.rear_left_window_open ? 'OPEN' : 'Shut'}
-                            </Text>
-                          </View>
-                          <View style={styles.tpmsBox}>
-                            <Text style={styles.tpmsLabel}>Rear Right</Text>
-                            <Text style={styles.tpmsVal}>{status.rear_right_tyre_psi ?? '37.4'} PSI</Text>
-                            <Text style={styles.tpmsMeta}>
-                              Door: {status.rear_right_door_open ? 'OPEN' : 'Shut'} • Win:{' '}
-                              {status.rear_right_window_open ? 'OPEN' : 'Shut'}
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-                    )}
                   </View>
                 );
               })()}
@@ -3430,7 +3453,7 @@ export default function App() {
                 </View>
               </View>
             </Modal>
-          </View>
+          </Animated.View>
         )}
 
         {/* TAB 2: EV CHARGING */}
@@ -5950,6 +5973,144 @@ export default function App() {
         )}
       </ScrollView>
 
+      {/* Tyres & Closures Fullscreen Tween Screen */}
+      {isTyresScreenVisible && (
+        <Animated.View
+          style={[
+            styles.tyresScreenLayer,
+            {
+              transform: [{ translateX: tyresTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <ScrollView
+              style={{ flex: 1, width: '100%' }}
+              contentContainerStyle={styles.tyresScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Header */}
+              <View style={styles.tyresHeader}>
+                <TouchableOpacity
+                  style={styles.tyresBackBtn}
+                  onPress={handleCloseTyresScreen}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Back to Home"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                    <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                </TouchableOpacity>
+
+                <Text style={styles.tyresTitle}>Tyres & closures</Text>
+
+                <View style={[styles.tyresBadge, (openDoors.length > 0 || openWindows.length > 0) && styles.tyresBadgeOpen]}>
+                  <Text style={[styles.tyresBadgeText, (openDoors.length > 0 || openWindows.length > 0) && styles.tyresBadgeTextOpen]}>
+                    {openDoors.length === 0 && openWindows.length === 0 ? 'All shut' : 'Open'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Vehicle Stage with Top-Down View & 4 Floating Cards */}
+              <View style={styles.tyresStageContainer}>
+                {/* Floor Glow behind Car */}
+                <View style={styles.tyresFloorGlow} />
+
+                {/* Top-Down Car Image */}
+                <View style={styles.tyresCarCenter}>
+                  <Image
+                    source={Platform.OS === 'web' ? { uri: activeWindsorColor.topFallbackUri } : activeWindsorColor.topImage}
+                    defaultSource={activeWindsorColor.topImage}
+                    style={styles.tyresCarImage}
+                    resizeMode="contain"
+                  />
+                </View>
+
+                {/* Floating Card: Front Left */}
+                <View style={[styles.tyresCardFloat, styles.tyresCardFL]}>
+                  <Text style={styles.tyresCardPos}>Front left</Text>
+                  <View style={styles.tyresCardPsiRow}>
+                    <Text style={styles.tyresCardPsiVal}>{status.front_left_tyre_psi ?? '37.8'}</Text>
+                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
+                  </View>
+                  <Text style={[styles.tyresCardSubText, status.driver_door_open && styles.tyresCardSubOpen]}>
+                    {status.driver_door_open ? 'Door OPEN' : 'Door shut'}
+                  </Text>
+                  <Text style={[styles.tyresCardSubText, status.driver_window_open && styles.tyresCardSubOpen]}>
+                    {status.driver_window_open ? 'Window OPEN' : 'Window shut'}
+                  </Text>
+                </View>
+
+                {/* Floating Card: Front Right */}
+                <View style={[styles.tyresCardFloat, styles.tyresCardFR]}>
+                  <Text style={styles.tyresCardPos}>Front right</Text>
+                  <View style={styles.tyresCardPsiRow}>
+                    <Text style={styles.tyresCardPsiVal}>{status.front_right_tyre_psi ?? '37.4'}</Text>
+                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
+                  </View>
+                  <Text style={[styles.tyresCardSubText, status.passenger_door_open && styles.tyresCardSubOpen]}>
+                    {status.passenger_door_open ? 'Door OPEN' : 'Door shut'}
+                  </Text>
+                  <Text style={[styles.tyresCardSubText, status.passenger_window_open && styles.tyresCardSubOpen]}>
+                    {status.passenger_window_open ? 'Window OPEN' : 'Window shut'}
+                  </Text>
+                </View>
+
+                {/* Floating Card: Rear Left */}
+                <View style={[styles.tyresCardFloat, styles.tyresCardRL]}>
+                  <Text style={styles.tyresCardPos}>Rear left</Text>
+                  <View style={styles.tyresCardPsiRow}>
+                    <Text style={styles.tyresCardPsiVal}>{status.rear_left_tyre_psi ?? '37.4'}</Text>
+                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
+                  </View>
+                  <Text style={[styles.tyresCardSubText, status.rear_left_door_open && styles.tyresCardSubOpen]}>
+                    {status.rear_left_door_open ? 'Door OPEN' : 'Door shut'}
+                  </Text>
+                  <Text style={[styles.tyresCardSubText, status.rear_left_window_open && styles.tyresCardSubOpen]}>
+                    {status.rear_left_window_open ? 'Window OPEN' : 'Window shut'}
+                  </Text>
+                </View>
+
+                {/* Floating Card: Rear Right */}
+                <View style={[styles.tyresCardFloat, styles.tyresCardRR]}>
+                  <Text style={styles.tyresCardPos}>Rear right</Text>
+                  <View style={styles.tyresCardPsiRow}>
+                    <Text style={styles.tyresCardPsiVal}>{status.rear_right_tyre_psi ?? '37.4'}</Text>
+                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
+                  </View>
+                  <Text style={[styles.tyresCardSubText, status.rear_right_door_open && styles.tyresCardSubOpen]}>
+                    {status.rear_right_door_open ? 'Door OPEN' : 'Door shut'}
+                  </Text>
+                  <Text style={[styles.tyresCardSubText, status.rear_right_window_open && styles.tyresCardSubOpen]}>
+                    {status.rear_right_window_open ? 'Window OPEN' : 'Window shut'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Bottom Summary Box: Doors & Windows */}
+              <View style={styles.tyresSummaryBox}>
+                <View style={styles.tyresSummaryLine}>
+                  <Text style={styles.tyresSummaryTitle}>Doors</Text>
+                  <Text style={[styles.tyresSummaryStatus, openDoors.length > 0 && styles.tyresSummaryStatusOpen]}>
+                    {openDoors.length === 0 ? 'All shut' : `${openDoors.join(', ')} open`}
+                  </Text>
+                </View>
+
+                <View style={styles.tyresSummarySep} />
+
+                <View style={styles.tyresSummaryLine}>
+                  <Text style={styles.tyresSummaryTitle}>Windows</Text>
+                  <Text style={[styles.tyresSummaryStatus, openWindows.length > 0 && styles.tyresSummaryStatusOpen]}>
+                    {openWindows.length === 0 ? 'All shut' : `${openWindows.join(', ')} open`}
+                  </Text>
+                </View>
+              </View>
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -6034,7 +6195,13 @@ export default function App() {
           return (
             <TouchableOpacity
               key={item.id}
-              onPress={() => setTab(item.id)}
+              onPress={() => {
+                if (isTyresScreenVisible) {
+                  setIsTyresScreenVisible(false);
+                  tyreSlideAnim.setValue(0);
+                }
+                setTab(item.id);
+              }}
               style={styles.tabItem}
               activeOpacity={0.7}
               accessibilityLabel={item.label}
@@ -9166,5 +9333,200 @@ const styles = StyleSheet.create({
   tabLabelTextActive: {
     color: '#34D399',
     fontWeight: '800',
+  },
+
+  // Tyres & Closures Dedicated Screen Styles
+  tyresScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  tyresScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: 36,
+  },
+  tyresHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingTop: 8,
+  },
+  tyresBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tyresTitle: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '800',
+    flex: 1,
+    marginLeft: 14,
+    letterSpacing: -0.3,
+  },
+  tyresBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  tyresBadgeOpen: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  tyresBadgeText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  tyresBadgeTextOpen: {
+    color: '#F87171',
+  },
+  tyresStageContainer: {
+    position: 'relative',
+    height: 380,
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 12,
+  },
+  tyresFloorGlow: {
+    position: 'absolute',
+    width: 200,
+    height: 320,
+    borderRadius: 100,
+    backgroundColor: 'rgba(16, 185, 129, 0.05)',
+    alignSelf: 'center',
+  },
+  tyresCarCenter: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  tyresCarImage: {
+    width: 140,
+    height: 360,
+  },
+  tyresCardFloat: {
+    position: 'absolute',
+    width: 114,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    zIndex: 2,
+    ...(Platform.OS === 'web'
+      ? { boxShadow: '0 4px 14px rgba(0,0,0,0.45)' }
+      : {
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.45,
+          shadowRadius: 8,
+          elevation: 5,
+        }),
+  },
+  tyresCardFL: {
+    top: 20,
+    left: 0,
+  },
+  tyresCardFR: {
+    top: 20,
+    right: 0,
+  },
+  tyresCardRL: {
+    bottom: 20,
+    left: 0,
+  },
+  tyresCardRR: {
+    bottom: 20,
+    right: 0,
+  },
+  tyresCardPos: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  tyresCardPsiRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginBottom: 4,
+  },
+  tyresCardPsiVal: {
+    color: '#F8FAFC',
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  tyresCardPsiUnit: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  tyresCardSubText: {
+    color: '#94A3B8',
+    fontSize: 10.5,
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  tyresCardSubOpen: {
+    color: '#F87171',
+    fontWeight: '700',
+  },
+  tyresSummaryBox: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginTop: 14,
+    marginBottom: 20,
+  },
+  tyresSummaryLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  tyresSummaryTitle: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  tyresSummaryStatus: {
+    color: '#34D399',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  tyresSummaryStatusOpen: {
+    color: '#F87171',
+  },
+  tyresSummarySep: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginVertical: 12,
   },
 });

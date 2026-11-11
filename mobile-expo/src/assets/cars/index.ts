@@ -14,6 +14,8 @@ export interface WindsorColorOption {
   badge: string;
   image: any;
   fallbackUri: string;
+  topImage: any;
+  topFallbackUri: string;
 }
 
 export const WINDSOR_COLORS: WindsorColorOption[] = [
@@ -24,6 +26,8 @@ export const WINDSOR_COLORS: WindsorColorOption[] = [
     badge: '⚪',
     image: require('./windsor_white.png'),
     fallbackUri: '/cars/windsor_white.png',
+    topImage: require('./top_white.png'),
+    topFallbackUri: '/cars/top_white.png',
   },
   {
     key: 'black',
@@ -32,6 +36,8 @@ export const WINDSOR_COLORS: WindsorColorOption[] = [
     badge: '⚫',
     image: require('./windsor_black.png'),
     fallbackUri: '/cars/windsor_black.png',
+    topImage: require('./top_black.png'),
+    topFallbackUri: '/cars/top_black.png',
   },
   {
     key: 'green',
@@ -40,6 +46,8 @@ export const WINDSOR_COLORS: WindsorColorOption[] = [
     badge: '🟢',
     image: require('./windsor_green.png'),
     fallbackUri: '/cars/windsor_green.png',
+    topImage: require('./top_green.png'),
+    topFallbackUri: '/cars/top_green.png',
   },
   {
     key: 'grey',
@@ -48,6 +56,8 @@ export const WINDSOR_COLORS: WindsorColorOption[] = [
     badge: '🔘',
     image: require('./windsor_grey.png'),
     fallbackUri: '/cars/windsor_grey.png',
+    topImage: require('./top_grey.png'),
+    topFallbackUri: '/cars/top_grey.png',
   },
   {
     key: 'red',
@@ -56,6 +66,8 @@ export const WINDSOR_COLORS: WindsorColorOption[] = [
     badge: '🔴',
     image: require('./windsor_red.png'),
     fallbackUri: '/cars/windsor_red.png',
+    topImage: require('./top_red.png'),
+    topFallbackUri: '/cars/top_red.png',
   },
   {
     key: 'blue',
@@ -64,6 +76,8 @@ export const WINDSOR_COLORS: WindsorColorOption[] = [
     badge: '🔵',
     image: require('./windsor_blue.png'),
     fallbackUri: '/cars/windsor_blue.png',
+    topImage: require('./top_blue.png'),
+    topFallbackUri: '/cars/top_blue.png',
   },
   {
     key: 'ivory',
@@ -72,6 +86,8 @@ export const WINDSOR_COLORS: WindsorColorOption[] = [
     badge: '🟡',
     image: require('./windsor_ivory.png'),
     fallbackUri: '/cars/windsor_ivory.png',
+    topImage: require('./top_ivory.png'),
+    topFallbackUri: '/cars/top_ivory.png',
   },
 ];
 
