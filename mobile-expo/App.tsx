@@ -1132,15 +1132,42 @@ export default function App() {
     });
   };
 
+  // Remote Commands Screen Horizontal Tween Animation State
+  const remoteSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isRemoteScreenVisible, setIsRemoteScreenVisible] = useState<boolean>(false);
+
+  const handleOpenRemoteScreen = () => {
+    setIsRemoteScreenVisible(true);
+    Animated.timing(remoteSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseRemoteScreen = () => {
+    Animated.timing(remoteSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsRemoteScreenVisible(false);
+    });
+  };
+
   // Google Maps API Key State
   const [googleMapsApiKey, setGoogleMapsApiKey] = useState<string>('');
   const [tempMapsApiKey, setTempMapsApiKey] = useState<string>('');
   const [isMapsKeySaved, setIsMapsKeySaved] = useState<boolean>(false);
+  const [googleMapsKeyError, setGoogleMapsKeyError] = useState<boolean>(false);
 
   const handleSaveMapsApiKey = async (val: string) => {
     const trimmed = val.trim();
     setGoogleMapsApiKey(trimmed);
     setTempMapsApiKey(trimmed);
+    setGoogleMapsKeyError(false);
     if (trimmed) {
       await SecureStore.setItemAsync(GOOGLE_MAPS_API_KEY_KEY, trimmed);
       setIsMapsKeySaved(true);
@@ -1149,6 +1176,20 @@ export default function App() {
       await SecureStore.deleteItemAsync(GOOGLE_MAPS_API_KEY_KEY);
     }
   };
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const handleMsg = (event: MessageEvent) => {
+      try {
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data && data.type === 'GOOGLE_MAPS_ERROR') {
+          setGoogleMapsKeyError(true);
+        }
+      } catch (e) {}
+    };
+    window.addEventListener('message', handleMsg);
+    return () => window.removeEventListener('message', handleMsg);
+  }, []);
 
   useEffect(() => {
     SecureStore.getItemAsync(COLOR_OVERRIDE_KEY).then((c) => {
@@ -2862,10 +2903,13 @@ export default function App() {
     setShowColorPicker(false);
   };
 
-  // Screen Width for Horizontal Tween Animations between Home, Tyres, and Location
+  // Screen Width for Horizontal Tween Animations between Home, Tyres, Location, and Remote Commands
   const screenWidth = Math.max(Dimensions.get('window').width || 420, 500);
 
-  const activeSlideAnim = Animated.add(tyreSlideAnim, locationSlideAnim);
+  const activeSlideAnim = Animated.add(
+    tyreSlideAnim,
+    Animated.add(locationSlideAnim, remoteSlideAnim)
+  );
 
   const homeTranslateX = activeSlideAnim.interpolate({
     inputRange: [0, 1],
@@ -2879,6 +2923,11 @@ export default function App() {
   });
 
   const locationTranslateX = locationSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const remoteTranslateX = remoteSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -3356,92 +3405,28 @@ export default function App() {
                 );
               })()}
 
-              {/* Row 3: Remote commands */}
-              {(() => {
-                const isOpen = openDetailSection === 'remote';
-                return (
-                  <View style={styles.mockupListCard}>
-                    <TouchableOpacity
-                      style={styles.mockupListHeader}
-                      onPress={() => setOpenDetailSection(isOpen ? null : 'remote')}
-                      activeOpacity={0.7}
-                    >
-                      <View style={styles.mockupListIconBadge}>
-                        <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
-                          <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                          <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                        </Svg>
-                      </View>
-                      <View style={{ flex: 1, paddingHorizontal: 12 }}>
-                        <Text style={styles.mockupListTitle}>Remote commands</Text>
-                        <Text style={styles.mockupListSub} numberOfLines={1}>PIN protected</Text>
-                      </View>
-                      <Text style={[styles.mockupListChevron, isOpen && styles.mockupListChevronOpen]}>
-                        ›
-                      </Text>
-                    </TouchableOpacity>
-
-                    {isOpen && (
-                      <View style={styles.mockupExpandedBox}>
-                        <View style={styles.btnGrid}>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() => triggerCommand('Lock Doors', (c) => c.controlDoorLock(true))}
-                          >
-                            <Text style={styles.ctrlBtnText}>Lock Doors</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() => triggerCommand('Unlock Doors', (c) => c.controlDoorLock(false))}
-                          >
-                            <Text style={styles.ctrlBtnText}>Unlock Doors</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() => triggerCommand('Start Climate AC', (c) => c.controlClimate(true))}
-                          >
-                            <Text style={styles.ctrlBtnText}>Start Climate AC</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() => triggerCommand('Stop Climate AC', (c) => c.controlClimate(false))}
-                          >
-                            <Text style={styles.ctrlBtnText}>Stop Climate AC</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() =>
-                              triggerCommand('Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))
-                            }
-                          >
-                            <Text style={styles.ctrlBtnText}>Open Windows</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() =>
-                              triggerCommand('Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))
-                            }
-                          >
-                            <Text style={styles.ctrlBtnText}>Close Windows</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() => triggerCommand('Open Sunroof', (c) => c.controlSunroof(true))}
-                          >
-                            <Text style={styles.ctrlBtnText}>Open Sunroof</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.ctrlBtn}
-                            onPress={() => triggerCommand('Close Sunroof', (c) => c.controlSunroof(false))}
-                          >
-                            <Text style={styles.ctrlBtnText}>Close Sunroof</Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    )}
+              {/* Row 3: Remote commands (Slides to dedicated screen) */}
+              <View style={styles.mockupListCard}>
+                <TouchableOpacity
+                  style={styles.mockupListHeader}
+                  onPress={handleOpenRemoteScreen}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Open Remote commands screen"
+                  accessibilityRole="button"
+                >
+                  <View style={styles.mockupListIconBadge}>
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
+                      <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </Svg>
                   </View>
-                );
-              })()}
+                  <View style={{ flex: 1, paddingHorizontal: 12 }}>
+                    <Text style={styles.mockupListTitle}>Remote commands</Text>
+                    <Text style={styles.mockupListSub} numberOfLines={1}>PIN protected</Text>
+                  </View>
+                  <Text style={styles.mockupListChevron}>›</Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* Windsor EV Color Picker Modal */}
@@ -4713,16 +4698,25 @@ export default function App() {
                 ) : null}
               </View>
 
-              <View style={{ marginTop: 12, padding: 10, backgroundColor: '#0B111E', borderRadius: 10, borderWidth: 1, borderColor: '#1E293B' }}>
-                <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 16 }}>
-                  💡 <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Where to get an API key:</Text> Go to{' '}
+              <View style={{ marginTop: 12, padding: 12, backgroundColor: '#0B111E', borderRadius: 12, borderWidth: 1, borderColor: '#1E293B', gap: 6 }}>
+                <Text style={{ color: '#F8FAFC', fontSize: 12, fontWeight: '700' }}>
+                  💡 How to activate your Google Maps API Key:
+                </Text>
+                <Text style={{ color: '#94A3B8', fontSize: 11.5, lineHeight: 17 }}>
+                  1. Open{' '}
                   <Text
-                    style={{ color: '#34D399', textDecorationLine: 'underline' }}
-                    onPress={() => Linking.openURL('https://console.cloud.google.com/google/maps-apis/overview')}
+                    style={{ color: '#38BDF8', fontWeight: '700', textDecorationLine: 'underline' }}
+                    onPress={() => Linking.openURL('https://console.cloud.google.com/apis/library/maps-backend.googleapis.com')}
                   >
-                    Google Cloud Console
+                    Google Cloud: Maps JavaScript API
                   </Text>{' '}
-                  and enable "Maps JavaScript API". Google includes $200 free monthly credit (~28,000 map loads/month).
+                  and click the blue <Text style={{ color: '#34D399', fontWeight: '800' }}>ENABLE</Text> button.
+                </Text>
+                <Text style={{ color: '#94A3B8', fontSize: 11.5, lineHeight: 17 }}>
+                  2. Ensure a Billing Account is linked to the project in Google Cloud Console. Google provides <Text style={{ color: '#34D399', fontWeight: '800' }}>$200 monthly free credit</Text> (~28,000 map loads/month free of charge).
+                </Text>
+                <Text style={{ color: '#64748B', fontSize: 11, fontStyle: 'italic', marginTop: 2 }}>
+                  If the key is not activated yet, the app automatically runs OpenStreetMap so your maps always stay functional.
                 </Text>
               </View>
             </AccountSectionCard>
@@ -6312,17 +6306,48 @@ export default function App() {
 
               {/* Map Provider / API Key Status Bar */}
               <TouchableOpacity
-                style={styles.locProviderBar}
+                style={[
+                  styles.locProviderBar,
+                  googleMapsKeyError && { borderColor: '#F59E0B', backgroundColor: '#78350F25' },
+                ]}
                 onPress={() => {
-                  handleCloseLocationScreen();
-                  setTab('account');
+                  if (googleMapsKeyError) {
+                    Alert.alert(
+                      'Google Maps: API Not Activated',
+                      'Your Google Cloud project exists, but the "Maps JavaScript API" has not been enabled on it yet.\n\n1. In Google Cloud Console, search for "Maps JavaScript API"\n2. Click "ENABLE"\n3. Ensure a billing account is linked to the project.\n\nWhile you do that, the app is seamlessly using OpenStreetMap so your map works uninterrupted.',
+                      [
+                        {
+                          text: 'Enable Maps API in Cloud Console',
+                          onPress: () =>
+                            Linking.openURL(
+                              'https://console.cloud.google.com/apis/library/maps-backend.googleapis.com'
+                            ),
+                        },
+                        {
+                          text: 'Open Profile Settings',
+                          onPress: () => {
+                            handleCloseLocationScreen();
+                            setTab('account');
+                          },
+                        },
+                        { text: 'Dismiss', style: 'cancel' },
+                      ]
+                    );
+                  } else {
+                    handleCloseLocationScreen();
+                    setTab('account');
+                  }
                 }}
                 activeOpacity={0.7}
                 accessibilityLabel="Configure Google Maps API Key in Profile"
                 accessibilityRole="button"
               >
                 <Text style={styles.locProviderBarText}>
-                  {googleMapsApiKey ? (
+                  {googleMapsKeyError ? (
+                    <Text style={{ color: '#FCD34D', fontWeight: '700' }}>
+                      ⚠️ Key Not Activated in Cloud Console · Tap to Enable
+                    </Text>
+                  ) : googleMapsApiKey ? (
                     <Text style={{ color: '#34D399', fontWeight: '700' }}>✓ Google Maps Active · Tap to manage</Text>
                   ) : (
                     <Text>
@@ -6401,6 +6426,226 @@ export default function App() {
                   accessibilityRole="button"
                 >
                   <Text style={styles.locGoogleBtnText}>Google Maps</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+
+      {/* Remote Commands Fullscreen Tween Screen */}
+      {isRemoteScreenVisible && (
+        <Animated.View
+          style={[
+            styles.remScreenLayer,
+            {
+              transform: [{ translateX: remoteTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <ScrollView
+              style={{ flex: 1, width: '100%' }}
+              contentContainerStyle={styles.remScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Header */}
+              <View style={styles.remHeader}>
+                <TouchableOpacity
+                  style={styles.remBackBtn}
+                  onPress={handleCloseRemoteScreen}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Back to Home"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                    <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                </TouchableOpacity>
+
+                <View style={styles.remTitleCol}>
+                  <Text style={styles.remTitle}>Remote</Text>
+                  <Text style={styles.remTitle}>commands</Text>
+                </View>
+
+                <View style={styles.remBadge}>
+                  <Svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.5}>
+                    <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </Svg>
+                  <Text style={styles.remBadgeText}>PIN locked</Text>
+                </View>
+              </View>
+
+              {/* Subtext info */}
+              <Text style={styles.remSubtext}>
+                Your PIN is checked before any command is sent to the car.
+              </Text>
+
+              {/* Primary 4-Row Control Card */}
+              <View style={styles.remControlCard}>
+                {/* Row 1: Doors */}
+                <View style={styles.remRow}>
+                  <View style={styles.remRowLeft}>
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                      <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </Svg>
+                    <Text style={styles.remRowLabel}>Doors</Text>
+                  </View>
+                  <View style={styles.remBtnPair}>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Lock Doors', (c) => c.controlDoorLock(true))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Lock Doors"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Lock</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Unlock Doors', (c) => c.controlDoorLock(false))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Unlock Doors"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Unlock</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={styles.remRowDivider} />
+
+                {/* Row 2: Climate */}
+                <View style={styles.remRow}>
+                  <View style={styles.remRowLeft}>
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                      <Path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M4.93 19.07L19.07 4.93" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                    <Text style={styles.remRowLabel}>Climate</Text>
+                  </View>
+                  <View style={styles.remBtnPair}>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Start Climate AC', (c) => c.controlClimate(true))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Start Climate AC"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Start</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Stop Climate AC', (c) => c.controlClimate(false))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Stop Climate AC"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Stop</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={styles.remRowDivider} />
+
+                {/* Row 3: Windows */}
+                <View style={styles.remRow}>
+                  <View style={styles.remRowLeft}>
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                      <Rect x="5" y="3" width="14" height="18" rx="2" />
+                      <Path d="M5 8h14" />
+                    </Svg>
+                    <Text style={styles.remRowLabel}>Windows</Text>
+                  </View>
+                  <View style={styles.remBtnPair}>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Open Windows"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Open</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Close Windows"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={styles.remRowDivider} />
+
+                {/* Row 4: Sunroof */}
+                <View style={styles.remRow}>
+                  <View style={styles.remRowLeft}>
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                      <Path d="M4 17a8 8 0 0 1 16 0z" strokeLinecap="round" strokeLinejoin="round" />
+                      <Path d="M12 9v8" />
+                    </Svg>
+                    <Text style={styles.remRowLabel}>Sunroof</Text>
+                  </View>
+                  <View style={styles.remBtnPair}>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Open Sunroof', (c) => c.controlSunroof(true))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Open Sunroof"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Open</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.remActionBtn}
+                      onPress={() => triggerCommand('Close Sunroof', (c) => c.controlSunroof(false))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Close Sunroof"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.remActionBtnText}>Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+
+              {/* Bottom 2 Feature Cards: Find My Car & Release Tailgate */}
+              <View style={styles.remBottomGrid}>
+                {/* Card 1: Find my car */}
+                <TouchableOpacity
+                  style={styles.remFeatureCard}
+                  onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Find my car"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                    <Path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                    <Circle cx="12" cy="10" r="3" />
+                  </Svg>
+                  <Text style={styles.remFeatureTitle}>Find my car</Text>
+                  <Text style={styles.remFeatureSub}>Horn and lights</Text>
+                </TouchableOpacity>
+
+                {/* Card 2: Release tailgate */}
+                <TouchableOpacity
+                  style={styles.remFeatureCard}
+                  onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Release tailgate"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                    <Rect x="3" y="8" width="18" height="12" rx="2" />
+                    <Path d="M3 12h18M8 8V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v4" strokeLinecap="round" />
+                  </Svg>
+                  <Text style={styles.remFeatureTitle}>Release tailgate</Text>
+                  <Text style={styles.remFeatureSub}>Opens the boot</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -6500,6 +6745,10 @@ export default function App() {
                 if (isLocationScreenVisible) {
                   setIsLocationScreenVisible(false);
                   locationSlideAnim.setValue(0);
+                }
+                if (isRemoteScreenVisible) {
+                  setIsRemoteScreenVisible(false);
+                  remoteSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -10078,5 +10327,156 @@ const styles = StyleSheet.create({
     color: '#34D399',
     fontSize: 15,
     fontWeight: '700',
+  },
+
+  // Remote Commands Dedicated Screen Styles
+  remScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  remScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: 40,
+  },
+  remHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    paddingTop: 8,
+  },
+  remBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  remTitleCol: {
+    flex: 1,
+    marginLeft: 14,
+    justifyContent: 'center',
+  },
+  remTitle: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+    lineHeight: 25,
+  },
+  remBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  remBadgeText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  remSubtext: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+    fontWeight: '500',
+    marginBottom: 20,
+    paddingHorizontal: 4,
+    lineHeight: 18,
+  },
+  remControlCard: {
+    backgroundColor: '#111827',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingVertical: 4,
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+  remRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+  },
+  remRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  remRowLabel: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  remBtnPair: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  remActionBtn: {
+    minWidth: 76,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+  },
+  remActionBtnText: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  remRowDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+  },
+  remBottomGrid: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
+  },
+  remFeatureCard: {
+    flex: 1,
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    minHeight: 110,
+  },
+  remFeatureTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  remFeatureSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
   },
 });

@@ -15,7 +15,7 @@
       overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
-    .leaflet-control-attribution, .gm-style-cc, a[href^="https://maps.google.com/maps"] {
+    .leaflet-control-attribution, .gm-style-cc, a[href^="https://maps.google.com/maps"], .gm-err-container {
       display: none !important;
     }
     /* Dark night mode filter for OpenStreetMap tiles (100% free, zero API key needed) */
@@ -136,13 +136,14 @@
     const params = new URLSearchParams(window.location.search);
     let lat = parseFloat(params.get('lat')) || 10.062227;
     let lon = parseFloat(params.get('lon')) || 76.620519;
-    let heading = parseFloat(params.get('heading')) || 55;
+    let heading = parseFloat(params.get('heading')) || 0;
     const apiKey = (params.get('key') || '').trim();
 
     let leafletMap = null;
     let leafletMarker = null;
     let gMap = null;
     let gMarker = null;
+    let hasGoogleError = false;
 
     function createBeaconHtml(h) {
       return `
@@ -157,12 +158,24 @@
     }
 
     function recenterMap() {
-      if (gMap) {
+      if (gMap && !hasGoogleError) {
         gMap.panTo({ lat: lat, lng: lon });
       } else if (leafletMap) {
         leafletMap.setView([lat, lon], 16, { animate: true });
       }
     }
+
+    // Official Google Maps Authentication Failure Hook
+    // Triggered automatically by Google when the API key is not activated (ApiNotActivatedMapError),
+    // has billing issues, or is unauthorized.
+    window.gm_authFailure = function() {
+      console.warn('[Google Maps] gm_authFailure fired! Automatically falling back to OpenStreetMap dark basemap.');
+      hasGoogleError = true;
+      initLeafletMap();
+      try {
+        window.parent.postMessage(JSON.stringify({ type: 'GOOGLE_MAPS_ERROR', reason: 'ApiNotActivatedMapError' }), '*');
+      } catch (e) {}
+    };
 
     // Google Maps Night Mode Style
     const GOOGLE_DARK_STYLES = [
@@ -182,63 +195,70 @@
     ];
 
     if (apiKey) {
-      // Load Google Maps API with user's key
       window.initGoogleMap = function() {
-        document.getElementById('map').style.display = 'none';
-        const gDiv = document.getElementById('google-map');
-        gDiv.style.display = 'block';
+        if (hasGoogleError) return;
+        try {
+          document.getElementById('map').style.display = 'none';
+          const gDiv = document.getElementById('google-map');
+          gDiv.style.display = 'block';
 
-        gMap = new google.maps.Map(gDiv, {
-          center: { lat: lat, lng: lon },
-          zoom: 16,
-          disableDefaultUI: true,
-          styles: GOOGLE_DARK_STYLES,
-        });
+          gMap = new google.maps.Map(gDiv, {
+            center: { lat: lat, lng: lon },
+            zoom: 16,
+            disableDefaultUI: true,
+            styles: GOOGLE_DARK_STYLES,
+          });
 
-        // Overlay Beacon
-        class BeaconOverlay extends google.maps.OverlayView {
-          constructor(position) {
-            super();
-            this.position = position;
-            this.div = null;
-          }
-          onAdd() {
-            this.div = document.createElement('div');
-            this.div.style.position = 'absolute';
-            this.div.style.pointerEvents = 'none';
-            this.div.innerHTML = createBeaconHtml(heading);
-            const panes = this.getPanes();
-            panes.overlayMouseTarget.appendChild(this.div);
-          }
-          draw() {
-            const overlayProjection = this.getProjection();
-            if (!overlayProjection || !this.div) return;
-            const point = overlayProjection.fromLatLngToDivPixel(this.position);
-            if (point) {
-              this.div.style.left = point.x + 'px';
-              this.div.style.top = point.y + 'px';
+          // Overlay Beacon
+          class BeaconOverlay extends google.maps.OverlayView {
+            constructor(position) {
+              super();
+              this.position = position;
+              this.div = null;
+            }
+            onAdd() {
+              this.div = document.createElement('div');
+              this.div.style.position = 'absolute';
+              this.div.style.pointerEvents = 'none';
+              this.div.innerHTML = createBeaconHtml(heading);
+              const panes = this.getPanes();
+              panes.overlayMouseTarget.appendChild(this.div);
+            }
+            draw() {
+              const overlayProjection = this.getProjection();
+              if (!overlayProjection || !this.div) return;
+              const point = overlayProjection.fromLatLngToDivPixel(this.position);
+              if (point) {
+                this.div.style.left = point.x + 'px';
+                this.div.style.top = point.y + 'px';
+              }
+            }
+            updateHeading(h) {
+              if (this.div) {
+                this.div.innerHTML = createBeaconHtml(h);
+              }
+            }
+            updatePosition(pos) {
+              this.position = pos;
+              this.draw();
             }
           }
-          updateHeading(h) {
-            if (this.div) {
-              this.div.innerHTML = createBeaconHtml(h);
-            }
-          }
-          updatePosition(pos) {
-            this.position = pos;
-            this.draw();
-          }
+
+          gMarker = new BeaconOverlay(new google.maps.LatLng(lat, lon));
+          gMarker.setMap(gMap);
+        } catch (err) {
+          console.error('[Google Maps] Initialization error:', err);
+          hasGoogleError = true;
+          initLeafletMap();
         }
-
-        gMarker = new BeaconOverlay(new google.maps.LatLng(lat, lon));
-        gMarker.setMap(gMap);
       };
 
       const gScript = document.createElement('script');
-      gScript.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initGoogleMap`;
+      gScript.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initGoogleMap&loading=async`;
       gScript.async = true;
       gScript.onerror = function() {
-        // Fallback to Leaflet OpenStreetMap if Google Maps key fails
+        console.warn('[Google Maps] Script tag network error. Falling back to OpenStreetMap.');
+        hasGoogleError = true;
         initLeafletMap();
       };
       document.head.appendChild(gScript);
@@ -247,30 +267,36 @@
     }
 
     function initLeafletMap() {
-      document.getElementById('google-map').style.display = 'none';
+      const gDiv = document.getElementById('google-map');
+      if (gDiv) gDiv.style.display = 'none';
       const lDiv = document.getElementById('map');
       lDiv.style.display = 'block';
 
-      leafletMap = L.map('map', {
-        center: [lat, lon],
-        zoom: 16,
-        zoomControl: false,
-        attributionControl: false
-      });
+      if (!leafletMap) {
+        leafletMap = L.map('map', {
+          center: [lat, lon],
+          zoom: 16,
+          zoomControl: false,
+          attributionControl: false
+        });
 
-      // Standard OpenStreetMap tiles with dark inversion filter (free forever, zero API keys)
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        className: 'osm-dark-layer',
-        maxZoom: 19
-      }).addTo(leafletMap);
+        // Standard OpenStreetMap tiles with dark inversion filter (free forever, zero API keys)
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          className: 'osm-dark-layer',
+          maxZoom: 19
+        }).addTo(leafletMap);
 
-      const beaconIcon = L.divIcon({
-        className: 'vehicle-beacon-icon',
-        html: createBeaconHtml(heading),
-        iconSize: [0, 0]
-      });
+        const beaconIcon = L.divIcon({
+          className: 'vehicle-beacon-icon',
+          html: createBeaconHtml(heading),
+          iconSize: [0, 0]
+        });
 
-      leafletMarker = L.marker([lat, lon], { icon: beaconIcon }).addTo(leafletMap);
+        leafletMarker = L.marker([lat, lon], { icon: beaconIcon }).addTo(leafletMap);
+      } else {
+        leafletMap.invalidateSize();
+        leafletMap.setView([lat, lon], 16);
+      }
     }
 
     // Dynamic updates via postMessage
@@ -281,7 +307,7 @@
           lat = data.lat;
           lon = data.lon;
           if (data.heading !== undefined) heading = data.heading;
-          if (gMarker) {
+          if (gMarker && !hasGoogleError) {
             gMarker.updatePosition(new google.maps.LatLng(lat, lon));
             gMarker.updateHeading(heading);
             if (data.recenter) gMap.panTo({ lat, lng: lon });
@@ -292,7 +318,7 @@
               html: createBeaconHtml(heading),
               iconSize: [0, 0]
             }));
-            if (data.recenter) leafletMap.setView([lat, lon], 16, { animate: true });
+            if (data.recenter && leafletMap) leafletMap.setView([lat, lon], 16, { animate: true });
           }
         }
       } catch (e) {}
