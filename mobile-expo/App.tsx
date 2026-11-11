@@ -25,8 +25,6 @@ import * as Sharing from 'expo-sharing';
 import { captureRef } from 'react-native-view-shot';
 import {
   WINDSOR_COLORS,
-  WINDSOR_360_GIF,
-  WINDSOR_360_URI,
   matchWindsorColor,
   WindsorColorOption,
 } from './src/assets/cars';
@@ -1059,9 +1057,8 @@ export default function App() {
   const [parkedBaseline, setParkedBaseline] = useState<ParkedTripBaseline | null>(null);
   const [liveTripTracking, setLiveTripTracking] = useState<boolean>(false);
 
-  // Home Screen Redesign: Color & 360 Spin View State
+  // Home Screen Redesign: Color & Detail Sections State
   const [carColorOverride, setCarColorOverride] = useState<string | null>(null);
-  const [is360Mode, setIs360Mode] = useState<boolean>(false);
   const [showColorPicker, setShowColorPicker] = useState<boolean>(false);
   const [openDetailSection, setOpenDetailSection] = useState<'tpms' | 'location' | 'remote' | null>(null);
 
@@ -2925,7 +2922,7 @@ export default function App() {
               </View>
             </View>
 
-            {/* 3. Status Pill & 360 Spin View Toggle Pill */}
+            {/* 3. Status Pill */}
             <View style={styles.mockupCarTopRow}>
               <View
                 style={[
@@ -2959,17 +2956,6 @@ export default function App() {
                     : 'Unlocked'}
                 </Text>
               </View>
-
-              {/* 360 Spin View Pill */}
-              <TouchableOpacity
-                style={[styles.mockupSpinPill, is360Mode && styles.mockupSpinPillActive]}
-                onPress={() => setIs360Mode(!is360Mode)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.mockupSpinPillText, is360Mode && styles.mockupSpinPillTextActive]}>
-                  {is360Mode ? '🔄 360° Auto-Spin: ON' : '🔄 360° Spin'}
-                </Text>
-              </TouchableOpacity>
             </View>
 
             {/* 4. Windsor EV Showcase with Floor Glow */}
@@ -2977,11 +2963,7 @@ export default function App() {
               <View style={styles.mockupCarFloorGlow} />
               <Image
                 source={
-                  is360Mode
-                    ? Platform.OS === 'web'
-                      ? { uri: WINDSOR_360_URI }
-                      : WINDSOR_360_GIF
-                    : Platform.OS === 'web'
+                  Platform.OS === 'web'
                     ? { uri: activeWindsorColor.fallbackUri }
                     : activeWindsorColor.image
                 }
@@ -3361,15 +3343,6 @@ export default function App() {
                 );
               })()}
             </View>
-
-            {/* 4. EV Route & Charger Planner (Ported from irshadm/volta-android) */}
-            <TripPlannerCard
-              currentSoc={clampedSoc}
-              currentLat={status.gps?.latitude ?? null}
-              currentLng={status.gps?.longitude ?? null}
-              usableCapacityKwh={derivedFullCapacityKwh ?? nominalCapacityKwh}
-              onShowBanner={showBanner}
-            />
 
             {/* Windsor EV Color Picker Modal */}
             <Modal
@@ -8886,7 +8859,7 @@ const styles = StyleSheet.create({
   mockupCarTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     marginTop: 12,
     marginBottom: 2,
     paddingHorizontal: 4,
