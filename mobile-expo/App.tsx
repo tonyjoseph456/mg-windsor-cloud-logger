@@ -2972,7 +2972,7 @@ export default function App() {
               />
             </View>
 
-            {/* 5. Three Metric Columns: Battery Health, Efficiency, Odometer */}
+            {/* 5. 2-Column Metrics Layout: Row 1 (SOH, Efficiency) & Row 2 (Odometer, 12V Battery) */}
             {(() => {
               const cycleKm =
                 charge?.distance_since_last_charge_km ?? preChargeBaseline?.distanceSinceLastChargeKm ?? 0;
@@ -2985,23 +2985,41 @@ export default function App() {
                 eff = trips[0].efficiencyKmPerKwh;
               }
               const displayEff = eff > 0 ? `${eff.toFixed(2)} km/kWh` : '9.03 km/kWh';
-              const odoVal = (charge?.odometer_km ?? status.odometer_km ?? 39004).toLocaleString();
+              const rawOdo = charge?.odometer_km ?? status.odometer_km ?? 39004;
+              const odoVal = Math.round(rawOdo).toLocaleString();
+              const auxVoltage =
+                status.aux_battery_voltage !== null && status.aux_battery_voltage !== undefined
+                  ? `${status.aux_battery_voltage} V`
+                  : '12.8 V';
 
               return (
-                <View style={styles.mockupMetricsRow}>
-                  <View style={styles.mockupMetricCol}>
-                    <Text style={styles.mockupMetricLabel}>Battery health</Text>
-                    <Text style={[styles.mockupMetricVal, { color: '#34D399' }]}>
-                      {sohPercent > 0 ? `${sohPercent.toFixed(1)}%` : '97.7%'}
-                    </Text>
+                <View style={styles.mockupMetricsGrid}>
+                  {/* Row 1: SOH & Efficiency */}
+                  <View style={styles.mockupMetricsRow}>
+                    <View style={styles.mockupMetricCol}>
+                      <Text style={styles.mockupMetricLabel}>SOH</Text>
+                      <Text style={[styles.mockupMetricVal, { color: '#34D399' }]}>
+                        {sohPercent > 0 ? `${sohPercent.toFixed(1)}%` : '97.7%'}
+                      </Text>
+                    </View>
+                    <View style={styles.mockupMetricCol}>
+                      <Text style={styles.mockupMetricLabel}>Efficiency</Text>
+                      <Text style={styles.mockupMetricVal}>{displayEff}</Text>
+                    </View>
                   </View>
-                  <View style={styles.mockupMetricCol}>
-                    <Text style={styles.mockupMetricLabel}>Efficiency</Text>
-                    <Text style={styles.mockupMetricVal}>{displayEff}</Text>
-                  </View>
-                  <View style={styles.mockupMetricCol}>
-                    <Text style={styles.mockupMetricLabel}>Odometer</Text>
-                    <Text style={styles.mockupMetricVal}>{odoVal} km</Text>
+
+                  {/* Row 2: Odometer & 12V Battery */}
+                  <View style={styles.mockupMetricsRow}>
+                    <View style={styles.mockupMetricCol}>
+                      <Text style={styles.mockupMetricLabel}>Odometer</Text>
+                      <Text style={styles.mockupMetricVal}>{odoVal} km</Text>
+                    </View>
+                    <View style={styles.mockupMetricCol}>
+                      <Text style={styles.mockupMetricLabel}>12V Battery</Text>
+                      <Text style={[styles.mockupMetricVal, { color: '#38BDF8' }]}>
+                        {auxVoltage}
+                      </Text>
+                    </View>
                   </View>
                 </View>
               );
@@ -8934,13 +8952,16 @@ const styles = StyleSheet.create({
     height: '100%',
     zIndex: 1,
   },
+  mockupMetricsGrid: {
+    marginVertical: 12,
+    paddingHorizontal: 8,
+    gap: 12,
+  },
   mockupMetricsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 8,
-    marginBottom: 20,
-    paddingHorizontal: 8,
+    gap: 16,
   },
   mockupMetricCol: {
     flex: 1,
