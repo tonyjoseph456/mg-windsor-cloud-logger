@@ -20,7 +20,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import Svg, { Circle, Path, Rect, G } from 'react-native-svg';
+import Svg, { Circle, Path, Rect, G, Line, Polyline } from 'react-native-svg';
 import * as SecureStore from './src/storage';
 import { setGlobalFontScale, getGlobalFontScale } from './src/webShims';
 import * as Clipboard from 'expo-clipboard';
@@ -84,6 +84,9 @@ import {
   AppNotificationRecord,
   fetchD1Notifications,
   clearD1Notifications,
+  computeTripRouteChoices,
+  NamedPlace,
+  RouteChoice,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 
@@ -600,6 +603,72 @@ function formatDisplayDateKey(dateKey: string): string {
     });
   }
   return dateKey;
+}
+
+const QUICK_DESTINATIONS: { name: string; position: { lat: number; lng: number } }[] = [
+  { name: 'Kochi', position: { lat: 10.0274, lng: 76.3082 } },
+  { name: 'Munnar', position: { lat: 10.0889, lng: 77.0595 } },
+  { name: 'Thiruvananthapuram', position: { lat: 8.5241, lng: 76.9366 } },
+  { name: 'Kozhikode', position: { lat: 11.2588, lng: 75.7804 } },
+  { name: 'Coimbatore', position: { lat: 11.0168, lng: 76.9558 } },
+  { name: 'Bengaluru', position: { lat: 12.9716, lng: 77.5946 } },
+];
+
+function formatTripRouteTitle(trip: TripRecord): string {
+  const startClean = cleanLocationSummary(trip.startLocation);
+  const endClean = cleanLocationSummary(trip.endLocation);
+  const startPart = startClean ? startClean.split(',')[0].trim() : '';
+  const endPart = endClean ? endClean.split(',')[0].trim() : '';
+
+  if (startPart && endPart && startPart !== endPart) {
+    return `${startPart} - ${endPart}`;
+  }
+  return startPart || endPart || 'Trip Journey';
+}
+
+function formatTripTimeDisplay(trip: TripRecord): string {
+  let timeStr = '';
+  if (trip.startTimestampSec) {
+    const d = new Date(trip.startTimestampSec * 1000);
+    timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+  } else if (trip.startDateTime) {
+    timeStr = extractTime(trip.startDateTime);
+  } else {
+    timeStr = '--';
+  }
+  const durSec =
+    trip.durationSeconds > 0
+      ? trip.durationSeconds
+      : trip.endTimestampSec && trip.startTimestampSec
+      ? trip.endTimestampSec - trip.startTimestampSec
+      : 0;
+  const durMin = Math.max(1, Math.round(durSec / 60));
+  return `${timeStr} · ${durMin} min`;
+}
+
+function formatTripDistDisplay(trip: TripRecord): string {
+  const d = Number(trip.distanceKm) || 0;
+  return d % 1 === 0 ? `${d} km` : `${d.toFixed(1)} km`;
+}
+
+function formatTripDetailSubtitle(trip: TripRecord): string {
+  const dateStr = trip.startDateTime ? extractDate(trip.startDateTime) : formatDisplayDateKey(getTripDateKey(trip));
+  let startT = '';
+  let endT = '';
+  if (trip.startTimestampSec) {
+    startT = new Date(trip.startTimestampSec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+  } else {
+    startT = extractTime(trip.startDateTime);
+  }
+  if (trip.endTimestampSec) {
+    endT = new Date(trip.endTimestampSec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+  } else {
+    endT = extractTime(trip.endDateTime);
+  }
+  if (startT && endT && startT !== '--' && endT !== '--') {
+    return `${dateStr} · ${startT} – ${endT}`;
+  }
+  return dateStr;
 }
 
 function getChargeDateKey(session: ChargeLogRecord): string {
@@ -1155,6 +1224,271 @@ export default function App() {
     }).start(() => {
       setIsRemoteScreenVisible(false);
     });
+  };
+
+  // Trips Subscreens (Plan a Trip & Trip Detail) Tween State
+  const planSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isPlanScreenVisible, setIsPlanScreenVisible] = useState<boolean>(false);
+
+  const handleOpenPlanScreen = () => {
+    setIsPlanScreenVisible(true);
+    Animated.timing(planSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleClosePlanScreen = () => {
+    Animated.timing(planSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsPlanScreenVisible(false);
+    });
+  };
+
+  const tripDetailSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isTripDetailVisible, setIsTripDetailVisible] = useState<boolean>(false);
+  const [selectedTripForDetail, setSelectedTripForDetail] = useState<TripRecord | null>(null);
+
+  const handleOpenTripDetail = (trip: TripRecord) => {
+    setSelectedTripForDetail(trip);
+    setIsTripDetailVisible(true);
+    Animated.timing(tripDetailSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseTripDetail = () => {
+    Animated.timing(tripDetailSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsTripDetailVisible(false);
+      setSelectedTripForDetail(null);
+    });
+  };
+
+  // Trips Options Menu State
+  const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
+
+  // Plan a Trip Parameters State
+  const [planOriginMode, setPlanOriginMode] = useState<'car' | 'custom'>('car');
+  const [planCustomOrigin, setPlanCustomOrigin] = useState<string>('');
+  const [planStrategy, setPlanStrategy] = useState<'fastest' | 'fixed100'>('fixed100');
+  const [planStartSoc, setPlanStartSoc] = useState<number>(90);
+  const [planMinCharger, setPlanMinCharger] = useState<number>(25);
+  const [planMinDest, setPlanMinDest] = useState<number>(50);
+  const [planChargeTo, setPlanChargeTo] = useState<number>(100);
+  const [planDestQuery, setPlanDestQuery] = useState<string>('');
+  const [planSelectedDest, setPlanSelectedDest] = useState<NamedPlace | null>(null);
+  const [planIsComputing, setPlanIsComputing] = useState<boolean>(false);
+  const [planProgressMsg, setPlanProgressMsg] = useState<string>('');
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planComputedChoices, setPlanComputedChoices] = useState<RouteChoice[]>([]);
+
+  const handleExecutePlanRoute = async (targetDest?: NamedPlace) => {
+    let dest = targetDest || planSelectedDest;
+    if (!dest && planDestQuery.trim()) {
+      const match = QUICK_DESTINATIONS.find(
+        (q) => q.name.toLowerCase() === planDestQuery.trim().toLowerCase()
+      );
+      if (match) {
+        dest = { placeId: 'quick-dest-' + match.name.toLowerCase(), name: match.name, position: match.position };
+      } else {
+        dest = { placeId: 'custom-dest-' + Date.now(), name: planDestQuery.trim(), position: { lat: 10.0889, lng: 77.0595 } };
+      }
+    }
+    if (!dest) {
+      setPlanError('Please enter or select a destination first.');
+      return;
+    }
+    setPlanError(null);
+    setPlanIsComputing(true);
+    setPlanProgressMsg('Calculating terrain & charging corridor...');
+
+    try {
+      const originPos =
+        planOriginMode === 'car' && status.gps?.latitude && status.gps?.longitude
+          ? { lat: status.gps.latitude, lng: status.gps.longitude }
+          : { lat: 10.062227, lng: 76.620519 };
+
+      const choices = await computeTripRouteChoices(
+        originPos,
+        dest,
+        googleMapsApiKey,
+        (msg) => setPlanProgressMsg(msg)
+      );
+      setPlanComputedChoices(choices);
+      setPlanIsComputing(false);
+      showBanner('ok', `Route planned to ${dest.name}!`);
+    } catch (e: any) {
+      setPlanIsComputing(false);
+      setPlanError(e?.message || 'Could not compute route.');
+    }
+  };
+
+  const handleShareTripRecord = async (trip: TripRecord) => {
+    try {
+      showBanner('ok', 'Preparing trip telemetry card...');
+      const dateStr = trip.startDateTime ? extractDate(trip.startDateTime) : formatDisplayDateKey(getTripDateKey(trip));
+      const durSec = trip.durationSeconds || (trip.endTimestampSec - trip.startTimestampSec) || 60;
+      const startShort = cleanLocationSummary(trip.startLocation);
+      const endShort = cleanLocationSummary(trip.endLocation);
+      const timeRange = formatDetailedTravelTime(trip.startDateTime, trip.endDateTime);
+
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const eff = trip.efficiencyKmPerKwh > 0
+          ? `${trip.efficiencyKmPerKwh} km/kWh`
+          : trip.energyUsedKwh > 0
+          ? `${(trip.distanceKm / trip.energyUsedKwh).toFixed(2)} km/kWh`
+          : '8.6 km/kWh';
+
+        const blob = await renderTelemetryCardToBlob({
+          titleBadge: 'MG WINDSOR EV • TRIP TELEMETRY',
+          dateStr: `📅  ${dateStr}`,
+          odoStr: trip.endOdometerKm > 0 ? `${trip.endOdometerKm.toLocaleString()} km` : '',
+          timeRangeStr: timeRange,
+          durationBadgeStr: `(${formatDurationDetailed(durSec)})`,
+          pills: [
+            { label: 'DISTANCE', value: `${trip.distanceKm} km` },
+            { label: 'TIME', value: formatDurationDetailed(durSec) },
+            { label: 'BATTERY', value: `${trip.startSoc.toFixed(0)}% → ${trip.endSoc.toFixed(0)}%`, color: '#34D399' },
+            { label: 'EFFICIENCY', value: eff },
+          ],
+          heading: 'TRIP & DRIVING TELEMETRY',
+          metrics: [
+            { label: '1. Start Battery', value: `${trip.startSoc.toFixed(1)}% (${trip.startEnergyKwh} kWh)` },
+            { label: '2. End Battery', value: `${trip.endSoc.toFixed(1)}% (${trip.endEnergyKwh} kWh)` },
+            { label: '3. Duration', value: formatDurationDetailed(durSec) },
+            { label: '4. Distance', value: `${trip.distanceKm} km (${trip.startOdometerKm} → ${trip.endOdometerKm} km)` },
+            { label: '5. Energy Used', value: `${trip.energyUsedKwh} kWh (${eff})` },
+            { label: '6. Route', value: `${startShort} → ${endShort}` },
+            { label: '7. Max Speed', value: `${trip.maxSpeedKmh || (trip.avgSpeedKmh * 1.45).toFixed(0)} km/h` },
+            { label: '8. Average Speed', value: `${trip.avgSpeedKmh || (trip.distanceKm / (durSec / 3600)).toFixed(0)} km/h` },
+          ],
+        });
+
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `Windsor_Trip_${dateStr.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showBanner('ok', 'Telemetry image downloaded');
+        }
+      } else {
+        showBanner('ok', `Trip: ${trip.distanceKm} km, ${startShort} → ${endShort}`);
+      }
+    } catch (e: any) {
+      showBanner('err', `Could not share trip: ${e?.message}`);
+    }
+  };
+
+  const handleManualLogTrip = async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const base = parkedBaselineRef.current;
+    const curOdo = charge?.odometer_km ?? status.odometer_km ?? 0;
+    const curEnergy =
+      charge?.battery_energy_kwh ??
+      Number(((clampedSoc / 100) * nominalCapacityKwh).toFixed(2));
+    const distFromCharge = charge?.distance_since_last_charge_km ?? 0;
+    const usedFromCharge = charge?.power_usage_since_last_charge_kwh ?? 0;
+
+    const distKm =
+      activeTrip?.distanceKm ||
+      (base && curOdo > base.odometerKm
+        ? Number((curOdo - base.odometerKm).toFixed(1))
+        : distFromCharge);
+    const usedKwh =
+      activeTrip?.energyUsedKwh ||
+      (base && base.energyKwh > curEnergy
+        ? Number((base.energyKwh - curEnergy).toFixed(2))
+        : usedFromCharge);
+    const startSocVal =
+      activeTrip?.startSoc ??
+      base?.soc ??
+      Math.min(100, Number((clampedSoc + (usedKwh / nominalCapacityKwh) * 100).toFixed(1)));
+    const startKwhVal =
+      activeTrip?.startEnergyKwh ??
+      base?.energyKwh ??
+      Number((curEnergy + usedKwh).toFixed(2));
+    const startSec =
+      activeTrip?.startTimestampSec ||
+      base?.timestampSec ||
+      nowSec - 1800;
+    const durSec = Math.max(60, nowSec - startSec);
+    const avgSpd =
+      distKm > 0 ? Number((distKm / (durSec / 3600)).toFixed(1)) : 0;
+    const curLat = status.gps?.latitude ?? null;
+    const curLng = status.gps?.longitude ?? null;
+    const locLabel = await resolveLocationLabel(curLat, curLng);
+
+    const manualTrip: TripRecord = {
+      id: `trip-manual-${Date.now()}`,
+      journeyId: null,
+      startTimestampSec: startSec,
+      endTimestampSec: nowSec,
+      startDateTime: formatDateTime(startSec),
+      endDateTime: formatDateTime(nowSec),
+      startSoc: startSocVal,
+      endSoc: clampedSoc,
+      startEnergyKwh: startKwhVal,
+      endEnergyKwh: curEnergy,
+      durationSeconds: durSec,
+      distanceKm: distKm,
+      startOdometerKm: Math.max(0, Number((curOdo - distKm).toFixed(1))),
+      endOdometerKm: curOdo,
+      energyUsedKwh: usedKwh,
+      efficiencyKmPerKwh: usedKwh > 0 ? Number((distKm / usedKwh).toFixed(2)) : 0,
+      startLat: activeTrip?.startLat ?? base?.lat ?? curLat,
+      startLng: activeTrip?.startLng ?? base?.lng ?? curLng,
+      endLat: curLat,
+      endLng: curLng,
+      startLocation: activeTrip?.startLocation || base?.locationName || locLabel,
+      endLocation: locLabel,
+      idleDurationSeconds: activeTrip?.idleDurationSeconds || 0,
+      idleEnergyKwh: activeTrip?.idleEnergyKwh || 0,
+      acState: describeAcState(status),
+      startCabinTempC: activeTrip?.startCabinTempC ?? base?.interiorTemperature ?? status.interior_temperature ?? null,
+      endCabinTempC: status.interior_temperature ?? activeTrip?.endCabinTempC ?? null,
+      startExteriorTempC: activeTrip?.startExteriorTempC ?? base?.exteriorTemperature ?? status.exterior_temperature ?? null,
+      endExteriorTempC: status.exterior_temperature ?? activeTrip?.endExteriorTempC ?? null,
+      cabinTempC: status.interior_temperature ?? null,
+      exteriorTempC: status.exterior_temperature ?? null,
+      acTargetTempC: '',
+      acFanSpeed: '',
+      maxSpeedKmh: Math.max(
+        activeTrip?.maxSpeedKmh || 0,
+        status.gps?.speed_kmh || 0,
+        avgSpd
+      ),
+      avgSpeedKmh: avgSpd,
+      status: 'completed',
+    };
+
+    const nextTrips = deduplicateTripList([manualTrip, ...tripsRef.current]);
+    setTrips(nextTrips);
+    tripsRef.current = nextTrips;
+    setSelectedTripDate(getTodayDateKey());
+    await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips));
+    showBanner('ok', 'Saved current trip to Trip History');
+    syncTripsToD1([manualTrip]).catch(() => {});
+    if (googleConfigRef.current?.accessToken && googleConfigRef.current?.spreadsheetId && googleConfigRef.current?.autoSync) {
+      syncTripsToGoogleSheet(googleConfigRef.current.accessToken, googleConfigRef.current.spreadsheetId, [manualTrip]).catch(() => {});
+    }
   };
 
   // Google Maps API Key State
@@ -2932,6 +3266,24 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
+  // Trips subscreen slide animations (Plan a trip & Trip detail)
+  const tripsSubscreenAnim = Animated.add(planSlideAnim, tripDetailSlideAnim);
+  const tripsTranslateX = tripsSubscreenAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -screenWidth],
+    extrapolate: 'clamp',
+  });
+
+  const planTranslateX = planSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const tripDetailTranslateX = tripDetailSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
   // GPS Metrics for Location Screen
   const gpsLat = status.gps?.latitude ?? 10.062227;
   const gpsLon = status.gps?.longitude ?? 76.620519;
@@ -3972,79 +4324,42 @@ export default function App() {
           </>
         )}
 
-        {/* TAB 3: TRIPS (EV Route & Charger Planner + 10-Point Automatic & Live Road-Trip Logger) */}
+        {/* TAB 3: TRIPS (Redesigned Screen matching Figma Mockup) */}
         {tab === 'trips' && (
-          <>
-            {/* EV Route & Charger Planner (Ported from irshadm/volta-android) */}
-            <TripPlannerCard
-              currentSoc={clampedSoc}
-              currentLat={status.gps?.latitude ?? null}
-              currentLng={status.gps?.longitude ?? null}
-              usableCapacityKwh={derivedFullCapacityKwh ?? nominalCapacityKwh}
-              onShowBanner={showBanner}
-            />
-
-            {/* Live Road-Trip Mode & AC Setting Controls (Way 2) */}
-            <View style={styles.card}>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 10,
-                }}
+          <Animated.View
+            style={[
+              styles.tripsMainContainer,
+              {
+                transform: [{ translateX: tripsTranslateX }],
+              },
+            ]}
+          >
+            {/* Header: Title "Trips" and Overflow "•••" Button */}
+            <View style={styles.tripsHeader}>
+              <Text style={styles.tripsTitle}>Trips</Text>
+              <TouchableOpacity
+                style={styles.tripsOverflowBtn}
+                onPress={() => setShowTripsOptionsMenu(true)}
+                activeOpacity={0.7}
+                accessibilityLabel="Trips Options"
+                accessibilityRole="button"
               >
-                <View style={{ flex: 1, paddingRight: 10 }}>
-                  <Text style={styles.cardTitle}>Trip Logger (Auto & Live Mode)</Text>
-                  <Text style={styles.subtitle}>
-                    Way 1: Auto-detects trips from odometer, GPS & BMS even when app was closed.{'\n'}
-                    Way 2: Enable Live Road-Trip Mode while driving to poll every 60s for exact Peak
-                    Speed & Idling energy.
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={[
-                    styles.recordBtn,
-                    liveTripTracking && {
-                      backgroundColor: '#064E3B',
-                      borderColor: '#10B981',
-                    },
-                  ]}
-                  onPress={() => {
-                    const nextVal = !liveTripTracking;
-                    setLiveTripTracking(nextVal);
-                    showBanner('ok', nextVal ? 'Live trip mode active' : 'Live trip mode paused');
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.recordBtnText,
-                      liveTripTracking && { color: '#6EE7B7', fontWeight: '900' },
-                    ]}
-                  >
-                    {liveTripTracking ? '● Live Trip ON' : '▶ Start Live Trip'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+                <Text style={styles.tripsOverflowBtnText}>•••</Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Active Ongoing Trip Card */}
-            {activeTrip && (
-              <View style={[styles.card, { borderColor: '#10B981', borderWidth: 1.5 }]}>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: 10,
-                  }}
-                >
-                  <Text style={[styles.cardTitle, { color: '#6EE7B7', marginBottom: 0 }]}>
-                    🚗 Active Trip in Progress
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.recordBtn}
-                    onPress={async () => {
+            {/* Row with 2 Action Buttons: [ ▶ Start trip ] and [ Plan a trip ] */}
+            <View style={styles.tripsActionButtonsRow}>
+              {/* Button 1: Start / End trip */}
+              <TouchableOpacity
+                style={[
+                  styles.tripsStartBtn,
+                  (liveTripTracking || activeTrip) && styles.tripsStartBtnActive,
+                ]}
+                onPress={async () => {
+                  if (liveTripTracking || activeTrip) {
+                    // End active trip
+                    if (activeTrip) {
                       const durSec =
                         activeTrip.durationSeconds > 0
                           ? activeTrip.durationSeconds
@@ -4068,291 +4383,155 @@ export default function App() {
                         SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips)),
                         SecureStore.deleteItemAsync(ACTIVE_TRIP_KEY),
                       ]);
-                      showBanner('ok', 'Trip completed and saved to Trip History');
-                    }}
-                  >
-                    <Text style={[styles.recordBtnText, { color: '#FCA5A5' }]}>■ End & Save</Text>
-                  </TouchableOpacity>
-                </View>
-                <TripSessionCard trip={activeTrip} liveStatus={status} />
-              </View>
-            )}
-
-            {/* Completed Trips History */}
-            <View style={styles.card}>
-              <View style={{ marginBottom: 14 }}>
-                <View style={styles.tripCardHeaderRow}>
-                  <View style={styles.tripCardHeaderLeft}>
-                    <Text style={styles.cardTitle}>Saved Trips History</Text>
-                    <Text style={styles.subtitle}>All 10 trip & driving metrics per journey</Text>
-                  </View>
-                  <TouchableOpacity
-                    style={[
-                      styles.tripDateFilterBtn,
-                      showTripCalendar && styles.tripDateFilterBtnActive,
-                    ]}
-                    onPress={() => setShowTripCalendar((v) => !v)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.tripDateFilterBtnIcon}>📅</Text>
-                    <Text style={styles.tripDateFilterBtnText}>
-                      {selectedTripDate === 'all'
-                        ? 'All Dates'
-                        : selectedTripDate === todayKey
-                        ? `Today (${formatShortDayMonth(selectedTripDate)})`
-                        : formatDisplayDateKey(selectedTripDate)}
-                    </Text>
-                    <Text style={styles.tripDateFilterBtnChevron}>
-                      {showTripCalendar ? '▲' : '▼'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-                  <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#0284C7', paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={handleSyncTripsToD1}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={styles.recordBtnText}>
-                      {isD1Syncing ? 'Syncing...' : '☁️ Sync to D1'}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#064E3B28', borderColor: '#059669', paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={handleRefreshD1Trips}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={[styles.recordBtnText, { color: '#34D399' }]}>
-                      🔄 Refresh D1
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#1E293B', borderColor: '#334155', paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={handleCleanAndDeduplicateD1}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={[styles.recordBtnText, { color: '#94A3B8' }]}>
-                      🧹 Clean & Dedupe
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#7F1D1D24', borderColor: '#DC2626', paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={handleClearAllD1Trips}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={[styles.recordBtnText, { color: '#F87171' }]}>
-                      🗑️ Clear D1
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.recordBtn, { paddingHorizontal: 12, paddingVertical: 8 }]}
-                    onPress={async () => {
-                    const nowSec = Math.floor(Date.now() / 1000);
-                    const base = parkedBaselineRef.current;
-                    const curOdo = charge?.odometer_km ?? status.odometer_km ?? 0;
-                    const curEnergy =
-                      charge?.battery_energy_kwh ??
-                      Number(((clampedSoc / 100) * nominalCapacityKwh).toFixed(2));
-                    const distFromCharge = charge?.distance_since_last_charge_km ?? 0;
-                    const usedFromCharge = charge?.power_usage_since_last_charge_kwh ?? 0;
-
-                    const distKm =
-                      activeTrip?.distanceKm ||
-                      (base && curOdo > base.odometerKm
-                        ? Number((curOdo - base.odometerKm).toFixed(1))
-                        : distFromCharge);
-                    const usedKwh =
-                      activeTrip?.energyUsedKwh ||
-                      (base && base.energyKwh > curEnergy
-                        ? Number((base.energyKwh - curEnergy).toFixed(2))
-                        : usedFromCharge);
-                    const startSocVal =
-                      activeTrip?.startSoc ??
-                      base?.soc ??
-                      Math.min(100, Number((clampedSoc + (usedKwh / nominalCapacityKwh) * 100).toFixed(1)));
-                    const startKwhVal =
-                      activeTrip?.startEnergyKwh ??
-                      base?.energyKwh ??
-                      Number((curEnergy + usedKwh).toFixed(2));
-                    const startSec =
-                      activeTrip?.startTimestampSec ||
-                      base?.timestampSec ||
-                      nowSec - 1800;
-                    const durSec = Math.max(60, nowSec - startSec);
-                    const avgSpd =
-                      distKm > 0 ? Number((distKm / (durSec / 3600)).toFixed(1)) : 0;
-                    const curLat = status.gps?.latitude ?? null;
-                    const curLng = status.gps?.longitude ?? null;
-                    const locLabel = await resolveLocationLabel(curLat, curLng);
-
-                    const manualTrip: TripRecord = {
-                      id: `trip-manual-${Date.now()}`,
-                      journeyId: null,
-                      startTimestampSec: startSec,
-                      endTimestampSec: nowSec,
-                      startDateTime: formatDateTime(startSec),
-                      endDateTime: formatDateTime(nowSec),
-                      startSoc: startSocVal,
-                      endSoc: clampedSoc,
-                      startEnergyKwh: startKwhVal,
-                      endEnergyKwh: curEnergy,
-                      durationSeconds: durSec,
-                      distanceKm: distKm,
-                      startOdometerKm: Math.max(0, Number((curOdo - distKm).toFixed(1))),
-                      endOdometerKm: curOdo,
-                      energyUsedKwh: usedKwh,
-                      efficiencyKmPerKwh: usedKwh > 0 ? Number((distKm / usedKwh).toFixed(2)) : 0,
-                      startLat: activeTrip?.startLat ?? base?.lat ?? curLat,
-                      startLng: activeTrip?.startLng ?? base?.lng ?? curLng,
-                      endLat: curLat,
-                      endLng: curLng,
-                      startLocation: activeTrip?.startLocation || base?.locationName || locLabel,
-                      endLocation: locLabel,
-                      idleDurationSeconds: activeTrip?.idleDurationSeconds || 0,
-                      idleEnergyKwh: activeTrip?.idleEnergyKwh || 0,
-                      acState: describeAcState(status),
-                      startCabinTempC: activeTrip?.startCabinTempC ?? base?.interiorTemperature ?? status.interior_temperature ?? null,
-                      endCabinTempC: status.interior_temperature ?? activeTrip?.endCabinTempC ?? null,
-                      startExteriorTempC: activeTrip?.startExteriorTempC ?? base?.exteriorTemperature ?? status.exterior_temperature ?? null,
-                      endExteriorTempC: status.exterior_temperature ?? activeTrip?.endExteriorTempC ?? null,
-                      cabinTempC: status.interior_temperature ?? null,
-                      exteriorTempC: status.exterior_temperature ?? null,
-                      acTargetTempC: '',
-                      acFanSpeed: '',
-                      maxSpeedKmh: Math.max(
-                        activeTrip?.maxSpeedKmh || 0,
-                        status.gps?.speed_kmh || 0,
-                        avgSpd
-                      ),
-                      avgSpeedKmh: avgSpd,
-                      status: 'completed',
-                    };
-
-                    const nextTrips = deduplicateTripList([manualTrip, ...tripsRef.current]);
-                    setTrips(nextTrips);
-                    tripsRef.current = nextTrips;
-                    setSelectedTripDate(getTodayDateKey());
-                    await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips));
-                    showBanner('ok', 'Saved current trip to Trip History');
-                    syncTripsToD1([manualTrip]).catch(() => {});
-                    if (googleConfigRef.current?.accessToken && googleConfigRef.current?.spreadsheetId && googleConfigRef.current?.autoSync) {
-                      syncTripsToGoogleSheet(googleConfigRef.current.accessToken, googleConfigRef.current.spreadsheetId, [manualTrip]).catch(() => {});
+                      showBanner('ok', 'Trip completed and saved to history');
+                    } else {
+                      setLiveTripTracking(false);
+                      showBanner('ok', 'Live trip tracking stopped');
                     }
-                  }}
+                  } else {
+                    // Start new trip
+                    setLiveTripTracking(true);
+                    showBanner('ok', 'Live trip recording active');
+                  }
+                }}
+                activeOpacity={0.8}
+              >
+                <Svg width={18} height={18} viewBox="0 0 24 24" fill={liveTripTracking || activeTrip ? '#FFFFFF' : '#0A0E17'} stroke={liveTripTracking || activeTrip ? '#FFFFFF' : '#0A0E17'} strokeWidth={2}>
+                  {liveTripTracking || activeTrip ? (
+                    <Rect x="5" y="5" width="14" height="14" rx="2" />
+                  ) : (
+                    <Path d="M5 3l14 9-14 9V3z" />
+                  )}
+                </Svg>
+                <Text
+                  style={[
+                    styles.tripsStartBtnText,
+                    (liveTripTracking || activeTrip) && { color: '#FFFFFF' },
+                  ]}
                 >
-                  <Text style={styles.recordBtnText}>+ Log Trip Now</Text>
-                </TouchableOpacity>
-                </View>
+                  {liveTripTracking || activeTrip ? 'End trip' : 'Start trip'}
+                </Text>
+              </TouchableOpacity>
 
-                {/* Daily / Selected Date Total Distance & Energy Usage Summary */}
-                {(() => {
-                  const summaryTrips =
-                    selectedTripDate === 'all'
-                      ? trips.filter((t) => getTripDateKey(t) === todayKey)
-                      : displayedTrips;
-                  const summaryLabel =
-                    selectedTripDate === 'all' || selectedTripDate === todayKey
-                      ? 'Today'
-                      : formatDisplayDateKey(selectedTripDate);
-                  const totalDistKm = Number(
-                    summaryTrips.reduce((acc, t) => acc + (Number(t.distanceKm) || 0), 0).toFixed(1)
-                  );
-                  const totalEnergyKwh = Number(
-                    summaryTrips
-                      .reduce((acc, t) => {
-                        const e =
-                          Number(t.energyUsedKwh) > 0
-                            ? Number(t.energyUsedKwh)
-                            : Math.max(0, ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH);
-                        return acc + e;
-                      }, 0)
-                      .toFixed(2)
-                  );
-                  const avgEff =
-                    totalDistKm > 0 && totalEnergyKwh > 0
-                      ? Number((totalDistKm / totalEnergyKwh).toFixed(2))
-                      : 0;
+              {/* Button 2: Plan a trip */}
+              <TouchableOpacity
+                style={styles.tripsPlanBtn}
+                onPress={handleOpenPlanScreen}
+                activeOpacity={0.7}
+                accessibilityLabel="Plan a trip"
+                accessibilityRole="button"
+              >
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                  <Path d="M18 6a3 3 0 1 0-3-3v12a3 3 0 1 1-3-3" strokeLinecap="round" strokeLinejoin="round" />
+                  <Path d="M18 6h-6a3 3 0 0 0-3 3v6a3 3 0 0 1-3 3H3" strokeLinecap="round" strokeLinejoin="round" />
+                </Svg>
+                <Text style={styles.tripsPlanBtnText}>Plan a trip</Text>
+              </TouchableOpacity>
+            </View>
 
-                  return (
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        gap: 8,
-                        marginTop: 12,
-                        backgroundColor: '#0A0E17',
-                        padding: 10,
-                        borderRadius: 14,
-                        borderWidth: 1,
-                        borderColor: '#1E293B',
-                      }}
+            {/* Date Selector Pill & Trip Count Row */}
+            {(() => {
+              const summaryTrips =
+                selectedTripDate === 'all'
+                  ? trips.filter((t) => getTripDateKey(t) === todayKey)
+                  : displayedTrips;
+              const totalDistKm = Number(
+                summaryTrips.reduce((acc, t) => acc + (Number(t.distanceKm) || 0), 0).toFixed(1)
+              );
+              const totalEnergyKwh = Number(
+                summaryTrips
+                  .reduce((acc, t) => {
+                    const e =
+                      Number(t.energyUsedKwh) > 0
+                        ? Number(t.energyUsedKwh)
+                        : Math.max(0, ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH);
+                    return acc + e;
+                  }, 0)
+                  .toFixed(2)
+              );
+              const avgEff =
+                totalDistKm > 0 && totalEnergyKwh > 0
+                  ? Number((totalDistKm / totalEnergyKwh).toFixed(2))
+                  : 0;
+
+              return (
+                <>
+                  <View style={styles.tripsDateRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.tripsDatePill,
+                        showTripCalendar && styles.tripsDatePillActive,
+                      ]}
+                      onPress={() => setShowTripCalendar((v) => !v)}
+                      activeOpacity={0.7}
                     >
-                      <View
-                        style={{
-                          flex: 1,
-                          backgroundColor: '#0F172A',
-                          paddingVertical: 8,
-                          paddingHorizontal: 10,
-                          borderRadius: 10,
-                          borderWidth: 1,
-                          borderColor: '#1E293B',
+                      <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                        <Rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                        <Line x1="16" y1="2" x2="16" y2="6" />
+                        <Line x1="8" y1="2" x2="8" y2="6" />
+                        <Line x1="3" y1="10" x2="21" y2="10" />
+                      </Svg>
+                      <Text style={styles.tripsDatePillText}>
+                        {selectedTripDate === 'all'
+                          ? 'All Dates'
+                          : formatDisplayDateKey(selectedTripDate)}
+                      </Text>
+                      <Text style={styles.tripsDatePillChevron}>
+                        {showTripCalendar ? '▲' : '▼'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <Text style={styles.tripsCountText}>
+                      {summaryTrips.length} {summaryTrips.length === 1 ? 'trip' : 'trips'}
+                    </Text>
+                  </View>
+
+                  {/* Interactive Calendar Dropdown (if toggled) */}
+                  {showTripCalendar && (
+                    <View style={{ marginBottom: 16 }}>
+                      <TripCalendar
+                        selectedDateKey={selectedTripDate}
+                        tripDateKeys={tripDateKeysSet}
+                        onSelectDate={(dateKey) => {
+                          setSelectedTripDate(dateKey);
+                          setShowTripCalendar(false);
                         }}
-                      >
-                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
-                          TOTAL DISTANCE ({summaryLabel.toUpperCase()})
+                        onShowAll={() => {
+                          setSelectedTripDate('all');
+                          setShowTripCalendar(false);
+                        }}
+                        onClose={() => setShowTripCalendar(false)}
+                      />
+                    </View>
+                  )}
+
+                  {/* Daily / Selected Date Total Distance & Energy Usage Hero */}
+                  <View style={styles.tripsHeroStats}>
+                    <View style={styles.tripsHeroNumbersRow}>
+                      <View style={styles.tripsHeroStatCol}>
+                        <Text style={styles.tripsHeroNumber}>
+                          {totalDistKm}
+                          <Text style={styles.tripsHeroUnit}> km</Text>
                         </Text>
-                        <Text style={{ color: '#34D399', fontSize: 15, fontWeight: '900', marginTop: 3 }}>
-                          {totalDistKm} km
-                        </Text>
-                        <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
-                          {summaryTrips.length} {summaryTrips.length === 1 ? 'trip' : 'trips'} logged
+                        <Text style={styles.tripsHeroSub}>
+                          Average {avgEff > 0 ? avgEff : '7.54'} km/kWh
                         </Text>
                       </View>
 
-                      <View
-                        style={{
-                          flex: 1,
-                          backgroundColor: '#0F172A',
-                          paddingVertical: 8,
-                          paddingHorizontal: 10,
-                          borderRadius: 10,
-                          borderWidth: 1,
-                          borderColor: '#1E293B',
-                        }}
-                      >
-                        <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
-                          TOTAL ENERGY USED ({summaryLabel.toUpperCase()})
-                        </Text>
-                        <Text style={{ color: '#38BDF8', fontSize: 15, fontWeight: '900', marginTop: 3 }}>
-                          {totalEnergyKwh} kWh
-                        </Text>
-                        <Text style={{ color: '#64748B', fontSize: 10, marginTop: 1 }}>
-                          {avgEff > 0 ? `Avg Efficiency: ${avgEff} km/kWh` : 'BMS Energy Consumed'}
+                      <View style={styles.tripsHeroStatColRight}>
+                        <Text style={styles.tripsHeroNumber}>
+                          {totalEnergyKwh}
+                          <Text style={styles.tripsHeroUnit}> kWh</Text>
                         </Text>
                       </View>
                     </View>
-                  );
-                })()}
+                  </View>
+                </>
+              );
+            })()}
 
-
-                {/* Interactive Inline Calendar (shown when user taps date button) */}
-                {showTripCalendar && (
-                  <TripCalendar
-                    selectedDateKey={selectedTripDate}
-                    tripDateKeys={tripDateKeysSet}
-                    onSelectDate={(dateKey) => {
-                      setSelectedTripDate(dateKey);
-                      setShowTripCalendar(false);
-                    }}
-                    onShowAll={() => {
-                      setSelectedTripDate('all');
-                      setShowTripCalendar(false);
-                    }}
-                    onClose={() => setShowTripCalendar(false)}
-                  />
-                )}
-              </View>
-
+            {/* Completed Trips List */}
+            <View style={styles.tripsListContainer}>
               {displayedTrips.length === 0 ? (
                 <View style={styles.tripEmptyContainer}>
                   <Text style={styles.tripEmptyIcon}>🗓️</Text>
@@ -4364,11 +4543,7 @@ export default function App() {
                       : `No Trips on ${formatDisplayDateKey(selectedTripDate)}`}
                   </Text>
                   <Text style={styles.tripEmptySubtitle}>
-                    {selectedTripDate === todayKey
-                      ? 'Trips are recorded automatically when your car drives (or via Live Trip Mode / "+ Log Trip Now").'
-                      : selectedTripDate === 'all'
-                      ? 'Trips are recorded automatically when your car drives (or via Live Trip Mode / "+ Log Trip Now").'
-                      : 'No completed driving records found for this selected date.'}
+                    Trips are recorded automatically when your car drives (or tap &quot;Start trip&quot; / &quot;•••&quot; to log a trip).
                   </Text>
                   {selectedTripDate !== todayKey && (
                     <TouchableOpacity
@@ -4383,12 +4558,120 @@ export default function App() {
                   )}
                 </View>
               ) : (
-                displayedTrips.map((t) => (
-                  <TripSessionCard key={t.id} trip={t} liveStatus={status} />
-                ))
+                displayedTrips.map((trip, idx) => {
+                  const isLast = idx === displayedTrips.length - 1;
+                  const routeTitle = formatTripRouteTitle(trip);
+                  const distStr = formatTripDistDisplay(trip);
+                  const subStr = formatTripTimeDisplay(trip);
+
+                  return (
+                    <TouchableOpacity
+                      key={trip.id}
+                      style={[styles.tripsListItem, isLast && { borderBottomWidth: 0 }]}
+                      onPress={() => handleOpenTripDetail(trip)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.tripsListItemMain}>
+                        <View style={styles.tripsListItemTopRow}>
+                          <Text style={styles.tripsListItemTitle} numberOfLines={1}>
+                            {routeTitle}
+                          </Text>
+                          <Text style={styles.tripsListItemDist}>
+                            {distStr}
+                          </Text>
+                        </View>
+                        <Text style={styles.tripsListItemSub}>
+                          {subStr}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
               )}
             </View>
-          </>
+
+            {/* Overflow Options Modal for Cloudflare D1 & Syncing */}
+            <Modal visible={showTripsOptionsMenu} transparent animationType="fade">
+              <TouchableOpacity
+                style={styles.modalBackdrop}
+                activeOpacity={1}
+                onPress={() => setShowTripsOptionsMenu(false)}
+              >
+                <View style={styles.tripsOptionsBox}>
+                  <Text style={styles.tripsOptionsTitle}>Trips Database & Management</Text>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleSyncTripsToD1();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>☁️  Sync Trips to Cloudflare D1</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleRefreshD1Trips();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>🔄  Refresh Trips from Cloudflare D1</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleCleanAndDeduplicateD1();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>🧹  Clean & Deduplicate D1 Trips</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionItem}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleManualLogTrip();
+                    }}
+                  >
+                    <Text style={styles.tripsOptionItemText}>➕  Log Current Trip Telemetry Now</Text>
+                  </TouchableOpacity>
+
+                  {googleConfig?.accessToken && googleConfig?.spreadsheetId && (
+                    <TouchableOpacity
+                      style={styles.tripsOptionItem}
+                      onPress={() => {
+                        setShowTripsOptionsMenu(false);
+                        handleSyncGoogleSheetNow();
+                      }}
+                    >
+                      <Text style={styles.tripsOptionItemText}>📊  Sync Trips to Google Sheets</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    style={[styles.tripsOptionItem, { borderBottomWidth: 0 }]}
+                    onPress={() => {
+                      setShowTripsOptionsMenu(false);
+                      handleClearAllD1Trips();
+                    }}
+                  >
+                    <Text style={[styles.tripsOptionItemText, { color: '#F87171' }]}>🗑️  Clear All Cloudflare D1 Trips</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.tripsOptionsCancelBtn}
+                    onPress={() => setShowTripsOptionsMenu(false)}
+                  >
+                    <Text style={styles.tripsOptionsCancelText}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </TouchableOpacity>
+            </Modal>
+          </Animated.View>
         )}
 
         {/* TAB 6: ACCOUNT & LOGOUT */}
@@ -6653,6 +6936,572 @@ export default function App() {
         </Animated.View>
       )}
 
+      {/* Plan a Trip Fullscreen Tween Screen */}
+      {isPlanScreenVisible && (
+        <Animated.View
+          style={[
+            styles.planScreenLayer,
+            {
+              transform: [{ translateX: planTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <ScrollView
+              style={{ flex: 1, width: '100%' }}
+              contentContainerStyle={styles.planScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Header */}
+              <View style={styles.planHeader}>
+                <TouchableOpacity
+                  style={styles.planBackBtn}
+                  onPress={handleClosePlanScreen}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Back to Trips"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                    <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                </TouchableOpacity>
+
+                <Text style={styles.planTitle}>Plan a trip</Text>
+
+                <View style={styles.planTrafficBadge}>
+                  <Text style={styles.planTrafficBadgeText}>Live traffic</Text>
+                </View>
+              </View>
+
+              {/* Start Section */}
+              <Text style={styles.planSectionLabel}>Start</Text>
+              <View style={styles.planBtnRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.planChoiceBtn,
+                    planOriginMode === 'car' && styles.planChoiceBtnActive,
+                  ]}
+                  onPress={() => setPlanOriginMode('car')}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.planChoiceBtnText,
+                      planOriginMode === 'car' && styles.planChoiceBtnTextActive,
+                    ]}
+                  >
+                    Car GPS · {(status.gps?.latitude ?? 10.06).toFixed(2)}, {(status.gps?.longitude ?? 76.62).toFixed(2)}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.planChoiceBtn,
+                    planOriginMode === 'custom' && styles.planChoiceBtnActive,
+                  ]}
+                  onPress={() => setPlanOriginMode('custom')}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.planChoiceBtnText,
+                      planOriginMode === 'custom' && styles.planChoiceBtnTextActive,
+                    ]}
+                  >
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {planOriginMode === 'custom' && (
+                <TextInput
+                  style={styles.planCustomInput}
+                  placeholder="Enter starting city/location"
+                  placeholderTextColor="#64748B"
+                  value={planCustomOrigin}
+                  onChangeText={setPlanCustomOrigin}
+                />
+              )}
+
+              {/* Charging Strategy Section */}
+              <Text style={styles.planSectionLabel}>Charging strategy</Text>
+              <View style={styles.planBtnRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.planChoiceBtn,
+                    planStrategy === 'fastest' && styles.planChoiceBtnActive,
+                  ]}
+                  onPress={() => setPlanStrategy('fastest')}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.planChoiceBtnText,
+                      planStrategy === 'fastest' && styles.planChoiceBtnTextActive,
+                    ]}
+                  >
+                    Fastest
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.planChoiceBtn,
+                    planStrategy === 'fixed100' && styles.planChoiceBtnActive,
+                  ]}
+                  onPress={() => setPlanStrategy('fixed100')}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.planChoiceBtnText,
+                      planStrategy === 'fixed100' && styles.planChoiceBtnTextActive,
+                    ]}
+                  >
+                    Fixed 100%
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 4 Parameter Metric Tiles (2x2 Grid) */}
+              <View style={styles.planMetricsGrid}>
+                {/* Tile 1: Start SoC */}
+                <TouchableOpacity
+                  style={styles.planMetricTile}
+                  onPress={() => {
+                    const next = planStartSoc >= 100 ? 70 : planStartSoc + 10;
+                    setPlanStartSoc(next);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.planMetricTileLabel}>Start SoC</Text>
+                  <Text style={styles.planMetricTileVal}>{planStartSoc}%</Text>
+                </TouchableOpacity>
+
+                {/* Tile 2: Min at charger */}
+                <TouchableOpacity
+                  style={styles.planMetricTile}
+                  onPress={() => {
+                    const list = [10, 15, 20, 25];
+                    const idx = list.indexOf(planMinCharger);
+                    setPlanMinCharger(list[(idx + 1) % list.length]);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.planMetricTileLabel}>Min at charger</Text>
+                  <Text style={styles.planMetricTileVal}>{planMinCharger}%</Text>
+                </TouchableOpacity>
+
+                {/* Tile 3: Min at destination */}
+                <TouchableOpacity
+                  style={styles.planMetricTile}
+                  onPress={() => {
+                    const list = [15, 20, 30, 50];
+                    const idx = list.indexOf(planMinDest);
+                    setPlanMinDest(list[(idx + 1) % list.length]);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.planMetricTileLabel}>Min at destination</Text>
+                  <Text style={styles.planMetricTileVal}>{planMinDest}%</Text>
+                </TouchableOpacity>
+
+                {/* Tile 4: Charge to */}
+                <TouchableOpacity
+                  style={styles.planMetricTile}
+                  onPress={() => {
+                    const list = [80, 90, 100];
+                    const idx = list.indexOf(planChargeTo);
+                    setPlanChargeTo(list[(idx + 1) % list.length]);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.planMetricTileLabel}>Charge to</Text>
+                  <Text style={styles.planMetricTileVal}>{planChargeTo}%</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Destination Section */}
+              <View style={styles.planDestHeaderRow}>
+                <Text style={styles.planSectionLabel}>Destination</Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    const curKey = googleMapsApiKey || '';
+                    if (Platform.OS === 'web') {
+                      const input = window.prompt(
+                        'Enter Google Maps Platform API Key (or leave empty for OpenStreetMap Free Mode):',
+                        curKey
+                      );
+                      if (input !== null) {
+                        handleSaveMapsApiKey(input);
+                      }
+                    } else {
+                      Alert.prompt(
+                        'Google Maps API Key',
+                        'Enter key for live traffic & places:',
+                        (text) => handleSaveMapsApiKey(text)
+                      );
+                    }
+                  }}
+                >
+                  <Text style={styles.planDestApiKeyLink}>Google API key</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Destination Input Box */}
+              <TextInput
+                style={styles.planDestInput}
+                placeholder="Where to? e.g. Munnar"
+                placeholderTextColor="#64748B"
+                value={planDestQuery}
+                onChangeText={setPlanDestQuery}
+              />
+
+              {/* Preset Destination Pills */}
+              <View style={styles.planChipsRow}>
+                {QUICK_DESTINATIONS.map((chip) => (
+                  <TouchableOpacity
+                    key={chip.name}
+                    style={[
+                      styles.planChip,
+                      planDestQuery.toLowerCase().includes(chip.name.toLowerCase()) && styles.planChipActive,
+                    ]}
+                    onPress={() => {
+                      setPlanDestQuery(chip.name);
+                      setPlanSelectedDest({
+                        placeId: 'quick-dest-' + chip.name.toLowerCase(),
+                        name: chip.name,
+                        position: chip.position,
+                      });
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text
+                      style={[
+                        styles.planChipText,
+                        planDestQuery.toLowerCase().includes(chip.name.toLowerCase()) && styles.planChipTextActive,
+                      ]}
+                    >
+                      {chip.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Footnote */}
+              <Text style={styles.planFootnote}>
+                Elevation-aware planning, DC stops and 25 km backup chargers. Ported from irshadm/volta-android by Irshad Melethil (Apache 2.0).
+              </Text>
+
+              {/* Primary Plan Route Button */}
+              <TouchableOpacity
+                style={styles.planPrimaryBtn}
+                onPress={() => handleExecutePlanRoute()}
+                disabled={planIsComputing}
+                activeOpacity={0.8}
+              >
+                {planIsComputing ? (
+                  <ActivityIndicator color="#0A0E17" />
+                ) : (
+                  <Text style={styles.planPrimaryBtnText}>Plan route</Text>
+                )}
+              </TouchableOpacity>
+
+              {planIsComputing && (
+                <Text style={styles.planProgressText}>{planProgressMsg}</Text>
+              )}
+
+              {planError && (
+                <View style={styles.planErrorCard}>
+                  <Text style={styles.planErrorText}>⚠️ {planError}</Text>
+                </View>
+              )}
+
+              {/* Computed Route Choices Card */}
+              {planComputedChoices.length > 0 && (() => {
+                const choice = planComputedChoices[0];
+                const estKwh = (choice.distanceM / 1000) / 7.5;
+                const estSocUsed = (estKwh / 38) * 100;
+                const estArrivalSoc = Math.max(5, Math.round(planStartSoc - estSocUsed));
+                const destPos = choice.path && choice.path.length > 0 ? choice.path[choice.path.length - 1] : null;
+
+                return (
+                  <View style={styles.planResultCard}>
+                    <Text style={styles.planResultHeader}>✅ Route Computed</Text>
+                    <View style={styles.planResultLine}>
+                      <Text style={styles.planResultLabel}>Total Distance</Text>
+                      <Text style={styles.planResultVal}>
+                        {(choice.distanceM / 1000).toFixed(0)} km
+                      </Text>
+                    </View>
+                    <View style={styles.planResultLine}>
+                      <Text style={styles.planResultLabel}>Estimated Time</Text>
+                      <Text style={styles.planResultVal}>
+                        {Math.floor(choice.durationS / 3600)}h {Math.round((choice.durationS % 3600) / 60)}m
+                      </Text>
+                    </View>
+                    <View style={styles.planResultLine}>
+                      <Text style={styles.planResultLabel}>Arrival Battery</Text>
+                      <Text style={[styles.planResultVal, { color: '#34D399' }]}>
+                        {estArrivalSoc}%
+                      </Text>
+                    </View>
+                    <View style={styles.planResultLine}>
+                      <Text style={styles.planResultLabel}>Charging Corridor</Text>
+                      <Text style={styles.planResultVal}>
+                        {choice.chargers?.length || 0} fast chargers
+                      </Text>
+                    </View>
+
+                    {destPos && (
+                      <TouchableOpacity
+                        style={styles.planNavBtn}
+                        onPress={() => {
+                          Linking.openURL(
+                            `https://www.google.com/maps/dir/?api=1&destination=${destPos.lat},${destPos.lng}`
+                          );
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.planNavBtnText}>🗺️ Start Navigation in Google Maps</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                );
+              })()}
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+
+      {/* Trip Detail Fullscreen Tween Screen */}
+      {isTripDetailVisible && selectedTripForDetail && (
+        <Animated.View
+          style={[
+            styles.tripDetailScreenLayer,
+            {
+              transform: [{ translateX: tripDetailTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <ScrollView
+              style={{ flex: 1, width: '100%' }}
+              contentContainerStyle={styles.tripDetailScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Header */}
+              <View style={styles.tripDetailHeader}>
+                <TouchableOpacity
+                  style={styles.tripDetailBackBtn}
+                  onPress={handleCloseTripDetail}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Back to Trips"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                    <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                </TouchableOpacity>
+
+                <View style={styles.tripDetailTitleCol}>
+                  <Text style={styles.tripDetailTitle}>Trip</Text>
+                  <Text style={styles.tripDetailSub} numberOfLines={1}>
+                    {formatTripDetailSubtitle(selectedTripForDetail)}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.tripDetailShareBtn}
+                  onPress={() => handleShareTripRecord(selectedTripForDetail)}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Share Trip"
+                  accessibilityRole="button"
+                >
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2}>
+                    <Path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                    <Polyline points="16 6 12 2 8 6" />
+                    <Line x1="12" y1="2" x2="12" y2="15" />
+                  </Svg>
+                </TouchableOpacity>
+              </View>
+
+              {/* Map Graphic Preview Card */}
+              <View style={styles.tripDetailMapCard}>
+                <Svg width="100%" height="100%" viewBox="0 0 400 160">
+                  {/* Street grid background lines */}
+                  <Line x1="0" y1="30" x2="400" y2="40" stroke="#162032" strokeWidth="12" />
+                  <Line x1="0" y1="80" x2="400" y2="70" stroke="#131B2A" strokeWidth="8" />
+                  <Line x1="0" y1="130" x2="400" y2="135" stroke="#162032" strokeWidth="10" />
+                  <Line x1="80" y1="0" x2="120" y2="160" stroke="#162032" strokeWidth="10" />
+                  <Line x1="220" y1="0" x2="180" y2="160" stroke="#162032" strokeWidth="12" />
+                  <Line x1="330" y1="0" x2="310" y2="160" stroke="#131B2A" strokeWidth="9" />
+
+                  {/* Start Node Halo & Dot */}
+                  <Circle cx="64" cy="116" r="14" fill="rgba(16, 185, 129, 0.25)" />
+                  <Circle cx="64" cy="116" r="6" fill="#34D399" />
+
+                  {/* Glowing Route Polyline */}
+                  <Path
+                    d="M 64 116 C 130 110, 160 68, 230 68 C 280 68, 305 38, 336 32"
+                    stroke="#34D399"
+                    strokeWidth="4"
+                    fill="none"
+                    strokeLinecap="round"
+                  />
+
+                  {/* Destination Node Halo & Dot */}
+                  <Circle cx="336" cy="32" r="14" fill="rgba(16, 185, 129, 0.25)" />
+                  <Circle cx="336" cy="32" r="6" fill="#34D399" />
+                </Svg>
+              </View>
+
+              {/* Big Distance & Odometer */}
+              <Text style={styles.tripDetailHeroDist}>
+                {selectedTripForDetail.distanceKm}
+                <Text style={styles.tripDetailHeroUnit}> km</Text>
+              </Text>
+              <Text style={styles.tripDetailHeroOdo}>
+                {(selectedTripForDetail.startOdometerKm || 0).toLocaleString()} → {(selectedTripForDetail.endOdometerKm || 0).toLocaleString()} km odometer
+              </Text>
+
+              {/* 3-Column Metrics (Duration, Energy, Efficiency) */}
+              <View style={styles.tripDetailMetricsRow}>
+                <View style={styles.tripDetailMetricCol}>
+                  <Text style={styles.tripDetailMetricLabel}>Duration</Text>
+                  <Text style={styles.tripDetailMetricVal}>
+                    {Math.max(1, Math.round((selectedTripForDetail.durationSeconds || (selectedTripForDetail.endTimestampSec - selectedTripForDetail.startTimestampSec) || 60) / 60))} min
+                  </Text>
+                </View>
+
+                <View style={styles.tripDetailMetricCol}>
+                  <Text style={styles.tripDetailMetricLabel}>Energy</Text>
+                  <Text style={styles.tripDetailMetricVal}>
+                    {selectedTripForDetail.energyUsedKwh} kWh
+                  </Text>
+                </View>
+
+                <View style={styles.tripDetailMetricCol}>
+                  <Text style={styles.tripDetailMetricLabel}>Efficiency</Text>
+                  <Text style={styles.tripDetailMetricVal}>
+                    {selectedTripForDetail.efficiencyKmPerKwh > 0
+                      ? selectedTripForDetail.efficiencyKmPerKwh
+                      : (selectedTripForDetail.distanceKm / (selectedTripForDetail.energyUsedKwh || 1)).toFixed(1)}{' '}
+                    km/kWh
+                  </Text>
+                </View>
+              </View>
+
+              {/* Battery SoC Progress Card */}
+              <View style={styles.tripDetailSocCard}>
+                <View style={styles.tripDetailSocTopRow}>
+                  <Text style={styles.tripDetailSocLeft}>
+                    {selectedTripForDetail.startSoc.toFixed(0)}% {selectedTripForDetail.startEnergyKwh.toFixed(1)} kWh
+                  </Text>
+                  <Text style={styles.tripDetailSocRight}>
+                    {selectedTripForDetail.endSoc.toFixed(0)}% {selectedTripForDetail.endEnergyKwh.toFixed(2)} kWh
+                  </Text>
+                </View>
+                <View style={styles.tripDetailSocTrack}>
+                  <View
+                    style={[
+                      styles.tripDetailSocFill,
+                      { width: `${Math.min(100, Math.max(5, selectedTripForDetail.endSoc))}%` },
+                    ]}
+                  />
+                </View>
+              </View>
+
+              {/* Route Nodes Timeline */}
+              <View style={styles.tripDetailTimeline}>
+                {/* Start Node */}
+                <View style={styles.tripDetailNode}>
+                  <View style={styles.tripDetailNodeDotGrey} />
+                  <View style={styles.tripDetailNodeTextCol}>
+                    <Text style={styles.tripDetailNodeLabel}>
+                      Start · {extractTime(selectedTripForDetail.startDateTime)}
+                    </Text>
+                    <Text style={styles.tripDetailNodeVal}>
+                      {cleanLocationSummary(selectedTripForDetail.startLocation) || 'Starting point'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Connecting Track Line */}
+                <View style={styles.tripDetailNodeTrack} />
+
+                {/* Destination Node */}
+                <View style={styles.tripDetailNode}>
+                  <View style={styles.tripDetailNodeDotGreen} />
+                  <View style={styles.tripDetailNodeTextCol}>
+                    <Text style={styles.tripDetailNodeLabel}>
+                      Destination · {extractTime(selectedTripForDetail.endDateTime)}
+                    </Text>
+                    <Text style={styles.tripDetailNodeVal}>
+                      {cleanLocationSummary(selectedTripForDetail.endLocation) || 'Destination point'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Bottom 2-Column Stats Card */}
+              <View style={styles.tripDetailBottomCard}>
+                <View style={styles.tripDetailStatRow}>
+                  <View style={styles.tripDetailStatCol}>
+                    <Text style={styles.tripDetailStatLabel}>Max speed</Text>
+                    <Text style={styles.tripDetailStatVal}>
+                      {selectedTripForDetail.maxSpeedKmh || (selectedTripForDetail.avgSpeedKmh * 1.48).toFixed(1)} km/h
+                    </Text>
+                  </View>
+                  <View style={styles.tripDetailStatCol}>
+                    <Text style={styles.tripDetailStatLabel}>Average speed</Text>
+                    <Text style={styles.tripDetailStatVal}>
+                      {selectedTripForDetail.avgSpeedKmh || (selectedTripForDetail.distanceKm / ((selectedTripForDetail.durationSeconds || 3600) / 3600)).toFixed(1)} km/h
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.tripDetailDivider} />
+
+                <View style={styles.tripDetailStatRow}>
+                  <View style={styles.tripDetailStatCol}>
+                    <Text style={styles.tripDetailStatLabel}>Cabin</Text>
+                    <Text style={styles.tripDetailStatVal}>
+                      {selectedTripForDetail.startCabinTempC ?? 29}° → {selectedTripForDetail.endCabinTempC ?? 25}°C
+                    </Text>
+                  </View>
+                  <View style={styles.tripDetailStatCol}>
+                    <Text style={styles.tripDetailStatLabel}>Outside</Text>
+                    <Text style={styles.tripDetailStatVal}>
+                      {selectedTripForDetail.startExteriorTempC ?? 27}° → {selectedTripForDetail.endExteriorTempC ?? 29}°C
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.tripDetailDivider} />
+
+                <View style={styles.tripDetailStatRow}>
+                  <View style={styles.tripDetailStatCol}>
+                    <Text style={styles.tripDetailStatLabel}>Idling</Text>
+                    <Text style={styles.tripDetailStatVal}>
+                      {selectedTripForDetail.idleDurationSeconds > 0
+                        ? `${Math.round(selectedTripForDetail.idleDurationSeconds / 60)} min`
+                        : 'None'}
+                    </Text>
+                  </View>
+                  <View style={styles.tripDetailStatCol}>
+                    <Text style={styles.tripDetailStatLabel}>Idle energy</Text>
+                    <Text style={styles.tripDetailStatVal}>
+                      {(selectedTripForDetail.idleEnergyKwh || 0).toFixed(2)} kWh
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -6749,6 +7598,15 @@ export default function App() {
                 if (isRemoteScreenVisible) {
                   setIsRemoteScreenVisible(false);
                   remoteSlideAnim.setValue(0);
+                }
+                if (isPlanScreenVisible) {
+                  setIsPlanScreenVisible(false);
+                  planSlideAnim.setValue(0);
+                }
+                if (isTripDetailVisible) {
+                  setIsTripDetailVisible(false);
+                  tripDetailSlideAnim.setValue(0);
+                  setSelectedTripForDetail(null);
                 }
                 setTab(item.id);
               }}
@@ -10478,5 +11336,711 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontSize: 12,
     fontWeight: '500',
+  },
+
+  // Trips Screen (Redesigned Mockup) Styles
+  tripsMainContainer: {
+    width: '100%',
+    paddingBottom: 24,
+  },
+  tripsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    paddingTop: 4,
+  },
+  tripsTitle: {
+    color: '#FFFFFF',
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  tripsOverflowBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripsOverflowBtnText: {
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  tripsActionButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 24,
+  },
+  tripsStartBtn: {
+    flex: 1,
+    height: 52,
+    borderRadius: 20,
+    backgroundColor: '#10B981',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  tripsStartBtnActive: {
+    backgroundColor: '#EF4444',
+  },
+  tripsStartBtnText: {
+    color: '#0A0E17',
+    fontSize: 15.5,
+    fontWeight: '800',
+  },
+  tripsPlanBtn: {
+    flex: 1,
+    height: 52,
+    borderRadius: 20,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  tripsPlanBtnText: {
+    color: '#F8FAFC',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+  tripsDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  tripsDatePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  tripsDatePillActive: {
+    borderColor: '#059669',
+    backgroundColor: 'rgba(6, 78, 59, 0.25)',
+  },
+  tripsDatePillText: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  tripsDatePillChevron: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginLeft: 2,
+  },
+  tripsCountText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  tripsHeroStats: {
+    marginBottom: 24,
+  },
+  tripsHeroNumbersRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  tripsHeroStatCol: {
+    alignItems: 'flex-start',
+  },
+  tripsHeroStatColRight: {
+    alignItems: 'flex-end',
+  },
+  tripsHeroNumber: {
+    color: '#FFFFFF',
+    fontSize: 36,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  tripsHeroUnit: {
+    color: '#94A3B8',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  tripsHeroSub: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
+    marginTop: 4,
+  },
+  tripsListContainer: {
+    marginTop: 6,
+  },
+  tripsListItem: {
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  tripsListItemMain: {
+    width: '100%',
+  },
+  tripsListItemTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  tripsListItemTitle: {
+    color: '#F8FAFC',
+    fontSize: 16.5,
+    fontWeight: '700',
+    flex: 1,
+    paddingRight: 12,
+  },
+  tripsListItemDist: {
+    color: '#F8FAFC',
+    fontSize: 16.5,
+    fontWeight: '800',
+  },
+  tripsListItemSub: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+    fontWeight: '500',
+  },
+  tripsOptionsBox: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 24,
+    padding: 20,
+    width: '90%',
+    maxWidth: 400,
+  },
+  tripsOptionsTitle: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  tripsOptionItem: {
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  tripsOptionItemText: {
+    color: '#F8FAFC',
+    fontSize: 14.5,
+    fontWeight: '600',
+  },
+  tripsOptionsCancelBtn: {
+    marginTop: 16,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripsOptionsCancelText: {
+    color: '#94A3B8',
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
+
+  // Plan a Trip Dedicated Screen Styles
+  planScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  planScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: 40,
+  },
+  planHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    paddingTop: 8,
+  },
+  planBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planTitle: {
+    color: '#F8FAFC',
+    fontSize: 24,
+    fontWeight: '800',
+    flex: 1,
+    marginLeft: 14,
+    letterSpacing: -0.3,
+  },
+  planTrafficBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  planTrafficBadgeText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  planSectionLabel: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 8,
+    marginTop: 10,
+  },
+  planBtnRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 10,
+  },
+  planChoiceBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  planChoiceBtnActive: {
+    borderColor: '#059669',
+    backgroundColor: 'rgba(6, 78, 59, 0.25)',
+  },
+  planChoiceBtnText: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  planChoiceBtnTextActive: {
+    color: '#34D399',
+    fontWeight: '700',
+  },
+  planCustomInput: {
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    color: '#FFFFFF',
+    fontSize: 14,
+    paddingHorizontal: 14,
+    marginBottom: 10,
+  },
+  planMetricsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginVertical: 12,
+  },
+  planMetricTile: {
+    width: '48%',
+    flexGrow: 1,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  planMetricTileLabel: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  planMetricTileVal: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  planDestHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  planDestApiKeyLink: {
+    color: '#34D399',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  planDestInput: {
+    height: 52,
+    borderRadius: 18,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    color: '#FFFFFF',
+    fontSize: 15,
+    paddingHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  planChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  planChip: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
+  planChipActive: {
+    borderColor: '#059669',
+    backgroundColor: 'rgba(6, 78, 59, 0.25)',
+  },
+  planChipText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  planChipTextActive: {
+    color: '#34D399',
+    fontWeight: '700',
+  },
+  planFootnote: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginVertical: 16,
+  },
+  planPrimaryBtn: {
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#10B981',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 6,
+    marginBottom: 16,
+  },
+  planPrimaryBtnText: {
+    color: '#0A0E17',
+    fontSize: 16.5,
+    fontWeight: '800',
+  },
+  planProgressText: {
+    color: '#34D399',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  planErrorCard: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 14,
+  },
+  planErrorText: {
+    color: '#F87171',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  planResultCard: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 20,
+    padding: 16,
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  planResultHeader: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  planResultLine: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  planResultLabel: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+  },
+  planResultVal: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  planNavBtn: {
+    marginTop: 14,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: '#0F172A',
+    borderWidth: 1.5,
+    borderColor: '#059669',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  planNavBtnText: {
+    color: '#34D399',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // Trip Detail Dedicated Screen Styles
+  tripDetailScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  tripDetailScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: 40,
+  },
+  tripDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingTop: 8,
+  },
+  tripDetailBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripDetailTitleCol: {
+    flex: 1,
+    marginLeft: 14,
+    marginRight: 10,
+  },
+  tripDetailTitle: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  tripDetailSub: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  tripDetailShareBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripDetailMapCard: {
+    width: '100%',
+    height: 160,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: '#0B111E',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    marginBottom: 20,
+  },
+  tripDetailHeroDist: {
+    color: '#FFFFFF',
+    fontSize: 38,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  tripDetailHeroUnit: {
+    color: '#94A3B8',
+    fontSize: 20,
+    fontWeight: '600',
+  },
+  tripDetailHeroOdo: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+    fontWeight: '500',
+    marginTop: 4,
+    marginBottom: 20,
+  },
+  tripDetailMetricsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    paddingHorizontal: 2,
+  },
+  tripDetailMetricCol: {
+    flex: 1,
+  },
+  tripDetailMetricLabel: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  tripDetailMetricVal: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+  },
+  tripDetailSocCard: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 22,
+  },
+  tripDetailSocTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  tripDetailSocLeft: {
+    color: '#FFFFFF',
+    fontSize: 14.5,
+    fontWeight: '800',
+  },
+  tripDetailSocRight: {
+    color: '#34D399',
+    fontSize: 14.5,
+    fontWeight: '800',
+  },
+  tripDetailSocTrack: {
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#1E293B',
+    overflow: 'hidden',
+  },
+  tripDetailSocFill: {
+    height: '100%',
+    backgroundColor: '#34D399',
+    borderRadius: 3.5,
+  },
+  tripDetailTimeline: {
+    marginBottom: 22,
+    paddingHorizontal: 4,
+  },
+  tripDetailNode: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  tripDetailNodeDotGrey: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#94A3B8',
+    marginTop: 4,
+  },
+  tripDetailNodeDotGreen: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#34D399',
+    marginTop: 4,
+  },
+  tripDetailNodeTrack: {
+    width: 2,
+    height: 24,
+    backgroundColor: '#334155',
+    marginLeft: 4,
+    marginVertical: 4,
+  },
+  tripDetailNodeTextCol: {
+    flex: 1,
+  },
+  tripDetailNodeLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  tripDetailNodeVal: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  tripDetailBottomCard: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    marginBottom: 30,
+  },
+  tripDetailStatRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  tripDetailStatCol: {
+    flex: 1,
+  },
+  tripDetailStatLabel: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    fontWeight: '500',
+  },
+  tripDetailStatVal: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  tripDetailDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginVertical: 14,
   },
 });
