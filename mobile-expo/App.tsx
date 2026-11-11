@@ -2972,7 +2972,16 @@ export default function App() {
               />
             </View>
 
-            {/* 5. 2-Column Metrics Layout: Row 1 (SOH, Efficiency) & Row 2 (Odometer, 12V Battery) */}
+            {/* Odometer Reading Centered Below Car Image */}
+            <View style={styles.mockupCarOdoWrap}>
+              <View style={styles.mockupCarOdoPill}>
+                <Text style={styles.mockupCarOdoVal}>
+                  {Math.round(charge?.odometer_km ?? status.odometer_km ?? 39004).toLocaleString()} km
+                </Text>
+              </View>
+            </View>
+
+            {/* 5. 2-Column Metrics Layout: Row 1 (Battery SOH, Efficiency) & Row 2 (Cabin/Ext Temp, 12V Battery) */}
             {(() => {
               const cycleKm =
                 charge?.distance_since_last_charge_km ?? preChargeBaseline?.distanceSinceLastChargeKm ?? 0;
@@ -2985,8 +2994,18 @@ export default function App() {
                 eff = trips[0].efficiencyKmPerKwh;
               }
               const displayEff = eff > 0 ? `${eff.toFixed(2)} km/kWh` : '9.03 km/kWh';
-              const rawOdo = charge?.odometer_km ?? status.odometer_km ?? 39004;
-              const odoVal = Math.round(rawOdo).toLocaleString();
+
+              const inTemp = status.interior_temperature;
+              const exTemp = status.exterior_temperature;
+              const tempDisplay =
+                inTemp !== null && inTemp !== undefined && exTemp !== null && exTemp !== undefined
+                  ? `${inTemp}° / ${exTemp}°C`
+                  : inTemp !== null && inTemp !== undefined
+                  ? `${inTemp}°C`
+                  : exTemp !== null && exTemp !== undefined
+                  ? `${exTemp}°C`
+                  : '--°C';
+
               const auxVoltage =
                 status.aux_battery_voltage !== null && status.aux_battery_voltage !== undefined
                   ? `${status.aux_battery_voltage} V`
@@ -2994,10 +3013,10 @@ export default function App() {
 
               return (
                 <View style={styles.mockupMetricsGrid}>
-                  {/* Row 1: SOH & Efficiency */}
+                  {/* Row 1: Battery SOH & Efficiency */}
                   <View style={styles.mockupMetricsRow}>
                     <View style={styles.mockupMetricCol}>
-                      <Text style={styles.mockupMetricLabel}>SOH</Text>
+                      <Text style={styles.mockupMetricLabel}>Battery SOH</Text>
                       <Text style={[styles.mockupMetricVal, { color: '#34D399' }]}>
                         {sohPercent > 0 ? `${sohPercent.toFixed(1)}%` : '97.7%'}
                       </Text>
@@ -3008,11 +3027,11 @@ export default function App() {
                     </View>
                   </View>
 
-                  {/* Row 2: Odometer & 12V Battery */}
+                  {/* Row 2: Cabin/Ext Temp & 12V Battery */}
                   <View style={styles.mockupMetricsRow}>
                     <View style={styles.mockupMetricCol}>
-                      <Text style={styles.mockupMetricLabel}>Odometer</Text>
-                      <Text style={styles.mockupMetricVal}>{odoVal} km</Text>
+                      <Text style={styles.mockupMetricLabel}>Cabin / Ext Temp</Text>
+                      <Text style={styles.mockupMetricVal}>{tempDisplay}</Text>
                     </View>
                     <View style={styles.mockupMetricCol}>
                       <Text style={styles.mockupMetricLabel}>12V Battery</Text>
@@ -8951,6 +8970,26 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     zIndex: 1,
+  },
+  mockupCarOdoWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -2,
+    marginBottom: 8,
+  },
+  mockupCarOdoPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 5,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  mockupCarOdoVal: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#F1F5F9',
+    letterSpacing: 0.3,
   },
   mockupMetricsGrid: {
     marginVertical: 12,
