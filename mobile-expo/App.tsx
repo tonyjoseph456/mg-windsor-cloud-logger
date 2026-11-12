@@ -2129,13 +2129,10 @@ export default function App() {
             activeOpacity={0.7}
           >
             <View style={styles.tripsListItemMain}>
-              {/* Line 1: Start Location (Left) and Distance (Right) */}
+              {/* Line 1: Start Location (Left, aligned with text below) and Distance (Right) */}
               <View style={styles.tripsListItemTopRow}>
-                <Text
-                  style={styles.tripsListItemStartPlace}
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
-                >
+                <View style={styles.tripsRouteIndicatorCol} />
+                <Text style={styles.tripsListItemStartPlace}>
                   {startPlace}
                 </Text>
                 <Text style={styles.tripsListItemDist}>
@@ -2158,11 +2155,7 @@ export default function App() {
                 <View style={styles.tripsRouteIndicatorCol}>
                   <View style={styles.tripsDestDot} />
                 </View>
-                <Text
-                  style={styles.tripsListItemEndPlace}
-                  numberOfLines={2}
-                  ellipsizeMode="tail"
-                >
+                <Text style={styles.tripsListItemEndPlace}>
                   {endPlace}
                 </Text>
               </View>
@@ -13307,8 +13300,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     flex: 1,
+    marginLeft: 8,
     paddingRight: 16,
-    maxWidth: '78%',
+    lineHeight: 21,
   },
   tripsListItemDist: {
     color: '#F8FAFC',
@@ -13358,7 +13352,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     flex: 1,
     marginLeft: 8,
-    paddingRight: 40,
+    paddingRight: 16,
+    lineHeight: 20,
   },
   tripsListItemTime: {
     color: '#94A3B8',
