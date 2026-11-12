@@ -8373,11 +8373,11 @@ export default function App() {
                             </View>
                           </View>
 
-                          {/* Line 3: Address */}
-                          <Text style={styles.selectedStopAddress} numberOfLines={1}>
+                          {/* Line 3 & 4: Address (remaining truncated address wraps to 4th line) */}
+                          <Text style={styles.selectedStopAddress} numberOfLines={2}>
                             📍 {stopAddress}
                           </Text>
-                          {/* Line 4: Location */}
+                          {/* Line 5: Location / Coordinates */}
                           <Text style={styles.selectedStopLocation} numberOfLines={1}>
                             🗺️ {stopLocation}
                           </Text>
@@ -8473,11 +8473,11 @@ export default function App() {
                           <Text style={styles.chargerRowSub} numberOfLines={1}>
                             {legDistKm} km · {charger.maxKw || 60} kW CCS2
                           </Text>
-                          {/* Line 3: Address */}
-                          <Text style={styles.chargerRowAddress} numberOfLines={1}>
+                          {/* Line 3 & 4: Address (remaining truncated address wraps to 4th line) */}
+                          <Text style={styles.chargerRowAddress} numberOfLines={2}>
                             📍 {chargerAddress}
                           </Text>
-                          {/* Line 4: Location / Coordinates */}
+                          {/* Line 5: Location / Coordinates */}
                           <Text style={styles.chargerRowLocation} numberOfLines={1}>
                             🗺️ {chargerLocation}
                           </Text>
@@ -13553,11 +13553,13 @@ const styles = StyleSheet.create({
   chargerRowAddress: {
     color: '#94A3B8',
     fontSize: 11,
+    lineHeight: 15,
     marginBottom: 2,
   },
   chargerRowLocation: {
     color: '#64748B',
     fontSize: 10.5,
+    lineHeight: 14,
   },
   chargerRowRight: {
     flexDirection: 'column',
@@ -13613,12 +13615,14 @@ const styles = StyleSheet.create({
   selectedStopAddress: {
     color: '#94A3B8',
     fontSize: 11,
+    lineHeight: 15,
     marginTop: 2,
-    marginBottom: 1,
+    marginBottom: 2,
   },
   selectedStopLocation: {
     color: '#64748B',
     fontSize: 10.5,
+    lineHeight: 14,
     marginBottom: 6,
   },
   selectedStopCard: {
