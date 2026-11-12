@@ -1361,6 +1361,12 @@ function startLiveActivityAudio(): boolean {
       audio.setAttribute('playsinline', '');
       audio.setAttribute('webkit-playsinline', '');
       audio.volume = 1.0;
+      audio.addEventListener('ended', () => {
+        try {
+          audio.currentTime = 0;
+          audio.play().catch(() => {});
+        } catch {}
+      });
       liveActivityAudioInstance = audio;
     }
 
@@ -1383,6 +1389,9 @@ function stopLiveActivityAudio() {
     const nav: any = typeof navigator !== 'undefined' ? navigator : null;
     if (nav && nav.mediaSession) {
       nav.mediaSession.playbackState = 'none';
+      if (typeof window !== 'undefined' && (window as any).MediaMetadata) {
+        nav.mediaSession.metadata = null;
+      }
     }
   } catch {}
 }
@@ -2324,8 +2333,15 @@ export default function App() {
   // iOS Lock Screen & Dynamic Island "Now Playing" Silent Audio Loop State (While Charging)
   const [isLiveActivityActive, setIsLiveActivityActive] = useState<boolean>(false);
   const isLiveActivityActiveRef = useRef<boolean>(false);
-  const refreshVehicleTelemetryRef = useRef<(() => Promise<any>) | null>(null);
+  const refreshVehicleTelemetryRef = useRef<((silent?: boolean) => Promise<any>) | null>(null);
   const wasChargingRef = useRef<boolean>(false);
+  const chargingAnchorRef = useRef<{
+    soc: number;
+    rangeKm: number;
+    kw: number;
+    timestampMs: number;
+    isCharging: boolean;
+  } | null>(null);
 
   const updateLiveActivityNow = useCallback(() => {
     if (!isLiveActivityActiveRef.current) return;
@@ -2340,25 +2356,74 @@ export default function App() {
     const ch: any = st.charge || null;
     const b: any = st.basic_vehicle_status;
     const ongoingD1 = d1ChargingSessions.find((s) => s.status === 'ongoing' || s.status === 'paused');
-
-    const rawSoc =
-      ch?.soc !== undefined && ch?.soc !== null
-        ? ch.soc
-        : ongoingD1?.end_soc !== undefined && ongoingD1?.end_soc !== null
-        ? ongoingD1.end_soc
-        : st.fuel_level !== undefined && st.fuel_level !== null
-        ? st.fuel_level
-        : null;
-    const cSoc = rawSoc !== null ? Math.min(100, Math.max(0, Number(rawSoc))) : 0;
-    const rKm = Number(ch?.range_km ?? st.range_km ?? Math.round((cSoc / 100) * 330));
-    const chKw =
-      ch && ch.is_charging && ch.charging_current
-        ? Number(((ch.charging_voltage * ch.charging_current) / 1000).toFixed(2))
-        : Number(ongoingD1?.last_power_kw || ongoingD1?.peak_power_kw || activeCharge?.maxChargingSpeedKw || 0);
-
-    const soc = Number(ch?.battery_percentage ?? b?.battery_percentage ?? cSoc);
-    const estRange = Number(rKm || ch?.distance_to_empty_km || b?.extended_data2 || Math.round((soc / 100) * 330));
     const isCharging = Boolean(ch?.is_charging || b?.is_charging || activeCharge || ongoingD1);
+
+    // Verified SoC priority: BMS frame charge.soc > D1 ongoing session end_soc > status.fuel_level > basic_vehicle_status
+    const verifiedSoc =
+      ch?.soc !== undefined && ch?.soc !== null
+        ? Number(ch.soc)
+        : ongoingD1?.end_soc !== undefined && ongoingD1?.end_soc !== null
+        ? Number(ongoingD1.end_soc)
+        : st.fuel_level !== undefined && st.fuel_level !== null
+        ? Number(st.fuel_level)
+        : b?.battery_percentage !== undefined && b?.battery_percentage !== null
+        ? Number(b.battery_percentage)
+        : 0;
+
+    // Charging speed (kW)
+    const chKw =
+      ch && ch.is_charging && ch.charging_current && ch.charging_voltage
+        ? Number(((ch.charging_voltage * ch.charging_current) / 1000).toFixed(2))
+        : Number(ongoingD1?.last_power_kw || ongoingD1?.peak_power_kw || activeCharge?.maxChargingSpeedKw || (isCharging ? 3.3 : 0));
+
+    const d1DerivedRange =
+      ongoingD1?.start_range_km
+        ? Math.round(ongoingD1.start_range_km + (ongoingD1.soc_added || Math.max(0, (ongoingD1.end_soc ?? ongoingD1.start_soc) - ongoingD1.start_soc)) * 3.31)
+        : null;
+
+    // Base verified distance-to-empty range
+    const verifiedRange =
+      ch?.range_km && Number(ch.range_km) > 0
+        ? Number(ch.range_km)
+        : d1DerivedRange && d1DerivedRange > 0
+        ? d1DerivedRange
+        : st.range_km && Number(st.range_km) > 0
+        ? Number(st.range_km)
+        : Math.round((verifiedSoc / 100) * 331);
+
+    // Synchronize anchor reading when verified telemetry arrives or charging state flips
+    const now = Date.now();
+    if (
+      !chargingAnchorRef.current ||
+      chargingAnchorRef.current.isCharging !== isCharging ||
+      Math.abs(verifiedSoc - chargingAnchorRef.current.soc) >= 0.5 ||
+      (now - chargingAnchorRef.current.timestampMs > 180_000)
+    ) {
+      chargingAnchorRef.current = {
+        soc: verifiedSoc,
+        rangeKm: verifiedRange,
+        kw: chKw,
+        timestampMs: now,
+        isCharging,
+      };
+    }
+
+    const anchor = chargingAnchorRef.current;
+    let soc = anchor.soc;
+    let estRange = anchor.rangeKm;
+
+    // While charging, dynamically increment distance-to-empty km and % in real-time
+    if (isCharging && chKw > 0) {
+      const elapsedSec = Math.max(0, (now - anchor.timestampMs) / 1000);
+      const addedKwh = (chKw * elapsedSec) / 3600;
+      const socGain = (addedKwh / 38) * 100;
+      soc = Math.min(100, Math.max(anchor.soc, Number((anchor.soc + socGain).toFixed(1))));
+
+      // Windsor EV rated 331 km on 38 kWh battery: each 1% SoC gain adds ~3.31 km range
+      const rangeGainKm = (soc - anchor.soc) * 3.31;
+      estRange = Math.round(anchor.rangeKm + rangeGainKm);
+    }
+
     const odoKm = Number(ch?.odometer_km ?? st.odometer_km ?? ongoingD1?.start_odometer_km ?? 0);
     const isLocked = Boolean(st.locked ?? b?.is_locked);
     const interiorTemp = st.interior_temperature ?? b?.interior_temperature ?? null;
@@ -2369,10 +2434,13 @@ export default function App() {
     let subline = `Odo: ${odoKm > 0 ? odoKm.toLocaleString() + ' km' : ''} • Cabin: ${interiorTemp !== null ? interiorTemp + '°C' : '--'}`;
 
     if (isCharging) {
-      const timeRemainingMin = ch?.charge_time_remaining_min ?? ch?.remaining_charge_time_min ?? null;
+      const timeRemainingMin =
+        ch?.charge_time_remaining_min ??
+        ch?.remaining_charge_time_min ??
+        (chKw > 0 && soc < 100 ? Math.round((((100 - soc) / 100) * 38) / chKw * 60) : null);
       const timeRemainingStr =
         timeRemainingMin && timeRemainingMin > 0
-          ? ` • ${Math.floor(timeRemainingMin / 60)}h ${timeRemainingMin % 60}m left`
+          ? `${Math.floor(timeRemainingMin / 60)}h ${timeRemainingMin % 60}m left`
           : '';
       const cat =
         chKw > 11 || ongoingD1?.charge_type === 'DC'
@@ -2386,9 +2454,9 @@ export default function App() {
         (ongoingD1?.start_soc ? Number((((soc - ongoingD1.start_soc) / 100) * 38).toFixed(1)) : 0);
       const addedStr = addedKwh > 0 ? `+${addedKwh} kWh • ` : '';
       title = `⚡ ${Math.round(soc)}% (${estRange} km) • Charging`;
-      artist = `${addedStr}${cat} (${chKw > 0 ? chKw.toFixed(1) + ' kW' : 'Active'})${timeRemainingStr}`;
+      artist = `${addedStr}${cat} (${chKw > 0 ? chKw.toFixed(1) + ' kW' : 'Active'})${timeRemainingStr ? ` • ${timeRemainingStr}` : ''}`;
       headline = `⚡ CHARGING ${chKw > 0 ? chKw.toFixed(1) + ' kW' : cat}`;
-      subline = `${addedStr}${cat}${timeRemainingStr} • ${estRange} km`;
+      subline = `${addedStr}${cat}${timeRemainingStr ? ` • ${timeRemainingStr}` : ''} • ${estRange} km`;
     }
 
     const album = 'MG Windsor EV • Lock Screen Charging Monitor (Tap ⏭️ to Refresh)';
@@ -2404,10 +2472,10 @@ export default function App() {
       nav.mediaSession.playbackState = 'playing';
 
       nav.mediaSession.setActionHandler('nexttrack', () => {
-        refreshVehicleTelemetryRef.current?.();
+        refreshVehicleTelemetryRef.current?.(false);
       });
       nav.mediaSession.setActionHandler('previoustrack', () => {
-        refreshVehicleTelemetryRef.current?.();
+        refreshVehicleTelemetryRef.current?.(false);
       });
       nav.mediaSession.setActionHandler('play', () => {
         startLiveActivityAudio();
@@ -2473,11 +2541,23 @@ export default function App() {
     wasChargingRef.current = currentlyCharging;
   }, [snapshot?.status?.charge?.is_charging, activeCharge, d1ChargingSessions, updateLiveActivityNow]);
 
-  // While Lock Screen Live Activity is active during charging, refresh D1 charging state every 60s (0 extra 12V wakeups!)
+  // While Lock Screen Live Activity is active:
+  // 1. Tick updateLiveActivityNow every 20s to dynamically increment % and km distance-to-empty while charging
+  // 2. Poll fresh vehicle telemetry & D1 charging state every 60s
   useEffect(() => {
     if (!isLiveActivityActive) return;
-    const interval = setInterval(() => {
-      refreshD1ChargingHistory(false).catch(() => {});
+
+    // Fast tick (every 20s) to dynamically increment lock screen percentage and km distance-to-empty
+    const dynamicTick = setInterval(() => {
+      updateLiveActivityNow();
+    }, 20_000);
+
+    // Full telemetry sync (every 60s) from vehicle & Cloudflare D1
+    const syncInterval = setInterval(() => {
+      if (refreshVehicleTelemetryRef.current) {
+        refreshVehicleTelemetryRef.current(true).catch(() => {});
+      }
+      refreshD1ChargingHistory(true).catch(() => {});
       fetchD1Charges('all')
         .then((d1Charges) => {
           if (Array.isArray(d1Charges)) {
@@ -2487,8 +2567,12 @@ export default function App() {
         })
         .catch(() => {});
     }, 60_000);
-    return () => clearInterval(interval);
-  }, [isLiveActivityActive]);
+
+    return () => {
+      clearInterval(dynamicTick);
+      clearInterval(syncInterval);
+    };
+  }, [isLiveActivityActive, updateLiveActivityNow]);
 
   // Native iOS (APNs Web Push) & Android (FCM Web Push) State
   const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false);
@@ -2692,6 +2776,7 @@ export default function App() {
           rawGoogleSync,
           rawGoogleClientId,
           rawFontScale,
+          rawLiveActivity,
         ] = await Promise.all([
           SecureStore.getItemAsync(SESSION_KEY),
           SecureStore.getItemAsync(SNAPSHOT_KEY),
@@ -2706,7 +2791,14 @@ export default function App() {
           SecureStore.getItemAsync(GOOGLE_SYNC_KEY),
           SecureStore.getItemAsync(GOOGLE_CLIENT_ID_KEY),
           SecureStore.getItemAsync(FONT_SCALE_KEY),
+          SecureStore.getItemAsync(LIVE_ACTIVITY_KEY),
         ]);
+
+        if (rawLiveActivity === 'true') {
+          setIsLiveActivityActive(true);
+          isLiveActivityActiveRef.current = true;
+          startLiveActivityAudio();
+        }
 
         if (rawFontScale) {
           const num = parseFloat(rawFontScale);
@@ -3160,15 +3252,16 @@ export default function App() {
 
   const refreshVehicleTelemetry = async (
     existingClient?: MgIndiaClient,
-    sessionOverride?: Partial<PersistedSession> & { _isRetry?: boolean }
+    sessionOverride?: Partial<PersistedSession> & { _isRetry?: boolean },
+    silent = false
   ) => {
     const usePhone = sessionOverride?.phone ?? phone;
     const usePassword = sessionOverride?.password ?? password;
     const usePin = sessionOverride?.pin ?? pin;
     const useVin = sessionOverride?.vin ?? vin;
 
-    setIsSyncing(true);
-    refreshVehicleTelemetryRef.current = () => refreshVehicleTelemetry();
+    if (!silent) setIsSyncing(true);
+    refreshVehicleTelemetryRef.current = (s = false) => refreshVehicleTelemetry(undefined, undefined, s);
     try {
       const client =
         existingClient ||
@@ -3234,7 +3327,9 @@ export default function App() {
         }).catch(() => {});
       }
       await SecureStore.setItemAsync(SNAPSHOT_KEY, JSON.stringify(snap));
-      showBanner('ok', `Synced ${snap.vehicle.name} (${snap.vehicle.vin})`);
+      if (!silent) {
+        showBanner('ok', `Synced ${snap.vehicle.name} (${snap.vehicle.vin})`);
+      }
     } catch (err) {
       const msg = (err as Error).message || 'Failed to sync vehicle status';
       if (
@@ -3246,22 +3341,28 @@ export default function App() {
           const client = existingClient || clientRef.current;
           if (client) {
             await client.login();
-            return await refreshVehicleTelemetry(client, { ...sessionOverride, _isRetry: true });
+            return await refreshVehicleTelemetry(client, { ...sessionOverride, _isRetry: true }, silent);
           }
         } catch (_) {}
       }
-      if (/not ready after polling/i.test(msg)) {
-        showBanner(
-          'err',
-          '💤 Vehicle is in Sleep Mode (12V battery saver). It will refresh once unlocked, charged, or driven.'
-        );
-      } else {
-        showBanner('err', msg);
+      if (!silent) {
+        if (/not ready after polling/i.test(msg)) {
+          showBanner(
+            'err',
+            '💤 Vehicle is in Sleep Mode (12V battery saver). It will refresh once unlocked, charged, or driven.'
+          );
+        } else {
+          showBanner('err', msg);
+        }
       }
     } finally {
-      setIsSyncing(false);
+      if (!silent) setIsSyncing(false);
     }
   };
+
+  useEffect(() => {
+    refreshVehicleTelemetryRef.current = (s = false) => refreshVehicleTelemetry(undefined, undefined, s);
+  }, [phone, password, pin, vin]);
 
   const handleLogin = async () => {
     const cleanPhone = phone.replace(/\D/g, '');
