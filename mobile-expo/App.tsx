@@ -6261,8 +6261,48 @@ export default function App() {
 
           return (
             <View style={styles.profileMainContainer}>
-              {/* Header Title */}
-              <Text style={styles.profileHeaderTitle}>Profile</Text>
+              {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
+              <View style={styles.mockupHeader}>
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
+                  <TouchableOpacity
+                    style={styles.mockupSublineRow}
+                    onPress={() => setShowColorPicker(true)}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Change vehicle color"
+                    accessibilityRole="button"
+                  >
+                    <View style={[styles.colorDot, { backgroundColor: activeWindsorColor.hex }]} />
+                    <Text style={styles.mockupSublineText} numberOfLines={1}>
+                      {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap ↻ to sync'}
+                    </Text>
+                    <Text style={styles.colorPencilHint}>▾</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Circular Refresh ↻ */}
+                <TouchableOpacity
+                  style={styles.mockupRefreshBtn}
+                  onPress={() => refreshVehicleTelemetry()}
+                  disabled={isSyncing}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Refresh telemetry"
+                  accessibilityRole="button"
+                >
+                  {isSyncing ? (
+                    <ActivityIndicator size="small" color="#10B981" />
+                  ) : (
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.4}>
+                      <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              {/* 2. Section Header: Title "Profile" */}
+              <View style={[styles.tripsHeader, { marginTop: 8, marginBottom: 16 }]}>
+                <Text style={styles.profileHeaderTitle}>Profile</Text>
+              </View>
 
               {/* 1. Vehicle Card */}
               <TouchableOpacity
@@ -16459,16 +16499,18 @@ const styles = StyleSheet.create({
 
   // Profile Screen Styles (Matching Mockup)
   profileMainContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 8,
+    paddingTop: 8,
     paddingBottom: 24,
   },
   profileHeaderTitle: {
-    color: '#F8FAFC',
     fontSize: 28,
-    fontWeight: '800',
-    marginBottom: 18,
-    letterSpacing: -0.5,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -0.6,
   },
   profileVehicleCard: {
     backgroundColor: '#111827',
