@@ -5103,70 +5103,53 @@ export default function App() {
                 </TouchableOpacity>
               </View>
             </View>
-
-            {/* Windsor EV Color Picker Modal */}
-            <Modal
-              visible={showColorPicker}
-              transparent
-              animationType="fade"
-              onRequestClose={() => setShowColorPicker(false)}
-            >
-              <View style={styles.modalBackdrop}>
-                <View style={styles.colorModalCard}>
-                  <Text style={styles.colorModalTitle}>Windsor EV Colors</Text>
-                  <Text style={styles.colorModalSubtitle}>
-                    Select your vehicle exterior shade (or auto-detect from MG iSMART):
-                  </Text>
-                  <ScrollView style={{ maxHeight: 340 }}>
-                    {WINDSOR_COLORS.map((opt) => {
-                      const isSelected = activeWindsorColor.key === opt.key;
-                      return (
-                        <TouchableOpacity
-                          key={opt.key}
-                          style={[styles.colorOptionRow, isSelected && styles.colorOptionRowSelected]}
-                          onPress={() => handleSelectCarColor(opt.key)}
-                          activeOpacity={0.7}
-                        >
-                          <View style={[styles.colorSwatchCircle, { backgroundColor: opt.hex }]} />
-                          <Text style={styles.colorOptionName}>{opt.name}</Text>
-                          {isSelected && <Text style={{ color: '#34D399', fontWeight: 'bold' }}>✓ Selected</Text>}
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-                    <TouchableOpacity
-                      style={styles.resetColorBtn}
-                      onPress={() => handleSelectCarColor(null)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.resetColorBtnText}>Reset to Server Color</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.resetColorBtn, { backgroundColor: '#334155' }]}
-                      onPress={() => setShowColorPicker(false)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.resetColorBtnText, { color: '#E2E8F0' }]}>Close</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            </Modal>
           </Animated.View>
         )}
 
         {/* TAB 2: EV CHARGING (REDESIGNED TO MATCH MOCKUP) */}
         {tab === 'charge' && (
           <View style={styles.chargeMainContainer}>
-            {/* 1. Top Header Row: Charge, Subtitle & Plug/Charge Status Badge */}
-            <View style={styles.chargeHeaderRow}>
-              <View style={styles.chargeHeaderLeft}>
-                <Text style={styles.chargeHeaderTitle}>Charge</Text>
-                <Text style={styles.chargeHeaderSub}>
-                  {`${activeWindsorColor.name} · ${lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Synced 09:28'}`}
-                </Text>
+            {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
+            <View style={styles.mockupHeader}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
+                <TouchableOpacity
+                  style={styles.mockupSublineRow}
+                  onPress={() => setShowColorPicker(true)}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Change vehicle color"
+                  accessibilityRole="button"
+                >
+                  <View style={[styles.colorDot, { backgroundColor: activeWindsorColor.hex }]} />
+                  <Text style={styles.mockupSublineText} numberOfLines={1}>
+                    {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap ↻ to sync'}
+                  </Text>
+                  <Text style={styles.colorPencilHint}>▾</Text>
+                </TouchableOpacity>
               </View>
+
+              {/* Circular Refresh ↻ */}
+              <TouchableOpacity
+                style={styles.mockupRefreshBtn}
+                onPress={() => refreshVehicleTelemetry()}
+                disabled={isSyncing}
+                activeOpacity={0.7}
+                accessibilityLabel="Sync Vehicle Status"
+                accessibilityRole="button"
+              >
+                {isSyncing ? (
+                  <ActivityIndicator size="small" color="#10B981" />
+                ) : (
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.4}>
+                    <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* 2. Section Header: Charge Title & Plug/Charge Status Badge */}
+            <View style={styles.chargeHeaderRow}>
+              <Text style={styles.chargeHeaderTitle}>Charge</Text>
               <View
                 style={[
                   styles.chargeStatusBadge,
@@ -9287,6 +9270,56 @@ export default function App() {
           );
         })}
       </View>
+
+      {/* Windsor EV Color Picker Modal (Global across Home, Trips & Charge) */}
+      <Modal
+        visible={showColorPicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowColorPicker(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.colorModalCard}>
+            <Text style={styles.colorModalTitle}>Windsor EV Colors</Text>
+            <Text style={styles.colorModalSubtitle}>
+              Select your vehicle exterior shade (or auto-detect from MG iSMART):
+            </Text>
+            <ScrollView style={{ maxHeight: 340 }}>
+              {WINDSOR_COLORS.map((opt) => {
+                const isSelected = activeWindsorColor.key === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key}
+                    style={[styles.colorOptionRow, isSelected && styles.colorOptionRowSelected]}
+                    onPress={() => handleSelectCarColor(opt.key)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={[styles.colorSwatchCircle, { backgroundColor: opt.hex }]} />
+                    <Text style={styles.colorOptionName}>{opt.name}</Text>
+                    {isSelected && <Text style={{ color: '#34D399', fontWeight: 'bold' }}>✓ Selected</Text>}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+              <TouchableOpacity
+                style={styles.resetColorBtn}
+                onPress={() => handleSelectCarColor(null)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.resetColorBtnText}>Reset to Server Color</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.resetColorBtn, { backgroundColor: '#334155' }]}
+                onPress={() => setShowColorPicker(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.resetColorBtnText, { color: '#E2E8F0' }]}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -14452,9 +14485,10 @@ const styles = StyleSheet.create({
   chargeHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 20,
+    alignItems: 'center',
+    marginBottom: 16,
     marginTop: 4,
+    paddingHorizontal: 4,
   },
   chargeHeaderLeft: {
     flex: 1,
@@ -14478,7 +14512,6 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    marginTop: 2,
   },
   chargeStatusBadgeCharging: {
     borderColor: '#10B98140',
@@ -14494,6 +14527,7 @@ const styles = StyleSheet.create({
   },
   chargeHeroContainer: {
     marginBottom: 20,
+    paddingHorizontal: 4,
   },
   chargeHeroRow: {
     flexDirection: 'row',
