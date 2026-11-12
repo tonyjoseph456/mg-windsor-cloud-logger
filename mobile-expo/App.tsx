@@ -8342,6 +8342,13 @@ export default function App() {
 
                     {activeTripPlan.stops.map((stop, sIdx) => {
                       const backupInfo = findBackupChargerInCorridor(stop.charger, activeRouteChoice.chargers, 20);
+                      const stopAddress =
+                        stop.charger.address && stop.charger.address.trim().length > 0
+                          ? stop.charger.address
+                          : stop.charger.network
+                          ? `${stop.charger.network} charging station`
+                          : 'Route corridor charging station';
+                      const stopLocation = `${stop.charger.position.lat.toFixed(5)}, ${stop.charger.position.lng.toFixed(5)}`;
 
                       return (
                         <View key={`selected-stop-${stop.charger.id}-${sIdx}`} style={styles.selectedStopCard}>
@@ -8349,10 +8356,31 @@ export default function App() {
                             <Text style={styles.selectedStopTitle} numberOfLines={1}>
                               Stop {sIdx + 1} · {stop.charger.name}
                             </Text>
-                            <TouchableOpacity onPress={() => handleRemoveSelectedStop(sIdx)}>
-                              <Text style={styles.selectedStopRemoveText}>Remove</Text>
-                            </TouchableOpacity>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                              <TouchableOpacity
+                                onPress={() => {
+                                  const query = `${stop.charger.position.lat},${stop.charger.position.lng}`;
+                                  Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`);
+                                }}
+                                activeOpacity={0.7}
+                                accessibilityLabel={`Open Stop ${sIdx + 1} in Google Maps`}
+                              >
+                                <Text style={{ color: '#38BDF8', fontSize: 12, fontWeight: '700' }}>Maps</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity onPress={() => handleRemoveSelectedStop(sIdx)}>
+                                <Text style={styles.selectedStopRemoveText}>Remove</Text>
+                              </TouchableOpacity>
+                            </View>
                           </View>
+
+                          {/* Line 3: Address */}
+                          <Text style={styles.selectedStopAddress} numberOfLines={1}>
+                            📍 {stopAddress}
+                          </Text>
+                          {/* Line 4: Location */}
+                          <Text style={styles.selectedStopLocation} numberOfLines={1}>
+                            🗺️ {stopLocation}
+                          </Text>
 
                           <View style={styles.selectedStopMetrics}>
                             <Text style={styles.selectedStopMetricsText}>
@@ -8367,9 +8395,23 @@ export default function App() {
                           </View>
 
                           {backupInfo.backup ? (
-                            <Text style={styles.selectedStopBackupText}>
-                              🛡️ Backup in {backupInfo.distanceKm} km: {backupInfo.backup.name} ({backupInfo.backup.maxKw || 60} kW)
-                            </Text>
+                            <View style={{ marginTop: 4, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Text style={[styles.selectedStopBackupText, { flex: 1, marginTop: 0 }]} numberOfLines={1}>
+                                🛡️ Backup in {backupInfo.distanceKm} km: {backupInfo.backup.name} ({backupInfo.backup.maxKw || 60} kW)
+                              </Text>
+                              <TouchableOpacity
+                                onPress={() => {
+                                  if (backupInfo.backup) {
+                                    const query = `${backupInfo.backup.position.lat},${backupInfo.backup.position.lng}`;
+                                    Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`);
+                                  }
+                                }}
+                                style={{ marginLeft: 8 }}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={{ color: '#38BDF8', fontSize: 11, fontWeight: '700' }}>Maps</Text>
+                              </TouchableOpacity>
+                            </View>
                           ) : (
                             <Text style={[styles.selectedStopBackupText, { color: '#F59E0B' }]}>
                               ⚠️ No backup charger within 20 km
@@ -8412,15 +8454,32 @@ export default function App() {
                     );
                     const legDistKm = Math.max(1, Math.round(sim.distanceM / 1000));
                     const isSelected = routeResultSelectedStops.some((s) => s.id === charger.id);
+                    const chargerAddress =
+                      charger.address && charger.address.trim().length > 0
+                        ? charger.address
+                        : charger.network
+                        ? `${charger.network} charging station`
+                        : 'Route corridor charging station';
+                    const chargerLocation = `${charger.position.lat.toFixed(5)}, ${charger.position.lng.toFixed(5)}`;
 
                     return (
                       <View key={`charger-${charger.id}`} style={styles.chargerRowItem}>
                         <View style={styles.chargerRowLeft}>
+                          {/* Line 1: Charging Station Name */}
                           <Text style={styles.chargerRowName} numberOfLines={1}>
                             {charger.name}
                           </Text>
-                          <Text style={styles.chargerRowSub}>
+                          {/* Line 2: Distance, max kW and Type */}
+                          <Text style={styles.chargerRowSub} numberOfLines={1}>
                             {legDistKm} km · {charger.maxKw || 60} kW CCS2
+                          </Text>
+                          {/* Line 3: Address */}
+                          <Text style={styles.chargerRowAddress} numberOfLines={1}>
+                            📍 {chargerAddress}
+                          </Text>
+                          {/* Line 4: Location / Coordinates */}
+                          <Text style={styles.chargerRowLocation} numberOfLines={1}>
+                            🗺️ {chargerLocation}
                           </Text>
                         </View>
 
@@ -8438,28 +8497,49 @@ export default function App() {
                             )}
                           </View>
 
-                          <TouchableOpacity
-                            style={[
-                              styles.chargerSelectBtn,
-                              isSelected && { backgroundColor: '#10B981', borderColor: '#10B981' },
-                            ]}
-                            onPress={() => {
-                              if (!isSelected) {
-                                handleAddSelectedStop(charger);
-                              }
-                            }}
-                            activeOpacity={0.7}
-                            disabled={isSelected}
-                          >
-                            <Text
-                              style={[
-                                styles.chargerSelectBtnText,
-                                isSelected && { color: '#0A0E17', fontWeight: '800' },
-                              ]}
+                          <View style={styles.chargerRowButtonsRow}>
+                            <TouchableOpacity
+                              style={styles.chargerMapsBtn}
+                              onPress={() => {
+                                const query = `${charger.position.lat},${charger.position.lng}`;
+                                Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`);
+                              }}
+                              activeOpacity={0.7}
+                              accessibilityLabel={`Open ${charger.name} in Google Maps`}
+                              accessibilityRole="button"
                             >
-                              {isSelected ? 'Selected ✓' : 'Select'}
-                            </Text>
-                          </TouchableOpacity>
+                              <Svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="#38BDF8" strokeWidth={2.4} style={{ marginRight: 3 }}>
+                                <Path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" strokeLinecap="round" strokeLinejoin="round" />
+                                <Circle cx="12" cy="9" r="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </Svg>
+                              <Text style={styles.chargerMapsBtnText}>Maps</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={[
+                                styles.chargerSelectBtn,
+                                isSelected && { backgroundColor: '#10B981', borderColor: '#10B981' },
+                              ]}
+                              onPress={() => {
+                                if (!isSelected) {
+                                  handleAddSelectedStop(charger);
+                                }
+                              }}
+                              activeOpacity={0.7}
+                              disabled={isSelected}
+                              accessibilityLabel={isSelected ? 'Selected stop' : `Select ${charger.name}`}
+                              accessibilityRole="button"
+                            >
+                              <Text
+                                style={[
+                                  styles.chargerSelectBtnText,
+                                  isSelected && { color: '#0A0E17', fontWeight: '800' },
+                                ]}
+                              >
+                                {isSelected ? 'Selected ✓' : 'Select'}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
                         </View>
                       </View>
                     );
@@ -13463,16 +13543,27 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 13.5,
     fontWeight: '700',
-    marginBottom: 3,
+    marginBottom: 2,
   },
   chargerRowSub: {
     color: '#64748B',
     fontSize: 11.5,
+    marginBottom: 2,
+  },
+  chargerRowAddress: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginBottom: 2,
+  },
+  chargerRowLocation: {
+    color: '#64748B',
+    fontSize: 10.5,
   },
   chargerRowRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 7,
   },
   chargerRowArrivalWrap: {
     alignItems: 'flex-end',
@@ -13486,9 +13577,29 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontSize: 10,
   },
+  chargerRowButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  chargerMapsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.45)',
+    backgroundColor: 'rgba(2, 132, 199, 0.16)',
+  },
+  chargerMapsBtnText: {
+    color: '#38BDF8',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
   chargerSelectBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#10B981',
@@ -13496,8 +13607,19 @@ const styles = StyleSheet.create({
   },
   chargerSelectBtnText: {
     color: '#34D399',
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '700',
+  },
+  selectedStopAddress: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
+    marginBottom: 1,
+  },
+  selectedStopLocation: {
+    color: '#64748B',
+    fontSize: 10.5,
+    marginBottom: 6,
   },
   selectedStopCard: {
     backgroundColor: '#161F30',

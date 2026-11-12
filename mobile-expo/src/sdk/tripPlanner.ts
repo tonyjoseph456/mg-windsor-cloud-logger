@@ -1671,7 +1671,21 @@ export async function findChargersAlongRoute(
             network: detectChargerNetwork(
               `${name} ${tags.operator || ''} ${tags.network || ''}`
             ),
-            address: tags['addr:city'] || tags['addr:full'] || null,
+            address: (() => {
+              const street = tags['addr:street']
+                ? [tags['addr:housenumber'], tags['addr:street']].filter(Boolean).join(' ')
+                : null;
+              const locality =
+                tags['addr:suburb'] ||
+                tags['addr:city'] ||
+                tags['addr:town'] ||
+                tags['addr:village'] ||
+                tags['addr:district'] ||
+                null;
+              const state = tags['addr:state'] || null;
+              const combined = [street, locality, state].filter(Boolean).join(', ');
+              return combined || tags['addr:full'] || tags['description'] || null;
+            })(),
             open24h: tags.opening_hours === '24/7' ? true : null,
           });
         }
