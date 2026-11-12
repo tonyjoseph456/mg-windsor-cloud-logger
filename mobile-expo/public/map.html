@@ -272,35 +272,60 @@
             bounds.extend(startPos);
             bounds.extend(endPos);
 
-            new google.maps.Marker({
-              position: startPos,
-              map: gMap,
-              title: 'Start',
-              label: { text: 'S', color: '#0A0E17', fontWeight: '800', fontSize: '11px' },
-              icon: {
-                path: google.maps.SymbolPath.CIRCLE,
-                scale: 13,
-                fillColor: '#10B981',
-                fillOpacity: 1,
-                strokeColor: '#FFFFFF',
-                strokeWeight: 2,
+            class RoutePinOverlay extends google.maps.OverlayView {
+              constructor(position, text, bgColor, title) {
+                super();
+                this.position = position;
+                this.text = text;
+                this.bgColor = bgColor;
+                this.title = title;
+                this.div = null;
               }
-            });
+              onAdd() {
+                this.div = document.createElement('div');
+                this.div.style.position = 'absolute';
+                this.div.style.width = '26px';
+                this.div.style.height = '26px';
+                this.div.style.borderRadius = '13px';
+                this.div.style.backgroundColor = this.bgColor;
+                this.div.style.border = '2px solid #FFFFFF';
+                this.div.style.boxShadow = '0 2px 8px rgba(0,0,0,0.45)';
+                this.div.style.display = 'flex';
+                this.div.style.alignItems = 'center';
+                this.div.style.justifyContent = 'center';
+                this.div.style.color = '#0A0E17';
+                this.div.style.fontWeight = '800';
+                this.div.style.fontSize = '11px';
+                this.div.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+                this.div.style.transform = 'translate(-50%, -50%)';
+                this.div.style.cursor = 'default';
+                this.div.title = this.title;
+                this.div.innerText = this.text;
+                const panes = this.getPanes();
+                panes.overlayMouseTarget.appendChild(this.div);
+              }
+              draw() {
+                const overlayProjection = this.getProjection();
+                if (!overlayProjection || !this.div) return;
+                const point = overlayProjection.fromLatLngToDivPixel(this.position);
+                if (point) {
+                  this.div.style.left = point.x + 'px';
+                  this.div.style.top = point.y + 'px';
+                }
+              }
+              onRemove() {
+                if (this.div && this.div.parentNode) {
+                  this.div.parentNode.removeChild(this.div);
+                  this.div = null;
+                }
+              }
+            }
 
-            new google.maps.Marker({
-              position: endPos,
-              map: gMap,
-              title: 'Destination',
-              label: { text: 'D', color: '#0A0E17', fontWeight: '800', fontSize: '11px' },
-              icon: {
-                path: google.maps.SymbolPath.CIRCLE,
-                scale: 13,
-                fillColor: '#38BDF8',
-                fillOpacity: 1,
-                strokeColor: '#FFFFFF',
-                strokeWeight: 2,
-              }
-            });
+            const startPin = new RoutePinOverlay(startPos, 'S', '#10B981', 'Start');
+            startPin.setMap(gMap);
+
+            const endPin = new RoutePinOverlay(endPos, 'D', '#38BDF8', 'Destination');
+            endPin.setMap(gMap);
 
             const poly = new google.maps.Polyline({
               path: [startPos, endPos],
