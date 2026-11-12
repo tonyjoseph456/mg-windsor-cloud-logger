@@ -1761,6 +1761,34 @@ export default function App() {
     });
   };
 
+  // Charging Session Detail Dedicated Screen State & Animation
+  const chargeDetailSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isChargeDetailVisible, setIsChargeDetailVisible] = useState<boolean>(false);
+  const [selectedChargeForDetail, setSelectedChargeForDetail] = useState<ChargeLogRecord | null>(null);
+
+  const handleOpenChargeDetail = (chargeSession: ChargeLogRecord) => {
+    setSelectedChargeForDetail(chargeSession);
+    setIsChargeDetailVisible(true);
+    Animated.timing(chargeDetailSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseChargeDetail = () => {
+    Animated.timing(chargeDetailSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsChargeDetailVisible(false);
+      setSelectedChargeForDetail(null);
+    });
+  };
+
   // Trips Options Menu State
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
 
@@ -4605,6 +4633,11 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
+  const chargeDetailTranslateX = chargeDetailSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
   // GPS Metrics for Location Screen
   const gpsLat = status.gps?.latitude ?? 10.062227;
   const gpsLon = status.gps?.longitude ?? 76.620519;
@@ -5518,28 +5551,29 @@ export default function App() {
         {/* TAB 2: EV CHARGING (REDESIGNED TO MATCH MOCKUP) */}
         {tab === 'charge' && (
           <View style={styles.chargeMainContainer}>
-            {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
-            <View style={styles.mockupHeader}>
-              <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
+            {/* 1. Unified Charge Header: Title "Charge", Color · Synced, Status Pill Badge */}
+            <View style={styles.chargeHeaderRow}>
+              <View style={styles.chargeHeaderLeft}>
+                <Text style={styles.chargeHeaderTitle}>Charge</Text>
                 <TouchableOpacity
-                  style={styles.mockupSublineRow}
+                  style={styles.chargeSublineRow}
                   onPress={() => setShowColorPicker(true)}
                   activeOpacity={0.7}
                   accessibilityLabel="Change vehicle color"
                   accessibilityRole="button"
                 >
-                  <View style={[styles.colorDot, { backgroundColor: activeWindsorColor.hex }]} />
-                  <Text style={styles.mockupSublineText} numberOfLines={1}>
-                    {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap ↻ to sync'}
+                  <Text style={styles.chargeHeaderSub} numberOfLines={1}>
+                    {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap to sync'}
                   </Text>
-                  <Text style={styles.colorPencilHint}>▾</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Circular Refresh ↻ */}
+              {/* Status Pill Badge & Sync Action */}
               <TouchableOpacity
-                style={styles.mockupRefreshBtn}
+                style={[
+                  styles.chargeStatusBadge,
+                  charge?.is_charging && styles.chargeStatusBadgeCharging,
+                ]}
                 onPress={() => refreshVehicleTelemetry()}
                 disabled={isSyncing}
                 activeOpacity={0.7}
@@ -5547,24 +5581,12 @@ export default function App() {
                 accessibilityRole="button"
               >
                 {isSyncing ? (
-                  <ActivityIndicator size="small" color="#10B981" />
-                ) : (
-                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.4}>
-                    <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
-                  </Svg>
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {/* 2. Section Header: Charge Title & Plug/Charge Status Badge */}
-            <View style={styles.chargeHeaderRow}>
-              <Text style={styles.chargeHeaderTitle}>Charge</Text>
-              <View
-                style={[
-                  styles.chargeStatusBadge,
-                  charge?.is_charging && styles.chargeStatusBadgeCharging,
-                ]}
-              >
+                  <ActivityIndicator
+                    size="small"
+                    color={charge?.is_charging ? '#34D399' : '#94A3B8'}
+                    style={{ marginRight: 6 }}
+                  />
+                ) : null}
                 <Text
                   style={[
                     styles.chargeStatusBadgeText,
@@ -5577,7 +5599,7 @@ export default function App() {
                     ? '🔌 Plugged in'
                     : '🔌 Unplugged'}
                 </Text>
-              </View>
+              </TouchableOpacity>
             </View>
 
             {/* 2. Hero SoC & Capacity Row + Progress Bar */}
@@ -5798,8 +5820,7 @@ export default function App() {
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={styles.chargeSaveSessionText}>Save</Text>
-                <Text style={styles.chargeSaveSessionText}>session</Text>
+                <Text style={styles.chargeSaveSessionText}>Save session</Text>
               </TouchableOpacity>
 
               {/* Overflow More Options Button */}
@@ -5937,29 +5958,88 @@ export default function App() {
                 )}
               </View>
             ) : (
-              <View style={{ gap: 14 }}>
+              <View style={styles.chargeSessionsWrap}>
+                <Text style={styles.chargeSessionCountLabel}>
+                  {displayedCharges.length} {displayedCharges.length === 1 ? 'session' : 'sessions'}
+                </Text>
+                <View style={styles.chargeSessionListDivider} />
+
                 {displayedCharges.map((session, idx) => {
-                  const originalIndex = chargeLogs.findIndex((c) => c.id === session.id);
-                  const effectiveIndex = originalIndex >= 0 ? originalIndex : idx;
+                  const computedDurationSec =
+                    session.endTimestampSec &&
+                    session.startTimestampSec &&
+                    session.endTimestampSec > session.startTimestampSec
+                      ? session.endTimestampSec - session.startTimestampSec
+                      : session.durationSeconds || 0;
+
+                  const formatSessionClock = (timestampSec?: number | null, dateTimeStr?: string | null): string => {
+                    if (timestampSec && timestampSec > 0) {
+                      const d = new Date(timestampSec * 1000);
+                      return d
+                        .toLocaleString('en-US', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          hour12: true,
+                        })
+                        .toLowerCase();
+                    }
+                    if (dateTimeStr) {
+                      const extracted = extractTime(dateTimeStr);
+                      return extracted.toLowerCase();
+                    }
+                    return '--';
+                  };
+
+                  const startTimeStr = formatSessionClock(session.startTimestampSec, session.startDateTime);
+                  const endTimeStr = formatSessionClock(session.endTimestampSec, session.endDateTime);
+                  const timeRangeStr =
+                    session.status === 'charging'
+                      ? `${startTimeStr} – In progress`
+                      : `${startTimeStr} – ${endTimeStr}`;
+
+                  const durStr = formatDurationHm(computedDurationSec);
+                  const catClean = (session.chargerCategory || '3.3 kW AC').trim();
+                  const powerStr = catClean.toLowerCase().includes('kw')
+                    ? catClean
+                    : session.maxChargingSpeedKw > 0
+                    ? `${session.maxChargingSpeedKw} kW ${catClean}`
+                    : catClean;
+
+                  const addedKwh =
+                    Number(session.energyAddedToPackKwh) > 0
+                      ? Number(session.energyAddedToPackKwh)
+                      : Math.max(0, ((Number(session.endSoc) - Number(session.startSoc)) / 100) * 38.0);
+
+                  const startSoc = Math.round(Number(session.startSoc) || 0);
+                  const endSoc = Math.round(Number(session.endSoc) || 0);
+
                   return (
-                    <ChargingSessionCard
-                      key={session.id}
-                      session={session}
-                      allLogs={chargeLogs}
-                      logIndex={effectiveIndex}
-                      trips={trips}
-                      cycle={drivingCycleAfter(
-                        effectiveIndex,
-                        chargeLogs,
-                        activeCharge,
-                        charge?.distance_since_last_charge_km ??
-                          preChargeBaseline?.distanceSinceLastChargeKm ??
-                          0,
-                        charge?.power_usage_since_last_charge_kwh ??
-                          preChargeBaseline?.energyUsedSinceLastChargeKwh ??
-                          0
+                    <View key={session.id || idx}>
+                      <TouchableOpacity
+                        style={styles.chargeSessionItemRow}
+                        onPress={() => handleOpenChargeDetail(session)}
+                        activeOpacity={0.7}
+                        accessibilityLabel={`Charging session ${timeRangeStr}`}
+                        accessibilityRole="button"
+                      >
+                        <View style={{ flex: 1, paddingRight: 12 }}>
+                          <Text style={styles.chargeSessionTimeText}>{timeRangeStr}</Text>
+                          <Text style={styles.chargeSessionMetaText}>
+                            {durStr} · {powerStr}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end', marginRight: 10 }}>
+                          <Text style={styles.chargeSessionKwhText}>+{addedKwh.toFixed(1)} kWh</Text>
+                          <Text style={styles.chargeSessionSocText}>
+                            {startSoc}% → {endSoc}%
+                          </Text>
+                        </View>
+                        <Text style={styles.chargeSessionChevron}>›</Text>
+                      </TouchableOpacity>
+                      {idx < displayedCharges.length - 1 && (
+                        <View style={styles.chargeSessionItemDivider} />
                       )}
-                    />
+                    </View>
                   );
                 })}
               </View>
@@ -9394,6 +9474,74 @@ export default function App() {
         );
       })()}
 
+      {/* Charge Detail Fullscreen Tween Screen */}
+      {isChargeDetailVisible && selectedChargeForDetail && (() => {
+        const session = selectedChargeForDetail;
+        const originalIndex = chargeLogs.findIndex((c) => c.id === session.id);
+        const effectiveIndex = originalIndex >= 0 ? originalIndex : 0;
+
+        return (
+          <Animated.View
+            style={[
+              styles.chargeDetailScreenLayer,
+              {
+                transform: [{ translateX: chargeDetailTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.chargeDetailScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* Header */}
+                <View style={styles.chargeDetailHeader}>
+                  <TouchableOpacity
+                    style={styles.chargeDetailBackBtn}
+                    onPress={handleCloseChargeDetail}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Back to Charge"
+                    accessibilityRole="button"
+                  >
+                    <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                      <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                  </TouchableOpacity>
+
+                  <View style={styles.chargeDetailTitleCol}>
+                    <Text style={styles.chargeDetailTitle}>Charge Details</Text>
+                    <Text style={styles.chargeDetailSub} numberOfLines={1}>
+                      {session.startDateTime || 'Charging Session'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Complete Charging Session Telemetry Card */}
+                <ChargingSessionCard
+                  session={session}
+                  allLogs={chargeLogs}
+                  logIndex={effectiveIndex}
+                  trips={trips}
+                  defaultExpanded={true}
+                  cycle={drivingCycleAfter(
+                    effectiveIndex,
+                    chargeLogs,
+                    activeCharge,
+                    charge?.distance_since_last_charge_km ??
+                      preChargeBaseline?.distanceSinceLastChargeKm ??
+                      0,
+                    charge?.power_usage_since_last_charge_kwh ??
+                      preChargeBaseline?.energyUsedSinceLastChargeKwh ??
+                      0
+                  )}
+                />
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
       {/* Search Chargers Fullscreen Tween Screen */}
       {isSearchChargersVisible && (
         <Animated.View
@@ -9737,6 +9885,11 @@ export default function App() {
                   setIsTripDetailVisible(false);
                   tripDetailSlideAnim.setValue(0);
                   setSelectedTripForDetail(null);
+                }
+                if (isChargeDetailVisible) {
+                  setIsChargeDetailVisible(false);
+                  chargeDetailSlideAnim.setValue(0);
+                  setSelectedChargeForDetail(null);
                 }
                 if (isSearchChargersVisible) {
                   setIsSearchChargersVisible(false);
@@ -15026,8 +15179,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 440,
     alignSelf: 'center',
-    paddingHorizontal: 8,
-    paddingTop: 8,
+    paddingHorizontal: 20,
+    paddingTop: 14,
     paddingBottom: Platform.OS === 'web' ? 120 : 130,
   },
   chargeHeaderRow: {
@@ -15036,10 +15189,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
     marginTop: 4,
-    paddingHorizontal: 4,
   },
   chargeHeaderLeft: {
     flex: 1,
+    paddingRight: 8,
+  },
+  chargeSublineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   chargeHeaderTitle: {
     fontSize: 28,
@@ -15060,6 +15217,8 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 12,
     paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   chargeStatusBadgeCharging: {
     borderColor: '#10B98140',
@@ -15075,7 +15234,6 @@ const styles = StyleSheet.create({
   },
   chargeHeroContainer: {
     marginBottom: 20,
-    paddingHorizontal: 4,
   },
   chargeHeroRow: {
     flexDirection: 'row',
@@ -15245,20 +15403,19 @@ const styles = StyleSheet.create({
     marginLeft: 2,
   },
   chargeSaveSessionBtn: {
-    width: 86,
+    paddingHorizontal: 16,
     height: 44,
     borderWidth: 1.5,
     borderColor: '#10B981',
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'transparent',
+    backgroundColor: '#064E3B18',
   },
   chargeSaveSessionText: {
     color: '#34D399',
-    fontSize: 12,
+    fontSize: 13.5,
     fontWeight: '700',
-    lineHeight: 14,
     textAlign: 'center',
   },
   chargeMoreBtn: {
@@ -15281,8 +15438,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 28,
-    paddingHorizontal: 4,
+    marginBottom: 20,
   },
   chargeTotalColLeft: {
     flex: 1,
@@ -15351,5 +15507,115 @@ const styles = StyleSheet.create({
     color: '#38BDF8',
     fontSize: 12,
     fontWeight: '700',
+  },
+
+  // Charging History Sessions List Compact Styles
+  chargeSessionsWrap: {
+    width: '100%',
+    marginTop: 4,
+  },
+  chargeSessionCountLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#94A3B8',
+    marginBottom: 8,
+  },
+  chargeSessionListDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#1E293B',
+    marginBottom: 4,
+  },
+  chargeSessionItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 13,
+  },
+  chargeSessionTimeText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
+  },
+  chargeSessionMetaText: {
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#94A3B8',
+    marginTop: 4,
+  },
+  chargeSessionKwhText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#34D399',
+    letterSpacing: -0.2,
+  },
+  chargeSessionSocText: {
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#94A3B8',
+    marginTop: 4,
+  },
+  chargeSessionChevron: {
+    fontSize: 20,
+    color: '#64748B',
+    marginLeft: 4,
+    fontWeight: '300',
+  },
+  chargeSessionItemDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#1E293B',
+  },
+
+  // Dedicated Charge Detail Screen Styles
+  chargeDetailScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  chargeDetailScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: Platform.OS === 'web' ? 120 : 130,
+  },
+  chargeDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingTop: 8,
+  },
+  chargeDetailBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chargeDetailTitleCol: {
+    flex: 1,
+    marginLeft: 14,
+    marginRight: 10,
+  },
+  chargeDetailTitle: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  chargeDetailSub: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 2,
   },
 });
