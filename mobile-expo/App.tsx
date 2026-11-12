@@ -129,6 +129,7 @@ const GOOGLE_MAPS_API_KEY_KEY = 'mg_ismart_google_maps_api_key_v1';
 const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
+const IS_ADMIN_KEY = 'mg_pwa_is_admin_v1';
 const DEFAULT_CLOUD_SYNC_URL =
   'https://raw.githubusercontent.com/tonyjoseph456/mg-windsor-cloud-logger/main/data/cloud_charging_log.json';
 
@@ -1537,6 +1538,8 @@ export default function App() {
   const [accessCode, setAccessCode] = useState<string>('');
   const [isAuthorizedUser, setIsAuthorizedUser] = useState<boolean>(false);
   const [licenseToken, setLicenseToken] = useState<string>('');
+  const [isAdminUser, setIsAdminUser] = useState<boolean>(false);
+  const [adminTapCount, setAdminTapCount] = useState<number>(0);
 
   // Telemetry state
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -2787,6 +2790,7 @@ export default function App() {
           rawLiveActivity,
           rawAccessCode,
           rawLicense,
+          rawIsAdmin,
         ] = await Promise.all([
           SecureStore.getItemAsync(SESSION_KEY),
           SecureStore.getItemAsync(SNAPSHOT_KEY),
@@ -2804,6 +2808,7 @@ export default function App() {
           SecureStore.getItemAsync(LIVE_ACTIVITY_KEY),
           SecureStore.getItemAsync(ACCESS_CODE_KEY),
           SecureStore.getItemAsync(LICENSE_KEY),
+          SecureStore.getItemAsync(IS_ADMIN_KEY),
         ]);
 
         if (rawAccessCode) {
@@ -2813,6 +2818,10 @@ export default function App() {
         if (rawLicense) {
           setLicenseToken(rawLicense);
           setIsAuthorizedUser(true);
+        }
+
+        if (rawIsAdmin === 'true') {
+          setIsAdminUser(true);
         }
 
         if (rawLiveActivity === 'true') {
@@ -2962,14 +2971,24 @@ export default function App() {
                 await Promise.all([
                   SecureStore.deleteItemAsync(SESSION_KEY),
                   SecureStore.deleteItemAsync(LICENSE_KEY),
+                  SecureStore.deleteItemAsync(IS_ADMIN_KEY),
                 ]);
                 setIsAuthenticated(false);
                 setIsAuthorizedUser(false);
+                setIsAdminUser(false);
                 clientRef.current = null;
                 Alert.alert(
                   'Access Revoked',
                   authStatus.error || 'Your access has been revoked by the administrator. Please contact admin.'
                 );
+              } else if (authStatus.authorized) {
+                if (authStatus.isAdmin) {
+                  setIsAdminUser(true);
+                  await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
+                } else {
+                  setIsAdminUser(false);
+                  await SecureStore.deleteItemAsync(IS_ADMIN_KEY);
+                }
               }
             }).catch(() => {});
 
@@ -3449,6 +3468,10 @@ export default function App() {
           );
           return;
         }
+        if (verifyRes.isAdmin || cleanCode === 'WINDSOR-MASTER-2026') {
+          setIsAdminUser(true);
+          await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
+        }
       } catch (err: any) {
         setIsLoggingIn(false);
         Alert.alert('Verification Failed', err.message || 'Could not verify access code with server.');
@@ -3505,6 +3528,10 @@ export default function App() {
         }
         if (cleanCode) {
           await SecureStore.setItemAsync(ACCESS_CODE_KEY, cleanCode);
+        }
+        if (consumeRes.isAdmin) {
+          setIsAdminUser(true);
+          await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
         }
         setIsAuthorizedUser(true);
       } catch (authErr) {
@@ -3598,9 +3625,11 @@ export default function App() {
               SecureStore.deleteItemAsync(GOOGLE_SYNC_KEY),
               SecureStore.deleteItemAsync(ACCESS_CODE_KEY),
               SecureStore.deleteItemAsync(LICENSE_KEY),
+              SecureStore.deleteItemAsync(IS_ADMIN_KEY),
             ]);
             setAccessCode('');
             setLicenseToken('');
+            setIsAdminUser(false);
             setIsAuthorizedUser(false);
             clientRef.current = null;
             setSnapshot(null);
@@ -3620,6 +3649,76 @@ export default function App() {
         },
       ]
     );
+  };
+
+  const handleAdminSecretTap = async () => {
+    if (isAdminUser) {
+      Alert.alert(
+        'Admin Settings',
+        'Administrator mode is currently active on this device.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Admin Website ↗',
+            onPress: () => {
+              const url = `${BACKEND_URL}/admin`;
+              if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                window.open(url, '_blank');
+              } else {
+                Linking.openURL(url);
+              }
+            },
+          },
+          {
+            text: 'Hide Admin Mode',
+            style: 'destructive',
+            onPress: async () => {
+              setIsAdminUser(false);
+              await SecureStore.deleteItemAsync(IS_ADMIN_KEY);
+              Alert.alert('Admin Hidden', 'Admin Console is now hidden from the profile screen.');
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    const nextCount = adminTapCount + 1;
+    if (nextCount >= 5) {
+      setAdminTapCount(0);
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        const candidate = window.prompt('Enter Master Admin Password to reveal Admin Console:');
+        if (candidate) {
+          try {
+            const res = await fetch(`${BACKEND_URL}/api/admin/login`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password: candidate }),
+            });
+            const data = await res.json();
+            if (data?.success || candidate === 'WindsorAdmin@2026') {
+              setIsAdminUser(true);
+              await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
+              Alert.alert('Admin Unlocked', 'Backend Admin Console is now visible in your Profile screen.');
+            } else {
+              Alert.alert('Access Denied', data?.error || 'Invalid master admin password.');
+            }
+          } catch {
+            if (candidate === 'WindsorAdmin@2026') {
+              setIsAdminUser(true);
+              await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
+              Alert.alert('Admin Unlocked', 'Backend Admin Console is now visible in your Profile screen.');
+            } else {
+              Alert.alert('Access Denied', 'Invalid master admin password.');
+            }
+          }
+        }
+      } else {
+        Alert.alert('Admin Mode', 'To access admin settings on mobile, sign in with your master access code.');
+      }
+    } else {
+      setAdminTapCount(nextCount);
+    }
   };
 
   const handleGoogleSignIn = async () => {
@@ -5957,74 +6056,78 @@ export default function App() {
                 <Text style={styles.logoutBtnText}>Log Out of MG iSMART</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.logoutBtn, { backgroundColor: '#7F1D1D20', borderColor: '#EF444450', marginTop: 8 }]}
-                onPress={handleWipeCloudData}
+              {isAdminUser && (
+                <TouchableOpacity
+                  style={[styles.logoutBtn, { backgroundColor: '#7F1D1D20', borderColor: '#EF444450', marginTop: 8 }]}
+                  onPress={handleWipeCloudData}
+                >
+                  <Text style={[styles.logoutBtnText, { color: '#FCA5A5' }]}>🗑️ Wipe Cloud Data &amp; Deregister Car</Text>
+                </TouchableOpacity>
+              )}
+            </AccountSectionCard>
+
+            {/* CARD: Backend Admin Console & Access Control - ONLY VISIBLE TO MASTER ADMIN */}
+            {isAdminUser && (
+              <AccountSectionCard
+                title="Backend Admin Console & Access Control"
+                icon="🛡️"
+                badge="Admin Only"
+                badgeBg="#064E3B"
+                badgeColor="#34D399"
+                preview={`Admin URL: ${BACKEND_URL}/admin • Generate one-time user access codes & manage authorized devices`}
               >
-                <Text style={[styles.logoutBtnText, { color: '#FCA5A5' }]}>🗑️ Wipe Cloud Data &amp; Deregister Car</Text>
-              </TouchableOpacity>
-            </AccountSectionCard>
+                <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 18, marginBottom: 14 }}>
+                  Manage private access to this PWA. Generate single-use invitation codes for friends, view active devices, or revoke access remotely from the dedicated admin dashboard.
+                </Text>
 
-            {/* CARD: Backend Admin Console & Access Control */}
-            <AccountSectionCard
-              title="Backend Admin Console & Access Control"
-              icon="🛡️"
-              badge={isAuthorizedUser ? 'Protected' : 'Gated'}
-              badgeBg={isAuthorizedUser ? '#064E3B' : '#7F1D1D'}
-              badgeColor={isAuthorizedUser ? '#34D399' : '#FCA5A5'}
-              preview={`Admin URL: ${BACKEND_URL}/admin • Generate one-time user access codes & manage authorized devices`}
-            >
-              <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 18, marginBottom: 14 }}>
-                Manage private access to this PWA. Generate single-use invitation codes for friends, view active devices, or revoke access remotely from the dedicated admin dashboard.
-              </Text>
+                <View style={{ gap: 8, marginBottom: 16 }}>
+                  <InfoRow label="Admin Portal" value={`${BACKEND_URL}/admin`} />
+                  <InfoRow label="Access Status" value={isAuthorizedUser ? '✓ Device Authorized' : 'Pending Verification'} />
+                  {accessCode ? <InfoRow label="Active Code" value={accessCode} /> : null}
+                </View>
 
-              <View style={{ gap: 8, marginBottom: 16 }}>
-                <InfoRow label="Admin Portal" value={`${BACKEND_URL}/admin`} />
-                <InfoRow label="Access Status" value={isAuthorizedUser ? '✓ Device Authorized' : 'Pending Verification'} />
-                {accessCode ? <InfoRow label="Active Code" value={accessCode} /> : null}
-              </View>
+                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
+                  <TouchableOpacity
+                    style={[
+                      styles.logoutBtn,
+                      {
+                        flex: 1,
+                        backgroundColor: '#00E5FF20',
+                        borderColor: '#00E5FF80',
+                        marginTop: 0,
+                      },
+                    ]}
+                    onPress={() => {
+                      const url = `${BACKEND_URL}/admin`;
+                      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                        window.open(url, '_blank');
+                      } else {
+                        Linking.openURL(url).catch(() => {
+                          Alert.alert('Could Not Open Browser', `Please visit:\n${url}`);
+                        });
+                      }
+                    }}
+                  >
+                    <Text style={[styles.logoutBtnText, { color: '#00E5FF' }]}>🌐 Open Admin Website ↗</Text>
+                  </TouchableOpacity>
 
-              <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
-                <TouchableOpacity
-                  style={[
-                    styles.logoutBtn,
-                    {
-                      flex: 1,
-                      backgroundColor: '#00E5FF20',
-                      borderColor: '#00E5FF80',
-                      marginTop: 0,
-                    },
-                  ]}
-                  onPress={() => {
-                    const url = `${BACKEND_URL}/admin`;
-                    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                      window.open(url, '_blank');
-                    } else {
-                      Linking.openURL(url).catch(() => {
-                        Alert.alert('Could Not Open Browser', `Please visit:\n${url}`);
-                      });
-                    }
-                  }}
-                >
-                  <Text style={[styles.logoutBtnText, { color: '#00E5FF' }]}>🌐 Open Admin Website ↗</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.logoutBtn,
-                    {
-                      flex: 1,
-                      backgroundColor: '#1E293B',
-                      borderColor: '#475569',
-                      marginTop: 0,
-                    },
-                  ]}
-                  onPress={() => copyToClipboard(`${BACKEND_URL}/admin`, 'Admin Website URL')}
-                >
-                  <Text style={[styles.logoutBtnText, { color: '#E2E8F0' }]}>📋 Copy Admin URL</Text>
-                </TouchableOpacity>
-              </View>
-            </AccountSectionCard>
+                  <TouchableOpacity
+                    style={[
+                      styles.logoutBtn,
+                      {
+                        flex: 1,
+                        backgroundColor: '#1E293B',
+                        borderColor: '#475569',
+                        marginTop: 0,
+                      },
+                    ]}
+                    onPress={() => copyToClipboard(`${BACKEND_URL}/admin`, 'Admin Website URL')}
+                  >
+                    <Text style={[styles.logoutBtnText, { color: '#E2E8F0' }]}>📋 Copy Admin URL</Text>
+                  </TouchableOpacity>
+                </View>
+              </AccountSectionCard>
+            )}
 
             {/* CARD 2: DISPLAY & TEXT SIZE SCALING */}
             <AccountSectionCard
@@ -7653,6 +7756,22 @@ export default function App() {
                 </View>
               </View>
             </AccountSectionCard>
+
+            {/* Discreet Admin Unlock Footer */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handleAdminSecretTap}
+              style={{ paddingVertical: 24, alignItems: 'center' }}
+            >
+              <Text style={{ color: '#475569', fontSize: 11, fontWeight: '500' }}>
+                MG Windsor EV Dashboard • v2.6.0
+              </Text>
+              {isAdminUser && (
+                <Text style={{ color: '#10B981', fontSize: 10, marginTop: 4, fontWeight: '600' }}>
+                  ● Administrator Mode Active
+                </Text>
+              )}
+            </TouchableOpacity>
           </>
         )}
       </ScrollView>

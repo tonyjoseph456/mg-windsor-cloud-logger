@@ -9096,7 +9096,7 @@ async function validateAccessCode(env, rawCode, rawPhone, request) {
   const phone = (rawPhone || "").replace(/\D/g, "");
   if (!env.DB) {
     if (code === MASTER_ACCESS_CODE) {
-      return { valid: true, code: MASTER_ACCESS_CODE, assignedName: "Master Admin" };
+      return { valid: true, code: MASTER_ACCESS_CODE, assignedName: "Master Admin", isAdmin: true };
     }
     return { valid: false, error: "Database service is currently unavailable" };
   }
@@ -9108,13 +9108,21 @@ async function validateAccessCode(env, rawCode, rawPhone, request) {
           await logAccessEvent(env, "login_blocked", phone, code, "blocked", "User account is blocked by administrator", request);
           return { valid: false, error: "Your access has been suspended by the administrator." };
         }
-        return { valid: true, code: user.access_code || "PRE_AUTHORIZED", assignedName: user.name || "Friend", isAlreadyAuthorized: true };
+        const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ""));
+        const isAdmin = isPrimaryOwner || user.access_code === MASTER_ACCESS_CODE || user.role === "admin" || code === MASTER_ACCESS_CODE;
+        return {
+          valid: true,
+          code: user.access_code || "PRE_AUTHORIZED",
+          assignedName: user.name || "Friend",
+          isAlreadyAuthorized: true,
+          isAdmin
+        };
       }
     } catch (_) {
     }
   }
   if (code === MASTER_ACCESS_CODE) {
-    return { valid: true, code: MASTER_ACCESS_CODE, assignedName: "Owner / Master" };
+    return { valid: true, code: MASTER_ACCESS_CODE, assignedName: "Owner / Master", isAdmin: true };
   }
   if (!code) {
     return { valid: false, error: "One-time access code is required to sign in." };
@@ -9185,7 +9193,10 @@ async function consumeAccessCode(env, rawCode, rawPhone, vin, carName, deviceInf
       console.warn("consumeAccessCode error:", e);
     }
   }
-  return { success: true, licenseToken };
+  const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ""));
+  const isMaster = code === MASTER_ACCESS_CODE || Boolean(check.isAdmin);
+  const isAdmin = Boolean(isPrimaryOwner || isMaster);
+  return { success: true, licenseToken, isAdmin };
 }
 async function handleAuthApi(env, request, url, body) {
   const json2 = (data, status = 200) => new Response(JSON.stringify(data), {
@@ -9216,6 +9227,7 @@ async function handleAuthApi(env, request, url, body) {
   if (path === "/api/auth/check-status") {
     const phone = (body?.phone || url.searchParams.get("phone") || "").replace(/\D/g, "");
     if (!phone) return json2({ authorized: false, error: "Phone required" }, 400);
+    const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ""));
     if (env.DB) {
       try {
         const user = await env.DB.prepare("SELECT * FROM authorized_users WHERE phone = ?").bind(phone).first();
@@ -9223,13 +9235,18 @@ async function handleAuthApi(env, request, url, body) {
           if (user.status === "blocked") {
             return json2({ authorized: false, reason: "blocked", error: "Access revoked by administrator" }, 403);
           }
-          return json2({ authorized: true, user: { phone: user.phone, name: user.name, status: user.status, vin: user.vin } });
+          const isAdmin = isPrimaryOwner || user.access_code === MASTER_ACCESS_CODE || user.role === "admin";
+          return json2({
+            authorized: true,
+            isAdmin,
+            user: { phone: user.phone, name: user.name, status: user.status, vin: user.vin, isAdmin }
+          });
         }
       } catch (_) {
       }
     }
-    if (env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, "")) {
-      return json2({ authorized: true, user: { phone, name: "Primary Owner", status: "active" } });
+    if (isPrimaryOwner) {
+      return json2({ authorized: true, isAdmin: true, user: { phone, name: "Primary Owner", status: "active", isAdmin: true } });
     }
     return json2({ authorized: false, reason: "not_found" });
   }

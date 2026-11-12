@@ -1397,6 +1397,7 @@ export interface AccessVerificationResult {
   code?: string;
   assignedName?: string;
   isAlreadyAuthorized?: boolean;
+  isAdmin?: boolean;
   error?: string;
 }
 
@@ -1419,7 +1420,7 @@ export async function consumeAccessCode(
   phone: string,
   vin?: string,
   carName?: string
-): Promise<{ success: boolean; licenseToken?: string; error?: string }> {
+): Promise<{ success: boolean; licenseToken?: string; isAdmin?: boolean; error?: string }> {
   try {
     const res = await fetch(`${BACKEND_URL}/api/auth/consume-code`, {
       method: 'POST',
@@ -1439,7 +1440,7 @@ export async function consumeAccessCode(
   }
 }
 
-export async function checkUserAuthorization(phone: string): Promise<{ authorized: boolean; reason?: string; error?: string }> {
+export async function checkUserAuthorization(phone: string): Promise<{ authorized: boolean; isAdmin?: boolean; reason?: string; error?: string }> {
   try {
     const cleanPhone = phone.replace(/\D/g, '');
     const res = await fetch(`${BACKEND_URL}/api/auth/check-status`, {

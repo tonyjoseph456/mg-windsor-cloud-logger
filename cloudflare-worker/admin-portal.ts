@@ -208,6 +208,7 @@ export async function validateAccessCode(env: any, rawCode: string, rawPhone: st
   code?: string;
   assignedName?: string;
   isAlreadyAuthorized?: boolean;
+  isAdmin?: boolean;
   error?: string;
 }> {
   const code = (rawCode || '').trim().toUpperCase();
@@ -216,7 +217,7 @@ export async function validateAccessCode(env: any, rawCode: string, rawPhone: st
   if (!env.DB) {
     // If DB is offline, allow master access code as fallback
     if (code === MASTER_ACCESS_CODE) {
-      return { valid: true, code: MASTER_ACCESS_CODE, assignedName: 'Master Admin' };
+      return { valid: true, code: MASTER_ACCESS_CODE, assignedName: 'Master Admin', isAdmin: true };
     }
     return { valid: false, error: 'Database service is currently unavailable' };
   }
@@ -230,15 +231,23 @@ export async function validateAccessCode(env: any, rawCode: string, rawPhone: st
           await logAccessEvent(env, 'login_blocked', phone, code, 'blocked', 'User account is blocked by administrator', request);
           return { valid: false, error: 'Your access has been suspended by the administrator.' };
         }
+        const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ''));
+        const isAdmin = isPrimaryOwner || user.access_code === MASTER_ACCESS_CODE || user.role === 'admin' || code === MASTER_ACCESS_CODE;
         // User already has an authorized account on file!
-        return { valid: true, code: user.access_code || 'PRE_AUTHORIZED', assignedName: user.name || 'Friend', isAlreadyAuthorized: true };
+        return {
+          valid: true,
+          code: user.access_code || 'PRE_AUTHORIZED',
+          assignedName: user.name || 'Friend',
+          isAlreadyAuthorized: true,
+          isAdmin,
+        };
       }
     } catch (_) {}
   }
 
   // 2. Allow Master Access Code for initial setup / owner
   if (code === MASTER_ACCESS_CODE) {
-    return { valid: true, code: MASTER_ACCESS_CODE, assignedName: 'Owner / Master' };
+    return { valid: true, code: MASTER_ACCESS_CODE, assignedName: 'Owner / Master', isAdmin: true };
   }
 
   if (!code) {
@@ -287,7 +296,7 @@ export async function consumeAccessCode(
   carName?: string,
   deviceInfo?: string,
   request?: Request
-): Promise<{ success: boolean; licenseToken?: string; error?: string }> {
+): Promise<{ success: boolean; licenseToken?: string; isAdmin?: boolean; error?: string }> {
   const code = (rawCode || '').trim().toUpperCase();
   const phone = (rawPhone || '').replace(/\D/g, '');
 
@@ -335,7 +344,11 @@ export async function consumeAccessCode(
     }
   }
 
-  return { success: true, licenseToken };
+  const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ''));
+  const isMaster = code === MASTER_ACCESS_CODE || Boolean(check.isAdmin);
+  const isAdmin = Boolean(isPrimaryOwner || isMaster);
+
+  return { success: true, licenseToken, isAdmin };
 }
 
 // ---------------------------------------------------------------- API Route Handlers
@@ -377,6 +390,8 @@ export async function handleAuthApi(env: any, request: Request, url: URL, body: 
     const phone = (body?.phone || url.searchParams.get('phone') || '').replace(/\D/g, '');
     if (!phone) return json({ authorized: false, error: 'Phone required' }, 400);
 
+    const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ''));
+
     if (env.DB) {
       try {
         const user: any = await env.DB.prepare("SELECT * FROM authorized_users WHERE phone = ?").bind(phone).first();
@@ -384,13 +399,18 @@ export async function handleAuthApi(env: any, request: Request, url: URL, body: 
           if (user.status === 'blocked') {
             return json({ authorized: false, reason: 'blocked', error: 'Access revoked by administrator' }, 403);
           }
-          return json({ authorized: true, user: { phone: user.phone, name: user.name, status: user.status, vin: user.vin } });
+          const isAdmin = isPrimaryOwner || user.access_code === MASTER_ACCESS_CODE || user.role === 'admin';
+          return json({
+            authorized: true,
+            isAdmin,
+            user: { phone: user.phone, name: user.name, status: user.status, vin: user.vin, isAdmin },
+          });
         }
       } catch (_) {}
     }
     // If phone is configured as primary car owner, treat as authorized
-    if (env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, '')) {
-      return json({ authorized: true, user: { phone, name: 'Primary Owner', status: 'active' } });
+    if (isPrimaryOwner) {
+      return json({ authorized: true, isAdmin: true, user: { phone, name: 'Primary Owner', status: 'active', isAdmin: true } });
     }
     return json({ authorized: false, reason: 'not_found' });
   }
