@@ -93,6 +93,8 @@ import {
   buildManualTripPlan,
   simulateLegToCharger,
   findBackupChargerInCorridor,
+  findNearbyChargers,
+  NearbyChargerItem,
   VoltaTripPlanner,
   DEFAULT_WINDSOR_PROFILE,
   DEFAULT_TRIP_SETTINGS,
@@ -100,6 +102,7 @@ import {
   PlannedCharger,
   PlannedStop,
   TripPlan,
+  LatLng,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 
@@ -777,6 +780,7 @@ interface PlanSliderProps {
   max?: number;
   step?: number;
   unit?: string;
+  rangeLabels?: { min: string; max: string };
   onChange: (val: number) => void;
 }
 
@@ -794,6 +798,7 @@ function PlanSliderRow({
   max = 100,
   step = 1,
   unit = '%',
+  rangeLabels,
   onChange,
 }: PlanSliderProps) {
   const [localVal, setLocalVal] = useState<number>(value);
@@ -890,6 +895,13 @@ function PlanSliderRow({
           />
         )}
       </View>
+
+      {rangeLabels && (
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+          <Text style={{ color: '#64748B', fontSize: 11.5 }}>{rangeLabels.min}</Text>
+          <Text style={{ color: '#64748B', fontSize: 11.5 }}>{rangeLabels.max}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -1659,6 +1671,19 @@ export default function App() {
 
   const [tripDetailStartCoords, setTripDetailStartCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [tripDetailEndCoords, setTripDetailEndCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Search Chargers Dedicated Screen State & Animation
+  const searchChargersSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isSearchChargersVisible, setIsSearchChargersVisible] = useState<boolean>(false);
+  const [searchUseCarLocation, setSearchUseCarLocation] = useState<boolean>(true);
+  const [searchRadiusKm, setSearchRadiusKm] = useState<number>(25);
+  const [searchCustomLocationText, setSearchCustomLocationText] = useState<string>('');
+  const [searchCustomCenter, setSearchCustomCenter] = useState<LatLng | null>(null);
+  const [searchCustomSuggestions, setSearchCustomSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [isSearchingCustomPlace, setIsSearchingCustomPlace] = useState<boolean>(false);
+  const [nearbyChargersList, setNearbyChargersList] = useState<NearbyChargerItem[]>([]);
+  const [isSearchingNearby, setIsSearchingNearby] = useState<boolean>(false);
+  const [hasSearchedNearby, setHasSearchedNearby] = useState<boolean>(false);
 
   useEffect(() => {
     let mounted = true;
@@ -3852,6 +3877,87 @@ export default function App() {
     Linking.openURL(url);
   };
 
+  // Debounced search for custom location in Search Chargers
+  useEffect(() => {
+    if (searchUseCarLocation) {
+      setSearchCustomSuggestions([]);
+      return;
+    }
+    const q = searchCustomLocationText.trim();
+    if (q.length < 2) {
+      setSearchCustomSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setIsSearchingCustomPlace(true);
+      try {
+        const near = searchCustomCenter || {
+          lat: snapshot?.status?.gps?.latitude ?? 10.062227,
+          lng: snapshot?.status?.gps?.longitude ?? 76.620519,
+        };
+        const results = await searchDestinationPlaces(q, near, googleMapsApiKey);
+        if (!cancelled) setSearchCustomSuggestions(results);
+      } catch (_) {
+        if (!cancelled) setSearchCustomSuggestions([]);
+      } finally {
+        if (!cancelled) setIsSearchingCustomPlace(false);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    searchCustomLocationText,
+    searchUseCarLocation,
+    searchCustomCenter,
+    snapshot?.status?.gps?.latitude,
+    snapshot?.status?.gps?.longitude,
+    googleMapsApiKey,
+  ]);
+
+  const performNearbySearch = async (center: LatLng, radius: number) => {
+    setIsSearchingNearby(true);
+    setHasSearchedNearby(true);
+    try {
+      const results = await findNearbyChargers(center, radius, googleMapsApiKey || undefined);
+      setNearbyChargersList(results);
+    } catch (err) {
+      console.warn('Failed to find nearby chargers:', err);
+    } finally {
+      setIsSearchingNearby(false);
+    }
+  };
+
+  const handleOpenSearchChargers = () => {
+    setIsSearchChargersVisible(true);
+    Animated.timing(searchChargersSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+
+    const curLat = snapshot?.status?.gps?.latitude ?? 10.062227;
+    const curLon = snapshot?.status?.gps?.longitude ?? 76.620519;
+    const center = searchUseCarLocation
+      ? { lat: curLat, lng: curLon }
+      : searchCustomCenter || { lat: curLat, lng: curLon };
+    performNearbySearch(center, searchRadiusKm);
+  };
+
+  const handleCloseSearchChargers = () => {
+    Animated.timing(searchChargersSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsSearchChargersVisible(false);
+    });
+  };
+
   // 1. Startup Keychain Check Screen
   if (booting) {
     return (
@@ -4048,8 +4154,11 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
-  // Trips subscreen slide animations (Plan a trip, Route Results & Trip detail)
-  const tripsSubscreenAnim = Animated.add(planSlideAnim, tripDetailSlideAnim);
+  // Trips subscreen slide animations (Plan a trip, Route Results, Trip detail & Search chargers)
+  const tripsSubscreenAnim = Animated.add(
+    Animated.add(planSlideAnim, tripDetailSlideAnim),
+    searchChargersSlideAnim
+  );
   const tripsTranslateX = tripsSubscreenAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0, -screenWidth],
@@ -4075,6 +4184,11 @@ export default function App() {
   });
 
   const tripDetailTranslateX = tripDetailSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const searchChargersTranslateX = searchChargersSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -4311,11 +4425,7 @@ export default function App() {
                 {/* Button 3: Search chargers */}
                 <TouchableOpacity
                   style={[styles.tripsActionCardBtn, styles.tripsDarkCardBtn]}
-                  onPress={() => {
-                    const lat = status.gps?.latitude ?? 10.062227;
-                    const lon = status.gps?.longitude ?? 76.620519;
-                    Linking.openURL(`https://www.google.com/maps/search/EV+charging+station/@${lat},${lon},13z`);
-                  }}
+                  onPress={handleOpenSearchChargers}
                   activeOpacity={0.7}
                   accessibilityLabel="Search chargers"
                   accessibilityRole="button"
@@ -8816,6 +8926,240 @@ export default function App() {
         );
       })()}
 
+      {/* Search Chargers Fullscreen Tween Screen */}
+      {isSearchChargersVisible && (
+        <Animated.View
+          style={[
+            styles.searchChargersScreenLayer,
+            {
+              transform: [{ translateX: searchChargersTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <ScrollView
+              style={{ flex: 1, width: '100%' }}
+              contentContainerStyle={styles.searchChargersScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Header */}
+              <View style={styles.searchChargersHeader}>
+                <TouchableOpacity
+                  style={styles.planBackBtn}
+                  onPress={handleCloseSearchChargers}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Back to Trips"
+                  accessibilityRole="button"
+                >
+                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                    <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                </TouchableOpacity>
+
+                <Text style={styles.planTitle}>Search chargers</Text>
+              </View>
+
+              {/* Card 1: Search Configuration */}
+              <View style={styles.searchChargersCard}>
+                <Text style={styles.searchChargersCardLabel}>Search around</Text>
+
+                {searchUseCarLocation ? (
+                  <View style={styles.searchChargersGpsBox}>
+                    <Text style={styles.searchChargersGpsBoxText}>
+                      Car GPS · {gpsLat.toFixed(2)}, {gpsLon.toFixed(2)}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ position: 'relative' }}>
+                    <TextInput
+                      style={styles.searchChargersCustomInput}
+                      placeholder="Where? e.g. Kochi, Munnar, Aluva"
+                      placeholderTextColor="#64748B"
+                      value={searchCustomLocationText}
+                      onChangeText={(t) => {
+                        setSearchCustomLocationText(t);
+                      }}
+                      autoCapitalize="words"
+                      returnKeyType="search"
+                    />
+                    {isSearchingCustomPlace && (
+                      <View style={{ position: 'absolute', right: 12, top: 12 }}>
+                        <ActivityIndicator size="small" color="#34D399" />
+                      </View>
+                    )}
+                    {searchCustomSuggestions.length > 0 && (
+                      <View style={styles.planSuggestionsBox}>
+                        {searchCustomSuggestions.map((sug) => (
+                          <TouchableOpacity
+                            key={`sug-${sug.placeId}`}
+                            style={styles.planSuggestionItem}
+                            onPress={async () => {
+                              try {
+                                const resolved = await resolvePlaceSuggestion(sug, googleMapsApiKey);
+                                setSearchCustomCenter(resolved.position);
+                                setSearchCustomLocationText(resolved.name);
+                                setSearchCustomSuggestions([]);
+                                performNearbySearch(resolved.position, searchRadiusKm);
+                              } catch (_) {}
+                            }}
+                          >
+                            <View style={{ flex: 1, paddingRight: 8 }}>
+                              <Text style={styles.planSuggestionTitle} numberOfLines={1}>
+                                📍 {sug.title}
+                              </Text>
+                              {sug.subtitle ? (
+                                <Text style={styles.planSuggestionSub} numberOfLines={1}>
+                                  {sug.subtitle}
+                                </Text>
+                              ) : null}
+                            </View>
+                            {sug.distanceM != null && (
+                              <Text style={styles.planSuggestionDist}>
+                                {(sug.distanceM / 1000).toFixed(0)} km
+                              </Text>
+                            )}
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {/* Checkbox: Use my car's location */}
+                <TouchableOpacity
+                  style={styles.searchChargersCheckboxRow}
+                  onPress={() => {
+                    const nextVal = !searchUseCarLocation;
+                    setSearchUseCarLocation(nextVal);
+                    if (nextVal) {
+                      setSearchCustomSuggestions([]);
+                      performNearbySearch({ lat: gpsLat, lng: gpsLon }, searchRadiusKm);
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View
+                    style={[
+                      styles.searchChargersCheckbox,
+                      searchUseCarLocation && styles.searchChargersCheckboxActive,
+                    ]}
+                  >
+                    {searchUseCarLocation && (
+                      <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#0A0E17" strokeWidth={3}>
+                        <Polyline points="20 6 9 17 4 12" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    )}
+                  </View>
+                  <Text style={styles.searchChargersCheckboxLabel}>Use my car's location</Text>
+                </TouchableOpacity>
+
+                {/* Search radius slider */}
+                <PlanSliderRow
+                  label="Search radius"
+                  value={searchRadiusKm}
+                  min={0}
+                  max={50}
+                  step={1}
+                  unit=" km"
+                  rangeLabels={{ min: '0 km', max: '50 km' }}
+                  onChange={(val) => {
+                    setSearchRadiusKm(val);
+                  }}
+                />
+              </View>
+
+              {/* Action Button: Find nearby chargers */}
+              <TouchableOpacity
+                style={styles.searchChargersActionBtn}
+                onPress={() => {
+                  const center = searchUseCarLocation
+                    ? { lat: gpsLat, lng: gpsLon }
+                    : searchCustomCenter || { lat: gpsLat, lng: gpsLon };
+                  performNearbySearch(center, searchRadiusKm);
+                }}
+                activeOpacity={0.8}
+              >
+                {isSearchingNearby ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <ActivityIndicator size="small" color="#0A0E17" />
+                    <Text style={styles.searchChargersActionBtnText}>Finding nearby chargers...</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.searchChargersActionBtnText}>Find nearby chargers</Text>
+                )}
+              </TouchableOpacity>
+
+              {/* Card 2: Results Card */}
+              {(hasSearchedNearby || nearbyChargersList.length > 0) && (
+                <View style={styles.searchChargersResultsCard}>
+                  <View style={styles.searchChargersResultsHeader}>
+                    <Text style={styles.searchChargersResultsTitle}>
+                      {nearbyChargersList.length} chargers within {searchRadiusKm} km
+                    </Text>
+                    <Text style={styles.searchChargersResultsSort}>Nearest first</Text>
+                  </View>
+
+                  {nearbyChargersList.length === 0 ? (
+                    <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+                      <Text style={{ color: '#94A3B8', fontSize: 13.5 }}>
+                        No chargers found within {searchRadiusKm} km.
+                      </Text>
+                      <Text style={{ color: '#64748B', fontSize: 12, marginTop: 4 }}>
+                        Try dragging the slider to increase search radius.
+                      </Text>
+                    </View>
+                  ) : (
+                    nearbyChargersList.map((charger, idx) => {
+                      const isLast = idx === nearbyChargersList.length - 1;
+                      return (
+                        <View
+                          key={`nearby-c-${charger.id}-${idx}`}
+                          style={[
+                            styles.searchChargerRowItem,
+                            isLast && { borderBottomWidth: 0 },
+                          ]}
+                        >
+                          <View style={styles.searchChargerRowLeft}>
+                            <Text style={styles.searchChargerRowName} numberOfLines={1}>
+                              {charger.name}
+                            </Text>
+                            <Text style={styles.searchChargerRowSub} numberOfLines={1}>
+                              {charger.maxKw || 60} kW CCS2 · {charger.network || 'Public EV'}
+                            </Text>
+                          </View>
+
+                          <View style={styles.searchChargerRowRight}>
+                            <Text style={styles.searchChargerDistText}>
+                              {charger.distanceKm} km
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.searchChargerPinBtn}
+                              onPress={() => {
+                                const query = `${charger.position.lat},${charger.position.lng}`;
+                                Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`);
+                              }}
+                              activeOpacity={0.7}
+                              accessibilityLabel={`Open ${charger.name} in Google Maps`}
+                              accessibilityRole="button"
+                            >
+                              <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                                <Path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" strokeLinecap="round" strokeLinejoin="round" />
+                                <Circle cx="12" cy="9" r="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </Svg>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })
+                  )}
+                </View>
+              )}
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -8925,6 +9269,10 @@ export default function App() {
                   setIsTripDetailVisible(false);
                   tripDetailSlideAnim.setValue(0);
                   setSelectedTripForDetail(null);
+                }
+                if (isSearchChargersVisible) {
+                  setIsSearchChargersVisible(false);
+                  searchChargersSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -13927,5 +14275,173 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#1E293B',
     marginVertical: 14,
+  },
+
+  // Search Chargers Dedicated Screen Styles
+  searchChargersScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  searchChargersScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: (Platform.OS === 'web' ? 120 : 130),
+  },
+  searchChargersHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginBottom: 20,
+    paddingTop: 8,
+  },
+  searchChargersCard: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 16,
+    marginBottom: 16,
+  },
+  searchChargersCardLabel: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+  searchChargersGpsBox: {
+    backgroundColor: '#0B111E',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  searchChargersGpsBoxText: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  searchChargersCustomInput: {
+    backgroundColor: '#0B111E',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    color: '#F8FAFC',
+    fontSize: 16,
+  },
+  searchChargersCheckboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    marginBottom: 20,
+  },
+  searchChargersCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: '#64748B',
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  searchChargersCheckboxActive: {
+    borderColor: '#10B981',
+    backgroundColor: '#10B981',
+  },
+  searchChargersCheckboxLabel: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  searchChargersActionBtn: {
+    backgroundColor: '#34D399',
+    borderRadius: 24,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  searchChargersActionBtnText: {
+    color: '#0A0E17',
+    fontSize: 15.5,
+    fontWeight: '800',
+  },
+  searchChargersResultsCard: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 16,
+    marginBottom: 24,
+  },
+  searchChargersResultsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  searchChargersResultsTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  searchChargersResultsSort: {
+    color: '#64748B',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  searchChargerRowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  searchChargerRowLeft: {
+    flex: 1,
+    paddingRight: 10,
+  },
+  searchChargerRowName: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 3,
+  },
+  searchChargerRowSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+  },
+  searchChargerRowRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  searchChargerDistText: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+    marginRight: 12,
+  },
+  searchChargerPinBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#0B111E',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

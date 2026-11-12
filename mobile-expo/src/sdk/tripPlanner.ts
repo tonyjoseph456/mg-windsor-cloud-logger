@@ -1270,6 +1270,8 @@ const CURATED_DC_CHARGERS: Omit<PlannedCharger, 'alongRouteM' | 'detourM'>[] = [
   { id: 'cur-aluva-goec', name: 'GOEC DC Fast • Aluva Bypass NH 544', position: { lat: 10.1021, lng: 76.3562 }, maxKw: 60, connectorCount: 2, network: 'GOEC', open24h: true, address: 'NH 544, Aluva' },
   { id: 'cur-angamaly-zeon', name: 'Zeon Charging • Angamaly NH 544', position: { lat: 10.1951, lng: 76.3865 }, maxKw: 60, connectorCount: 2, network: 'Zeon', open24h: true, address: 'NH 544, Angamaly' },
   { id: 'cur-chalakudy-cz', name: 'ChargeZone 60kW • Chalakudy NH 544', position: { lat: 10.3065, lng: 76.3345 }, maxKw: 60, connectorCount: 2, network: 'ChargeZone', open24h: true, address: 'NH 544, Chalakudy' },
+  { id: 'cur-chalakudy-zeon-180', name: 'Zeon Charging Station • Chalakudy NH 544', position: { lat: 10.3345, lng: 76.3412 }, maxKw: 180, connectorCount: 4, network: 'Zeon', open24h: true, address: 'Potta, Chalakudy NH 544' },
+  { id: 'cur-koratty-goec-30', name: 'GOEC Charging Station • Koratty InfoPark', position: { lat: 10.2612, lng: 76.3582 }, maxKw: 30, connectorCount: 2, network: 'GOEC', open24h: true, address: 'NH 544, Koratty' },
   { id: 'cur-thrissur-mannuthy-zeon', name: 'Zeon Charging • Mannuthy Bypass Thrissur', position: { lat: 10.5312, lng: 76.2564 }, maxKw: 60, connectorCount: 4, network: 'Zeon', open24h: true, address: 'NH 544, Mannuthy, Thrissur' },
   { id: 'cur-thrissur-goec', name: 'GOEC SuperFast • Sobha City Thrissur', position: { lat: 10.5538, lng: 76.1782 }, maxKw: 60, connectorCount: 2, network: 'GOEC', open24h: true, address: 'Puzhakkal, Thrissur' },
   { id: 'cur-vadakkenchery-zeon', name: 'Zeon Charging • Hotel Diana Heights Vadakkenchery', position: { lat: 10.5912, lng: 76.4841 }, maxKw: 60, connectorCount: 2, network: 'Zeon', open24h: true, address: 'NH 544, Vadakkenchery' },
@@ -2191,4 +2193,112 @@ export function buildManualTripPlan(
     dcStopCount: dcCount > 4 ? 4 : dcCount,
     mandatoryAcStopCount: acCount,
   };
+}
+
+export interface NearbyChargerItem extends PlannedCharger {
+  distanceKm: number;
+}
+
+export async function findNearbyChargers(
+  center: LatLng,
+  radiusKm: number = 25,
+  googleApiKey?: string
+): Promise<NearbyChargerItem[]> {
+  const list: NearbyChargerItem[] = [];
+  const maxM = radiusKm * 1000.0;
+
+  // 1. Check curated DC chargers
+  for (const c of CURATED_DC_CHARGERS) {
+    const d = Geo.distanceM(center, c.position);
+    if (d <= maxM) {
+      list.push({
+        ...c,
+        alongRouteM: Math.round(d),
+        detourM: 0,
+        distanceKm: Number((d / 1000.0).toFixed(1)),
+      });
+    }
+  }
+
+  // 2. Query OSM Overpass proxy if available
+  try {
+    const latDelta = (radiusKm * 1.15) / 111.0;
+    const lonDelta = (radiusKm * 1.15) / (111.0 * Math.max(0.1, Math.cos((center.lat * Math.PI) / 180.0)));
+    const bbox = `${(center.lat - latDelta).toFixed(3)},${(center.lng - lonDelta).toFixed(3)},${(center.lat + latDelta).toFixed(3)},${(center.lng + lonDelta).toFixed(3)}`;
+    const res = await fetch(`${BACKEND_URL}/api/planner/osm-chargers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bbox }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.elements)) {
+        for (const el of data.elements) {
+          if (!el.lat || !el.lon) continue;
+          const pos = { lat: Number(el.lat), lng: Number(el.lon) };
+          const d = Geo.distanceM(center, pos);
+          if (d > maxM) continue;
+
+          const tags = el.tags || {};
+          const name = tags.name || tags.operator || tags.brand || 'EV Fast Charging Station';
+          const outStr = String(
+            tags['socket:ccs2:output'] ||
+              tags['charging_station:output'] ||
+              tags.maxpower ||
+              '30'
+          );
+          const kwMatch = outStr.match(/(\d+(\.\d+)?)/);
+          const kw = kwMatch ? Math.max(25, Number(kwMatch[1])) : 30;
+
+          const street = tags['addr:street']
+            ? [tags['addr:housenumber'], tags['addr:street']].filter(Boolean).join(' ')
+            : null;
+          const locality =
+            tags['addr:suburb'] ||
+            tags['addr:city'] ||
+            tags['addr:town'] ||
+            tags['addr:village'] ||
+            tags['addr:district'] ||
+            null;
+          const state = tags['addr:state'] || null;
+          const combined = [street, locality, state].filter(Boolean).join(', ');
+          const address = combined || tags['addr:full'] || tags['description'] || null;
+
+          list.push({
+            id: `osm-node-${el.id}`,
+            name,
+            position: pos,
+            maxKw: kw,
+            connectorCount: Number(tags.capacity) || 2,
+            availableCount: null,
+            network: detectChargerNetwork(`${name} ${tags.operator || ''} ${tags.network || ''}`),
+            address,
+            open24h: tags.opening_hours === '24/7' ? true : null,
+            alongRouteM: Math.round(d),
+            detourM: 0,
+            distanceKm: Number((d / 1000.0).toFixed(1)),
+          });
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 3. Deduplicate chargers within 300 meters
+  const deduplicated: NearbyChargerItem[] = [];
+  for (const item of list) {
+    const existingIdx = deduplicated.findIndex(
+      (c) => Geo.distanceM(c.position, item.position) < 300
+    );
+    if (existingIdx >= 0) {
+      if ((item.maxKw || 0) > (deduplicated[existingIdx].maxKw || 0)) {
+        deduplicated[existingIdx] = item;
+      }
+    } else {
+      deduplicated.push(item);
+    }
+  }
+
+  // 4. Sort nearest first
+  deduplicated.sort((a, b) => a.distanceKm - b.distanceKm);
+  return deduplicated;
 }
