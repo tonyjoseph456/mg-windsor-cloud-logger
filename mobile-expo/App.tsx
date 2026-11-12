@@ -1789,6 +1789,34 @@ export default function App() {
     });
   };
 
+  // Dedicated Account Screen State & Animation (Horizontal tween from right to centre)
+  const accountScreenSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isAccountScreenVisible, setIsAccountScreenVisible] = useState<boolean>(false);
+  const [accountPinInput, setAccountPinInput] = useState<string>('');
+  const accountPinInputRef = useRef<any>(null);
+
+  const handleOpenAccountScreen = () => {
+    setAccountPinInput(pin || '');
+    setIsAccountScreenVisible(true);
+    Animated.timing(accountScreenSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseAccountScreen = () => {
+    Animated.timing(accountScreenSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsAccountScreenVisible(false);
+    });
+  };
+
   // Trips Options Menu State
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
 
@@ -4722,6 +4750,11 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
+  const accountScreenTranslateX = accountScreenSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
   // GPS Metrics for Location Screen
   const gpsLat = status.gps?.latitude ?? 10.062227;
   const gpsLon = status.gps?.longitude ?? 76.620519;
@@ -4750,7 +4783,7 @@ export default function App() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
-      {tab !== 'home' && tab !== 'trips' && tab !== 'charge' && (
+      {tab !== 'home' && tab !== 'trips' && tab !== 'charge' && tab !== 'account' && (
         <View style={styles.topHeaderWrap}>
           {/* Top Header */}
           <View style={styles.header}>
@@ -5236,7 +5269,7 @@ export default function App() {
           }
         >
         {/* Tap-to-Refresh & Pull-to-Refresh banner (non-home tabs) */}
-        {tab !== 'home' && tab !== 'charge' && (
+        {(tab as any) !== 'home' && (tab as any) !== 'charge' && (tab as any) !== 'account' && (
           <TouchableOpacity
             style={styles.pullHint}
             onPress={() => refreshVehicleTelemetry()}
@@ -6307,7 +6340,7 @@ export default function App() {
               {/* 1. Vehicle Card */}
               <TouchableOpacity
                 style={styles.profileVehicleCard}
-                onPress={() => setActiveProfileModal('vehicle')}
+                onPress={handleOpenAccountScreen}
                 activeOpacity={0.7}
               >
                 <View style={styles.profileMgBadge}>
@@ -10491,6 +10524,148 @@ export default function App() {
         </Animated.View>
       )}
 
+      {/* Account Fullscreen Tween Screen */}
+      {isAccountScreenVisible && (
+        <Animated.View
+          style={[
+            styles.accountScreenLayer,
+            {
+              transform: [{ translateX: accountScreenTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <ScrollView
+              style={{ flex: 1, width: '100%' }}
+              contentContainerStyle={styles.accountScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {/* 1. Header Row */}
+              <View style={styles.accountHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <TouchableOpacity
+                    style={styles.accountBackBtn}
+                    onPress={handleCloseAccountScreen}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Back to Profile"
+                    accessibilityRole="button"
+                  >
+                    <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                      <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                  </TouchableOpacity>
+                  <Text style={styles.accountHeaderTitle}>Account</Text>
+                </View>
+                <View style={styles.accountConnectedBadge}>
+                  <Text style={styles.accountConnectedBadgeText}>Connected</Text>
+                </View>
+              </View>
+
+              {/* 2. Vehicle Details Card */}
+              <View style={styles.accountInfoCard}>
+                <View style={styles.accountInfoRow}>
+                  <Text style={styles.accountInfoLabel}>Mobile</Text>
+                  <Text style={styles.accountInfoVal}>+91 {phone || '9744010098'}</Text>
+                </View>
+                <View style={styles.accountInfoDivider} />
+                <View style={styles.accountInfoRow}>
+                  <Text style={styles.accountInfoLabel}>Vehicle</Text>
+                  <Text style={styles.accountInfoVal}>{displayName || 'Windsor EV'}</Text>
+                </View>
+                <View style={styles.accountInfoDivider} />
+                <View style={styles.accountInfoRow}>
+                  <Text style={styles.accountInfoLabel}>Series</Text>
+                  <Text style={styles.accountInfoVal}>{rawVehicle?.series || 'EQ100'}</Text>
+                </View>
+                <View style={styles.accountInfoDivider} />
+                <View style={styles.accountInfoRow}>
+                  <Text style={styles.accountInfoLabel}>VIN</Text>
+                  <Text style={styles.accountInfoVal}>...{displayVin ? displayVin.slice(-8) : '8H014788'}</Text>
+                </View>
+                <View style={styles.accountInfoDivider} />
+                <View style={styles.accountInfoRow}>
+                  <Text style={styles.accountInfoLabel}>Control PIN</Text>
+                  <Text style={styles.accountInfoVal}>{/^\d{4}$/.test(pin) ? 'Configured' : 'Ask on command'}</Text>
+                </View>
+              </View>
+
+              {/* 3. Change 4-digit control PIN Section */}
+              <Text style={styles.accountPinSectionTitle}>Change 4-digit control PIN</Text>
+              <View style={styles.accountPinBoxesRow}>
+                {[0, 1, 2, 3].map((idx) => {
+                  const char = accountPinInput[idx] || '';
+                  return (
+                    <TouchableOpacity
+                      key={idx}
+                      style={[styles.accountPinBox, char ? styles.accountPinBoxFilled : null]}
+                      onPress={() => accountPinInputRef.current?.focus()}
+                      activeOpacity={0.9}
+                    >
+                      <Text style={styles.accountPinBoxText}>{char ? '●' : ''}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                <TextInput
+                  ref={accountPinInputRef}
+                  style={styles.accountPinHiddenInput}
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  secureTextEntry
+                  value={accountPinInput}
+                  onChangeText={setAccountPinInput}
+                />
+              </View>
+
+              {/* Update PIN Button */}
+              <TouchableOpacity
+                style={styles.accountUpdatePinBtn}
+                onPress={async () => {
+                  if (/^\d{4}$/.test(accountPinInput)) {
+                    setPin(accountPinInput);
+                    if (clientRef.current) {
+                      clientRef.current.pinHash = hashControlPin(accountPinInput);
+                    }
+                    try {
+                      const saved = await SecureStore.getItemAsync(SESSION_KEY);
+                      if (saved) {
+                        const parsed = JSON.parse(saved);
+                        parsed.pin = accountPinInput;
+                        await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(parsed));
+                      }
+                    } catch {}
+                    Alert.alert('PIN Updated', 'Your 4-digit control PIN has been updated successfully.');
+                  } else {
+                    Alert.alert('Invalid PIN', 'Please enter a 4-digit numeric PIN.');
+                  }
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.accountUpdatePinBtnText}>Update PIN</Text>
+              </TouchableOpacity>
+
+              {/* 4. Bottom Danger Actions */}
+              <View style={styles.accountDangerSection}>
+                <TouchableOpacity
+                  style={styles.accountDangerBtn}
+                  onPress={handleLogout}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.accountDangerBtnText}>Log out of MG iSMART</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.accountDangerBtn}
+                  onPress={handleWipeCloudData}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.accountDangerBtnText}>Wipe cloud data & deregister car</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -10609,6 +10784,10 @@ export default function App() {
                 if (isSearchChargersVisible) {
                   setIsSearchChargersVisible(false);
                   searchChargersSlideAnim.setValue(0);
+                }
+                if (isAccountScreenVisible) {
+                  setIsAccountScreenVisible(false);
+                  accountScreenSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -16721,6 +16900,167 @@ const styles = StyleSheet.create({
   profileModalCloseBtnText: {
     color: '#94A3B8',
     fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // Dedicated Account Fullscreen Tween Screen Styles
+  accountScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2000,
+  },
+  accountScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: Platform.OS === 'web' ? 120 : 130,
+  },
+  accountHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    paddingTop: 8,
+  },
+  accountBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountHeaderTitle: {
+    color: '#F8FAFC',
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+    marginLeft: 14,
+  },
+  accountConnectedBadge: {
+    backgroundColor: 'rgba(6, 78, 59, 0.45)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.3)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
+  accountConnectedBadgeText: {
+    color: '#34D399',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  accountInfoCard: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    marginBottom: 8,
+  },
+  accountInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+  },
+  accountInfoLabel: {
+    color: '#94A3B8',
+    fontSize: 14.5,
+    fontWeight: '500',
+  },
+  accountInfoVal: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  accountInfoDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    width: '100%',
+  },
+  accountPinSectionTitle: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
+    marginTop: 20,
+    marginBottom: 12,
+  },
+  accountPinBoxesRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    position: 'relative',
+    marginBottom: 16,
+  },
+  accountPinBox: {
+    width: '22%',
+    aspectRatio: 1,
+    maxHeight: 70,
+    backgroundColor: '#111827',
+    borderWidth: 1.5,
+    borderColor: '#1E293B',
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountPinBoxFilled: {
+    borderColor: '#10B981',
+  },
+  accountPinBoxText: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  accountPinHiddenInput: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0,
+    width: '100%',
+    height: '100%',
+  },
+  accountUpdatePinBtn: {
+    backgroundColor: '#10B981',
+    borderRadius: 14,
+    paddingVertical: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 28,
+  },
+  accountUpdatePinBtnText: {
+    color: '#0A0E17',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  accountDangerSection: {
+    marginTop: 48,
+    gap: 12,
+  },
+  accountDangerBtn: {
+    backgroundColor: '#1C1318',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountDangerBtnText: {
+    color: '#F87171',
+    fontSize: 15,
     fontWeight: '700',
   },
 });
