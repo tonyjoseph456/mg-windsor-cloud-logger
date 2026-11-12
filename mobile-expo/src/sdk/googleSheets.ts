@@ -1390,3 +1390,66 @@ export async function clearD1Notifications(vinOverride?: string): Promise<boolea
     return false;
   }
 }
+
+// ---------------------------------------------------------------- One-Time Access Code & User Authorization API
+export interface AccessVerificationResult {
+  valid: boolean;
+  code?: string;
+  assignedName?: string;
+  isAlreadyAuthorized?: boolean;
+  error?: string;
+}
+
+export async function verifyAccessCode(code: string, phone: string): Promise<AccessVerificationResult> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/auth/verify-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code.trim(), phone: phone.replace(/\D/g, '') }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { valid: false, error: err.message || 'Failed to connect to authentication server' };
+  }
+}
+
+export async function consumeAccessCode(
+  code: string,
+  phone: string,
+  vin?: string,
+  carName?: string
+): Promise<{ success: boolean; licenseToken?: string; error?: string }> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/auth/consume-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: code.trim(),
+        phone: phone.replace(/\D/g, ''),
+        vin: vin || undefined,
+        carName: carName || undefined,
+        deviceInfo: typeof navigator !== 'undefined' ? navigator.userAgent : 'PWA',
+      }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed to authorize account' };
+  }
+}
+
+export async function checkUserAuthorization(phone: string): Promise<{ authorized: boolean; reason?: string; error?: string }> {
+  try {
+    const cleanPhone = phone.replace(/\D/g, '');
+    const res = await fetch(`${BACKEND_URL}/api/auth/check-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: cleanPhone }),
+    });
+    const data = await res.json();
+    return data;
+  } catch {
+    return { authorized: true }; // Allow cached offline sessions if network is unreachable
+  }
+}

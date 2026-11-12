@@ -84,6 +84,9 @@ import {
   AppNotificationRecord,
   fetchD1Notifications,
   clearD1Notifications,
+  verifyAccessCode,
+  consumeAccessCode,
+  checkUserAuthorization,
   computeTripRouteChoices,
   NamedPlace,
   RouteChoice,
@@ -124,6 +127,8 @@ const GOOGLE_CLIENT_ID_KEY = 'mg_ismart_google_client_id_v1';
 const FONT_SCALE_KEY = 'mg_ismart_font_scale_v1';
 const GOOGLE_MAPS_API_KEY_KEY = 'mg_ismart_google_maps_api_key_v1';
 const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
+const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
+const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const DEFAULT_CLOUD_SYNC_URL =
   'https://raw.githubusercontent.com/tonyjoseph456/mg-windsor-cloud-logger/main/data/cloud_charging_log.json';
 
@@ -1529,6 +1534,9 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState('');
   const [vin, setVin] = useState('');
+  const [accessCode, setAccessCode] = useState<string>('');
+  const [isAuthorizedUser, setIsAuthorizedUser] = useState<boolean>(false);
+  const [licenseToken, setLicenseToken] = useState<string>('');
 
   // Telemetry state
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -2777,6 +2785,8 @@ export default function App() {
           rawGoogleClientId,
           rawFontScale,
           rawLiveActivity,
+          rawAccessCode,
+          rawLicense,
         ] = await Promise.all([
           SecureStore.getItemAsync(SESSION_KEY),
           SecureStore.getItemAsync(SNAPSHOT_KEY),
@@ -2792,7 +2802,18 @@ export default function App() {
           SecureStore.getItemAsync(GOOGLE_CLIENT_ID_KEY),
           SecureStore.getItemAsync(FONT_SCALE_KEY),
           SecureStore.getItemAsync(LIVE_ACTIVITY_KEY),
+          SecureStore.getItemAsync(ACCESS_CODE_KEY),
+          SecureStore.getItemAsync(LICENSE_KEY),
         ]);
+
+        if (rawAccessCode) {
+          setAccessCode(rawAccessCode);
+        }
+
+        if (rawLicense) {
+          setLicenseToken(rawLicense);
+          setIsAuthorizedUser(true);
+        }
 
         if (rawLiveActivity === 'true') {
           setIsLiveActivityActive(true);
@@ -2933,6 +2954,24 @@ export default function App() {
             setVin(saved.vin || '');
             setActiveD1Vin(saved.vin || '');
             setIsAuthenticated(true);
+            setIsAuthorizedUser(true);
+
+            // Remote authorization status check: ensure account is not blocked by administrator
+            checkUserAuthorization(saved.phone).then(async (authStatus) => {
+              if (authStatus.authorized === false && authStatus.reason === 'blocked') {
+                await Promise.all([
+                  SecureStore.deleteItemAsync(SESSION_KEY),
+                  SecureStore.deleteItemAsync(LICENSE_KEY),
+                ]);
+                setIsAuthenticated(false);
+                setIsAuthorizedUser(false);
+                clientRef.current = null;
+                Alert.alert(
+                  'Access Revoked',
+                  authStatus.error || 'Your access has been revoked by the administrator. Please contact admin.'
+                );
+              }
+            }).catch(() => {});
 
             const client = new MgIndiaClient({
               phone: saved.phone,
@@ -3388,7 +3427,36 @@ export default function App() {
       return;
     }
 
-    setIsLoggingIn(true);
+    const cleanCode = accessCode.trim().toUpperCase();
+    if (!isAuthorizedUser) {
+      if (!cleanCode) {
+        Alert.alert(
+          'Access Code Required',
+          'This app is restricted to authorized users.\n\nPlease enter the One-Time Access Code provided by the administrator to continue.'
+        );
+        return;
+      }
+
+      setIsLoggingIn(true);
+      try {
+        const verifyRes = await verifyAccessCode(cleanCode, cleanPhone);
+        if (!verifyRes.valid) {
+          setIsLoggingIn(false);
+          Alert.alert(
+            'Access Code Denied',
+            verifyRes.error ||
+              'The access code entered is invalid, expired, or already used. Please request an access code from the administrator.'
+          );
+          return;
+        }
+      } catch (err: any) {
+        setIsLoggingIn(false);
+        Alert.alert('Verification Failed', err.message || 'Could not verify access code with server.');
+        return;
+      }
+    } else {
+      setIsLoggingIn(true);
+    }
     try {
       const client = new MgIndiaClient({
         phone: cleanPhone,
@@ -3427,6 +3495,21 @@ export default function App() {
       setVin(activeVin);
       setActiveD1Vin(activeVin);
       clientRef.current = client;
+
+      // Step 2b: Register / consume access code on backend and save permanent device authorization
+      try {
+        const consumeRes = await consumeAccessCode(cleanCode || accessCode, cleanPhone, activeVin, activeVehicle.name);
+        if (consumeRes.licenseToken) {
+          await SecureStore.setItemAsync(LICENSE_KEY, consumeRes.licenseToken);
+          setLicenseToken(consumeRes.licenseToken);
+        }
+        if (cleanCode) {
+          await SecureStore.setItemAsync(ACCESS_CODE_KEY, cleanCode);
+        }
+        setIsAuthorizedUser(true);
+      } catch (authErr) {
+        console.warn('Access code consume warning:', authErr);
+      }
 
       // Save persistent session in iPhone Keychain immediately so user stays logged in!
       const newSession: PersistedSession = {
@@ -3513,7 +3596,12 @@ export default function App() {
               SecureStore.deleteItemAsync(SESSION_KEY),
               SecureStore.deleteItemAsync(SNAPSHOT_KEY),
               SecureStore.deleteItemAsync(GOOGLE_SYNC_KEY),
+              SecureStore.deleteItemAsync(ACCESS_CODE_KEY),
+              SecureStore.deleteItemAsync(LICENSE_KEY),
             ]);
+            setAccessCode('');
+            setLicenseToken('');
+            setIsAuthorizedUser(false);
             clientRef.current = null;
             setSnapshot(null);
             setPassword('');
@@ -4136,6 +4224,64 @@ export default function App() {
               Your session is encrypted in your iPhone Keychain and stays logged in 24/7 until you
               manually log out.
             </Text>
+
+            {/* Private App Gate Badge */}
+            <View
+              style={{
+                backgroundColor: isAuthorizedUser ? '#064E3B28' : '#1E293B',
+                borderColor: isAuthorizedUser ? '#10B98160' : '#334155',
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                marginBottom: 16,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              <Text style={{ fontSize: 20 }}>{isAuthorizedUser ? '🛡️' : '🔐'}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: isAuthorizedUser ? '#34D399' : '#E2E8F0', fontWeight: '700', fontSize: 13 }}>
+                  {isAuthorizedUser ? 'Device Access Authorized' : 'Private App • Access Code Required'}
+                </Text>
+                <Text style={{ color: isAuthorizedUser ? '#A7F3D0' : '#94A3B8', fontSize: 11, marginTop: 2, lineHeight: 15 }}>
+                  {isAuthorizedUser
+                    ? 'This device is verified with an active access license.'
+                    : 'To restrict access to authorized users, enter your one-time access code.'}
+                </Text>
+              </View>
+            </View>
+
+            {/* One-Time Access Code Input (Required for unverified users) */}
+            {!isAuthorizedUser && (
+              <View style={{ marginBottom: 16 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.inputLabel}>One-Time Access Code *</Text>
+                  <Text style={{ color: '#00E5FF', fontSize: 11, fontWeight: '700' }}>Admin Single-Use</Text>
+                </View>
+                <TextInput
+                  style={[
+                    styles.input,
+                    {
+                      letterSpacing: 2,
+                      fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+                      fontWeight: '700',
+                      textTransform: 'uppercase',
+                      borderColor: accessCode.trim().length >= 6 ? '#10B981' : '#334155',
+                    },
+                  ]}
+                  placeholder="e.g. WND-7X9K-2M4P"
+                  placeholderTextColor="#64748B"
+                  value={accessCode}
+                  onChangeText={(txt) => setAccessCode(txt.toUpperCase().trim())}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                />
+                <Text style={{ color: '#64748B', fontSize: 11, marginTop: 4 }}>
+                  Contact the car owner/administrator to request a single-use access code.
+                </Text>
+              </View>
+            )}
 
             <Text style={styles.inputLabel}>10-Digit India Mobile Number *</Text>
             <TextInput
@@ -5817,6 +5963,67 @@ export default function App() {
               >
                 <Text style={[styles.logoutBtnText, { color: '#FCA5A5' }]}>🗑️ Wipe Cloud Data &amp; Deregister Car</Text>
               </TouchableOpacity>
+            </AccountSectionCard>
+
+            {/* CARD: Backend Admin Console & Access Control */}
+            <AccountSectionCard
+              title="Backend Admin Console & Access Control"
+              icon="🛡️"
+              badge={isAuthorizedUser ? 'Protected' : 'Gated'}
+              badgeBg={isAuthorizedUser ? '#064E3B' : '#7F1D1D'}
+              badgeColor={isAuthorizedUser ? '#34D399' : '#FCA5A5'}
+              preview={`Admin URL: ${BACKEND_URL}/admin • Generate one-time user access codes & manage authorized devices`}
+            >
+              <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 18, marginBottom: 14 }}>
+                Manage private access to this PWA. Generate single-use invitation codes for friends, view active devices, or revoke access remotely from the dedicated admin dashboard.
+              </Text>
+
+              <View style={{ gap: 8, marginBottom: 16 }}>
+                <InfoRow label="Admin Portal" value={`${BACKEND_URL}/admin`} />
+                <InfoRow label="Access Status" value={isAuthorizedUser ? '✓ Device Authorized' : 'Pending Verification'} />
+                {accessCode ? <InfoRow label="Active Code" value={accessCode} /> : null}
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
+                <TouchableOpacity
+                  style={[
+                    styles.logoutBtn,
+                    {
+                      flex: 1,
+                      backgroundColor: '#00E5FF20',
+                      borderColor: '#00E5FF80',
+                      marginTop: 0,
+                    },
+                  ]}
+                  onPress={() => {
+                    const url = `${BACKEND_URL}/admin`;
+                    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                      window.open(url, '_blank');
+                    } else {
+                      Linking.openURL(url).catch(() => {
+                        Alert.alert('Could Not Open Browser', `Please visit:\n${url}`);
+                      });
+                    }
+                  }}
+                >
+                  <Text style={[styles.logoutBtnText, { color: '#00E5FF' }]}>🌐 Open Admin Website ↗</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.logoutBtn,
+                    {
+                      flex: 1,
+                      backgroundColor: '#1E293B',
+                      borderColor: '#475569',
+                      marginTop: 0,
+                    },
+                  ]}
+                  onPress={() => copyToClipboard(`${BACKEND_URL}/admin`, 'Admin Website URL')}
+                >
+                  <Text style={[styles.logoutBtnText, { color: '#E2E8F0' }]}>📋 Copy Admin URL</Text>
+                </TouchableOpacity>
+              </View>
             </AccountSectionCard>
 
             {/* CARD 2: DISPLAY & TEXT SIZE SCALING */}

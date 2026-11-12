@@ -19,6 +19,15 @@ import { MgIndiaClient } from '../src/sdk/client';
 import { hashControlPin } from '../src/sdk/crypto';
 import legacy from './silent-webhook';
 import mgProxy from './worker';
+import {
+  initAccessControlD1,
+  ADMIN_TABLE_SCHEMAS,
+  handleAuthApi,
+  handleAdminApi,
+  renderAdminWebsiteHtml,
+  validateAccessCode,
+  logAccessEvent,
+} from './admin-portal';
 
 interface Env {
   DB?: any;
@@ -1068,6 +1077,13 @@ async function initD1(db: any) {
     } catch (err: any) {
       d1InitErrors.push(`${sql.substring(0, 30)}: ${err?.message || err}`);
       console.warn('initD1 statement error:', err);
+    }
+  }
+  for (const sql of ADMIN_TABLE_SCHEMAS) {
+    try {
+      await db.prepare(sql).run();
+    } catch (err: any) {
+      d1InitErrors.push(`admin schema ${sql.substring(0, 30)}: ${err?.message || err}`);
     }
   }
   // Auto-migrate columns for pre-existing tables:
@@ -3127,10 +3143,20 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   }
 
   let body: any = null;
-  if (request.method === 'POST') {
+  if (request.method === 'POST' || request.method === 'DELETE') {
     try {
       body = await request.json();
     } catch (_) {}
+  }
+
+  // ----------------------------------------------------------- Access Control & Admin Portal APIs
+  if (path.startsWith('/api/auth/')) {
+    if (env.DB) await initD1(env.DB);
+    return await handleAuthApi(env, request, url, body);
+  }
+  if (path.startsWith('/api/admin/')) {
+    if (env.DB) await initD1(env.DB);
+    return await handleAdminApi(env, request, url, body);
   }
 
   const reqVin = normVin(url.searchParams.get('vin') || body?.vin);
@@ -4002,6 +4028,16 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
     const cleanVin = normVin(body.vin);
     const cleanPhone = String(body.phone || '').replace(/\D/g, '');
+
+    // Check if user is blocked by administrator
+    if (env.DB && cleanPhone) {
+      try {
+        const uRow: any = await env.DB.prepare("SELECT * FROM authorized_users WHERE phone = ?").bind(cleanPhone).first();
+        if (uRow && uRow.status === 'blocked') {
+          return json({ success: false, error: 'Access revoked by administrator' }, 403);
+        }
+      } catch (_) {}
+    }
     const sessionObj = {
       uid: body.uid,
       token: body.token,
@@ -4468,6 +4504,9 @@ export default {
     }
 
     try {
+      if (url.pathname === '/admin' || url.pathname === '/admin/' || url.pathname === '/admin/login') {
+        return renderAdminWebsiteHtml(env, url);
+      }
       if (url.pathname === '/google-callback') return await handleGoogleCallback(env, url);
       if (url.pathname.startsWith('/api/')) return await handleApi(env, request, url);
       if (url.searchParams.has('url')) return await (mgProxy as any).fetch(request);

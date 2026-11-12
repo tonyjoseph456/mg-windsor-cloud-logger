@@ -59,3 +59,52 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_timestamp ON notifications(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_date ON notifications(date);
+
+-- One-Time Access Codes for friends & authorized users
+CREATE TABLE IF NOT EXISTS access_codes (
+  code TEXT PRIMARY KEY,
+  assigned_name TEXT,
+  assigned_phone TEXT,
+  notes TEXT,
+  status TEXT DEFAULT 'active',           -- 'active' | 'used' | 'revoked'
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at INTEGER,                     -- Unix timestamp (seconds), null = no expiration
+  redeemed_at TEXT,
+  redeemed_by_phone TEXT,
+  redeemed_by_vin TEXT,
+  redeemed_device_info TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_codes_status ON access_codes(status);
+CREATE INDEX IF NOT EXISTS idx_access_codes_phone ON access_codes(assigned_phone);
+
+-- Authorized Users / Friends List
+CREATE TABLE IF NOT EXISTS authorized_users (
+  id TEXT PRIMARY KEY,
+  phone TEXT UNIQUE NOT NULL,
+  name TEXT,
+  status TEXT DEFAULT 'active',           -- 'active' | 'blocked'
+  access_code TEXT,
+  vin TEXT,
+  car_name TEXT,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_login_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_authorized_users_phone ON authorized_users(phone);
+
+-- Security Audit Logs
+CREATE TABLE IF NOT EXISTS access_logs (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,                   -- 'code_generated' | 'code_redeemed' | 'code_revoked' | 'login_success' | 'login_blocked' | 'user_blocked' | 'user_unblocked'
+  phone TEXT,
+  code TEXT,
+  status TEXT NOT NULL,                   -- 'success' | 'blocked' | 'revoked'
+  reason TEXT,
+  ip TEXT,
+  user_agent TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_logs_created_at ON access_logs(created_at DESC);
