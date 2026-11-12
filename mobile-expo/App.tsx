@@ -4871,18 +4871,32 @@ export default function App() {
 
       {tab === 'trips' ? (
         <View style={styles.tripsScreenRoot}>
-          {/* TAB 3: TRIPS (Fixed Top Header & Day Totals + Scrolling Trip List) */}
-          <Animated.View
-            style={[
-              styles.tripsMainContainer,
-              {
-                transform: [{ translateX: tripsTranslateX }],
-              },
-            ]}
+          {/* TAB 3: TRIPS (Full Screen Scrollable from Top to Bottom) */}
+          <ScrollView
+            style={styles.tripsScrollView}
+            contentContainerStyle={styles.tripsScrollContent}
+            showsVerticalScrollIndicator={true}
+            keyboardShouldPersistTaps="handled"
+            {...(Platform.OS === 'web' ? ({ className: 'trips-scroller' } as any) : {})}
+            refreshControl={
+              <RefreshControl
+                refreshing={isSyncing}
+                onRefresh={() => refreshVehicleTelemetry()}
+                tintColor="#10B981"
+              />
+            }
           >
-            {/* 1. FIXED TOP SECTION: Header, Start/Plan buttons, Date Selector & Day Totals */}
-            <View style={styles.tripsFixedTopSection}>
-              {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
+            <Animated.View
+              style={[
+                styles.tripsMainContainer,
+                {
+                  transform: [{ translateX: tripsTranslateX }],
+                },
+              ]}
+            >
+              {/* 1. TOP SECTION: Header, Start/Plan buttons, Date Selector & Day Totals */}
+              <View style={styles.tripsTopSection}>
+                {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
               <View style={styles.mockupHeader}>
                 <View style={{ flex: 1, paddingRight: 8 }}>
                   <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
@@ -5131,73 +5145,41 @@ export default function App() {
               })()}
             </View>
 
-            {/* 5. SCROLLING TRIP LIST CONTAINER */}
-            <View style={styles.tripsListScrollWrapper}>
-              <ScrollView
-                style={styles.tripsListScrollView}
-                contentContainerStyle={styles.tripsListScrollContent}
-                showsVerticalScrollIndicator={true}
-                persistentScrollbar={true}
-                indicatorStyle="white"
-                stickyHeaderIndices={stickyIndices}
-                {...(Platform.OS === 'web' ? ({ className: 'trips-scroller' } as any) : {})}
-                refreshControl={
-                  <RefreshControl
-                    refreshing={isSyncing}
-                    onRefresh={() => refreshVehicleTelemetry()}
-                    tintColor="#10B981"
-                  />
-                }
-              >
-                {displayedTrips.length === 0 ? (
-                  <View style={styles.tripEmptyContainer}>
-                    <Text style={styles.tripEmptyIcon}>🗓️</Text>
-                    <Text style={styles.tripEmptyTitle}>
-                      {selectedTripDate === todayKey
-                        ? 'No Trips Recorded Today'
-                        : selectedTripDate === 'all'
-                        ? 'No Completed Trips Saved Yet'
-                        : `No Trips on ${formatDisplayDateKey(selectedTripDate)}`}
-                    </Text>
-                    <Text style={styles.tripEmptySubtitle}>
-                      Trips are recorded automatically when your car drives (or tap &quot;Start trip&quot; / &quot;•••&quot; to log a trip).
-                    </Text>
-                    {selectedTripDate !== todayKey && (
-                      <TouchableOpacity
-                        style={styles.tripEmptyActionBtn}
-                        onPress={() => {
-                          setSelectedTripDate(todayKey);
-                          setShowTripCalendar(false);
-                        }}
-                      >
-                        <Text style={styles.tripEmptyActionBtnText}>📅 Show Today&apos;s Trips</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                ) : (
-                  scrollChildren
-                )}
-              </ScrollView>
-
-              {/* Scroll Hint: Bottom Fade Out above the bottom nav bar */}
-              {displayedTrips.length > 2 && (
-                <View pointerEvents="none" style={styles.tripsBottomFadeHint}>
-                  <Svg width="100%" height={48} style={{ width: '100%', height: 48 }}>
-                    <Defs>
-                      <LinearGradient id="tripsBottomFadeGrad" x1="0" y1="0" x2="0" y2="1">
-                        <Stop offset="0%" stopColor="#0A0E17" stopOpacity="0" />
-                        <Stop offset="35%" stopColor="#0A0E17" stopOpacity="0.35" />
-                        <Stop offset="75%" stopColor="#0A0E17" stopOpacity="0.85" />
-                        <Stop offset="100%" stopColor="#0A0E17" stopOpacity="1" />
-                      </LinearGradient>
-                    </Defs>
-                    <Rect x="0" y="0" width="100%" height={48} fill="url(#tripsBottomFadeGrad)" />
-                  </Svg>
+            {/* 2. TRIP LIST ITEMS CONTAINER */}
+            <View style={styles.tripsListContainer}>
+              {displayedTrips.length === 0 ? (
+                <View style={styles.tripEmptyContainer}>
+                  <Text style={styles.tripEmptyIcon}>🗓️</Text>
+                  <Text style={styles.tripEmptyTitle}>
+                    {selectedTripDate === todayKey
+                      ? 'No Trips Recorded Today'
+                      : selectedTripDate === 'all'
+                      ? 'No Completed Trips Saved Yet'
+                      : `No Trips on ${formatDisplayDateKey(selectedTripDate)}`}
+                  </Text>
+                  <Text style={styles.tripEmptySubtitle}>
+                    Trips are recorded automatically when your car drives (or tap &quot;Start trip&quot; / &quot;•••&quot; to log a trip).
+                  </Text>
+                  {selectedTripDate !== todayKey && (
+                    <TouchableOpacity
+                      style={styles.tripEmptyActionBtn}
+                      onPress={() => {
+                        setSelectedTripDate(todayKey);
+                        setShowTripCalendar(false);
+                      }}
+                    >
+                      <Text style={styles.tripEmptyActionBtnText}>📅 Show Today&apos;s Trips</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
+              ) : (
+                scrollChildren
               )}
             </View>
+          </Animated.View>
+        </ScrollView>
 
-            {/* Overflow Options Modal for Cloudflare D1 & Syncing */}
+        {/* Overflow Options Modal for Cloudflare D1 & Syncing */}
             <Modal visible={showTripsOptionsMenu} transparent animationType="fade">
               <TouchableOpacity
                 style={styles.modalBackdrop}
@@ -5278,7 +5260,6 @@ export default function App() {
                 </View>
               </TouchableOpacity>
             </Modal>
-          </Animated.View>
         </View>
       ) : (
         <ScrollView
@@ -14957,28 +14938,8 @@ const styles = StyleSheet.create({
   tripsScreenRoot: {
     flex: 1,
     width: '100%',
-    alignItems: 'center',
   },
-  tripsMainContainer: {
-    flex: 1,
-    width: '100%',
-    maxWidth: 440,
-    alignSelf: 'center',
-    paddingHorizontal: 24,
-    paddingTop: 14,
-  },
-  tripsFixedTopSection: {
-    width: '100%',
-    backgroundColor: '#0A0E17',
-    zIndex: 5,
-  },
-  tripsListScrollWrapper: {
-    flex: 1,
-    width: '100%',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  tripsListScrollView: {
+  tripsScrollView: {
     flex: 1,
     width: '100%',
     ...(Platform.OS === 'web'
@@ -14988,8 +14949,20 @@ const styles = StyleSheet.create({
         } as any)
       : {}),
   },
-  tripsListScrollContent: {
-    paddingBottom: (Platform.OS === 'web' ? 120 : 128),
+  tripsScrollContent: {
+    width: '100%',
+    alignItems: 'center',
+    paddingBottom: (Platform.OS === 'web' ? 120 : 130),
+  },
+  tripsMainContainer: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 14,
+  },
+  tripsTopSection: {
+    width: '100%',
   },
   tripsStickyHeader: {
     backgroundColor: '#0A0E17',
