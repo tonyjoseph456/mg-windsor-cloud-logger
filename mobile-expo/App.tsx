@@ -5635,42 +5635,60 @@ export default function App() {
         {/* TAB 2: EV CHARGING (REDESIGNED TO MATCH MOCKUP) */}
         {tab === 'charge' && (
           <View style={styles.chargeMainContainer}>
-            {/* 1. Unified Charge Header: Title "Charge", Color · Synced, Status Pill Badge */}
-            <View style={styles.chargeHeaderRow}>
-              <View style={styles.chargeHeaderLeft}>
-                <Text style={styles.chargeHeaderTitle}>Charge</Text>
+            {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
+            <View style={styles.mockupHeader}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
                 <TouchableOpacity
-                  style={styles.chargeSublineRow}
+                  style={styles.mockupSublineRow}
                   onPress={() => setShowColorPicker(true)}
                   activeOpacity={0.7}
                   accessibilityLabel="Change vehicle color"
                   accessibilityRole="button"
                 >
-                  <Text style={styles.chargeHeaderSub} numberOfLines={1}>
-                    {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap to sync'}
+                  <View style={[styles.colorDot, { backgroundColor: activeWindsorColor.hex }]} />
+                  <Text style={styles.mockupSublineText} numberOfLines={1}>
+                    {activeWindsorColor.name} · {lastSyncedAt ? `Synced ${lastSyncedAt}` : 'Tap ↻ to sync'}
                   </Text>
+                  <Text style={styles.colorPencilHint}>▾</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Status Pill Badge & Sync Action */}
+              {/* Circular Refresh ↻ */}
               <TouchableOpacity
+                style={styles.mockupRefreshBtn}
+                onPress={() => refreshVehicleTelemetry()}
+                disabled={isSyncing}
+                activeOpacity={0.7}
+                accessibilityLabel="Refresh telemetry"
+                accessibilityRole="button"
+              >
+                {isSyncing ? (
+                  <ActivityIndicator size="small" color="#10B981" />
+                ) : (
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth={2.4}>
+                    <Path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* 2. Section Header: Charge Title & Plug/Charge Status Badge */}
+            <View style={[styles.chargeHeaderRow, { marginTop: 8, marginBottom: 16 }]}>
+              <Text style={styles.chargeHeaderTitle}>Charge</Text>
+              <View
                 style={[
                   styles.chargeStatusBadge,
                   charge?.is_charging && styles.chargeStatusBadgeCharging,
                 ]}
-                onPress={() => refreshVehicleTelemetry()}
-                disabled={isSyncing}
-                activeOpacity={0.7}
-                accessibilityLabel="Sync Vehicle Status"
-                accessibilityRole="button"
               >
-                {isSyncing ? (
+                {charge?.is_charging && (
                   <ActivityIndicator
                     size="small"
-                    color={charge?.is_charging ? '#34D399' : '#94A3B8'}
+                    color="#34D399"
                     style={{ marginRight: 6 }}
                   />
-                ) : null}
+                )}
                 <Text
                   style={[
                     styles.chargeStatusBadgeText,
@@ -5683,7 +5701,7 @@ export default function App() {
                     ? '🔌 Plugged in'
                     : '🔌 Unplugged'}
                 </Text>
-              </TouchableOpacity>
+              </View>
             </View>
 
             {/* 2. Hero SoC & Capacity Row + Progress Bar */}
@@ -15836,8 +15854,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 440,
     alignSelf: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 14,
+    paddingHorizontal: 8,
+    paddingTop: 8,
     paddingBottom: Platform.OS === 'web' ? 120 : 130,
   },
   chargeHeaderRow: {
@@ -15845,7 +15863,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
-    marginTop: 4,
+    paddingHorizontal: 4,
   },
   chargeHeaderLeft: {
     flex: 1,
@@ -15857,9 +15875,9 @@ const styles = StyleSheet.create({
   },
   chargeHeaderTitle: {
     fontSize: 28,
-    fontWeight: '800',
-    color: '#F8FAFC',
-    letterSpacing: -0.5,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -0.6,
   },
   chargeHeaderSub: {
     fontSize: 13,
