@@ -2098,9 +2098,28 @@ export default function App() {
 
       group.trips.forEach((trip, idx) => {
         const isLast = gIdx === groupedTrips.length - 1 && idx === group.trips.length - 1;
-        const routeTitle = formatTripRouteTitle(trip);
         const distStr = formatTripDistDisplay(trip);
         const subStr = formatTripTimeDisplay(trip);
+
+        const startClean = cleanLocationSummary(trip.startLocation);
+        const endClean = cleanLocationSummary(trip.endLocation);
+        const startPlace = startClean || 'Starting point';
+        const endPlace = endClean || 'Destination point';
+
+        let batteryUsedPct = 0;
+        if (
+          typeof trip.startSoc === 'number' &&
+          typeof trip.endSoc === 'number' &&
+          trip.startSoc > 0 &&
+          trip.endSoc >= 0 &&
+          trip.startSoc > trip.endSoc
+        ) {
+          batteryUsedPct = Math.round(trip.startSoc - trip.endSoc);
+        } else if (typeof trip.energyUsedKwh === 'number' && trip.energyUsedKwh > 0) {
+          batteryUsedPct = Math.max(1, Math.round((trip.energyUsedKwh / 38.0) * 100));
+        } else if (typeof trip.distanceKm === 'number' && trip.distanceKm > 0) {
+          batteryUsedPct = Math.max(1, Math.round((trip.distanceKm / 300) * 100));
+        }
 
         children.push(
           <TouchableOpacity
@@ -2110,19 +2129,46 @@ export default function App() {
             activeOpacity={0.7}
           >
             <View style={styles.tripsListItemMain}>
+              {/* Line 1: Start Location (Left) and Distance (Right) */}
               <View style={styles.tripsListItemTopRow}>
                 <Text
-                  style={styles.tripsListItemTitle}
+                  style={styles.tripsListItemStartPlace}
                   numberOfLines={1}
                   ellipsizeMode="tail"
                 >
-                  {routeTitle}
+                  {startPlace}
                 </Text>
                 <Text style={styles.tripsListItemDist}>
                   {distStr}
                 </Text>
               </View>
-              <Text style={styles.tripsListItemSub}>
+
+              {/* Line 2: Route Track Line & Battery Used */}
+              <View style={styles.tripsBatteryUsedRow}>
+                <View style={styles.tripsRouteIndicatorCol}>
+                  <View style={styles.tripsRouteTrackLine} />
+                </View>
+                <Text style={styles.tripsBatteryUsedText}>
+                  {`${batteryUsedPct}% battery used`}
+                </Text>
+              </View>
+
+              {/* Line 3: Green Dot Destination Node */}
+              <View style={styles.tripsDestRow}>
+                <View style={styles.tripsRouteIndicatorCol}>
+                  <View style={styles.tripsDestDot} />
+                </View>
+                <Text
+                  style={styles.tripsListItemEndPlace}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                >
+                  {endPlace}
+                </Text>
+              </View>
+
+              {/* Line 4: Time & Duration */}
+              <Text style={styles.tripsListItemTime}>
                 {subStr}
               </Text>
             </View>
@@ -13242,7 +13288,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   tripsListItem: {
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
   },
@@ -13251,31 +13297,87 @@ const styles = StyleSheet.create({
   },
   tripsListItemTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     marginBottom: 4,
     width: '100%',
   },
-  tripsListItemTitle: {
+  tripsListItemStartPlace: {
     color: '#F8FAFC',
-    fontSize: 16.5,
+    fontSize: 15,
     fontWeight: '700',
     flex: 1,
-    flexShrink: 1,
-    marginRight: 24,
-    maxWidth: '74%',
+    paddingRight: 16,
+    maxWidth: '78%',
   },
   tripsListItemDist: {
     color: '#F8FAFC',
-    fontSize: 16.5,
+    fontSize: 16,
     fontWeight: '800',
     flexShrink: 0,
     textAlign: 'right',
   },
+  tripsBatteryUsedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 2,
+  },
+  tripsRouteIndicatorCol: {
+    width: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tripsRouteTrackLine: {
+    width: 2,
+    height: 16,
+    backgroundColor: '#0D9488',
+    borderRadius: 1,
+  },
+  tripsBatteryUsedText: {
+    color: '#F1F5F9',
+    fontSize: 13,
+    fontWeight: '500',
+    marginLeft: 8,
+  },
+  tripsDestRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  tripsDestDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10B981',
+    marginTop: 5,
+  },
+  tripsListItemEndPlace: {
+    color: '#F8FAFC',
+    fontSize: 14.5,
+    fontWeight: '700',
+    flex: 1,
+    marginLeft: 8,
+    paddingRight: 40,
+  },
+  tripsListItemTime: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '400',
+    marginTop: 2,
+  },
+  tripsListItemTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    flex: 1,
+    paddingRight: 16,
+    maxWidth: '78%',
+  },
   tripsListItemSub: {
     color: '#94A3B8',
-    fontSize: 13.5,
-    fontWeight: '500',
+    fontSize: 12,
+    fontWeight: '400',
   },
   tripsOptionsBox: {
     backgroundColor: '#111827',
