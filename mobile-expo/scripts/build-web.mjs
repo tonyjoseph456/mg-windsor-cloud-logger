@@ -69,6 +69,10 @@ const tags = `
         overscroll-behavior-y: none;
         overflow: hidden !important;
       }
+      /* Prevent iOS Safari from zooming in on input focus */
+      input, textarea, select {
+        font-size: 16px !important;
+      }
       body {
         overflow: hidden !important;
       }
@@ -150,10 +154,10 @@ const tags = `
 const htmlPath = path.join(out, 'index.html');
 let html = fs.readFileSync(htmlPath, 'utf8');
 
-// Ensure viewport includes viewport-fit=cover so the background extends into the safe areas seamlessly
+// Ensure viewport includes viewport-fit=cover and disables auto-zoom on mobile inputs
 html = html.replace(
-  '<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />',
-  '<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover" />'
+  /<meta\s+name=["']viewport["'][^>]*>/i,
+  '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />'
 );
 
 html = html.replace('</head>', `${tags}\n  </head>`);

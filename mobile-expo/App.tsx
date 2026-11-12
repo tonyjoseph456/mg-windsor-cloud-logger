@@ -90,6 +90,16 @@ import {
   PlaceSuggestion,
   searchDestinationPlaces,
   resolvePlaceSuggestion,
+  buildManualTripPlan,
+  simulateLegToCharger,
+  findBackupChargerInCorridor,
+  VoltaTripPlanner,
+  DEFAULT_WINDSOR_PROFILE,
+  DEFAULT_TRIP_SETTINGS,
+  DEFAULT_CHARGER_PREFS,
+  PlannedCharger,
+  PlannedStop,
+  TripPlan,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 
@@ -770,6 +780,13 @@ interface PlanSliderProps {
   onChange: (val: number) => void;
 }
 
+function formatHm(mins: number): string {
+  const m = Math.max(0, Math.round(mins));
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return h > 0 ? `${h}h ${rem}m` : `${rem} min`;
+}
+
 function PlanSliderRow({
   label,
   value,
@@ -779,41 +796,65 @@ function PlanSliderRow({
   unit = '%',
   onChange,
 }: PlanSliderProps) {
-  const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+  const [localVal, setLocalVal] = useState<number>(value);
+  const trackRef = useRef<any>(null);
+  const trackWidthRef = useRef<number>(320);
 
-  const handleWebChange = (e: any) => {
+  useEffect(() => {
+    setLocalVal(value);
+  }, [value]);
+
+  const pct = Math.max(0, Math.min(100, ((localVal - min) / (max - min)) * 100));
+
+  const updateValue = (next: number) => {
+    const clamped = Math.max(min, Math.min(max, Math.round(next / step) * step));
+    setLocalVal(clamped);
+    onChange(clamped);
+  };
+
+  const handleWebInput = (e: any) => {
     const next = Number(e.target.value);
     if (!isNaN(next)) {
-      onChange(Math.max(min, Math.min(max, next)));
+      updateValue(next);
     }
   };
 
-  const handleTouch = (evt: any) => {
+  const handleNativeTouch = (evt: any) => {
     const { locationX } = evt.nativeEvent;
-    const width = evt.nativeEvent.layout?.width || 320;
+    const width = trackWidthRef.current || 320;
     if (width > 0) {
       const ratio = Math.max(0, Math.min(1, locationX / width));
       const raw = min + ratio * (max - min);
-      const stepped = Math.round(raw / step) * step;
-      onChange(Math.max(min, Math.min(max, stepped)));
+      updateValue(raw);
     }
   };
+
+  const responderProps =
+    Platform.OS === 'web'
+      ? {}
+      : {
+          onStartShouldSetResponder: () => true,
+          onResponderGrant: handleNativeTouch,
+          onResponderMove: handleNativeTouch,
+        };
 
   return (
     <View style={styles.planSliderRow}>
       <View style={styles.planSliderHeader}>
         <Text style={styles.planSliderLabel}>{label}</Text>
-        <Text style={styles.planSliderVal}>{value}{unit}</Text>
+        <Text style={styles.planSliderVal}>{localVal}{unit}</Text>
       </View>
 
       <View
+        ref={trackRef}
         style={styles.planSliderTrackWrap}
-        onStartShouldSetResponder={() => true}
-        onResponderMove={handleTouch}
-        onResponderGrant={handleTouch}
+        onLayout={(e) => {
+          trackWidthRef.current = e.nativeEvent.layout.width || 320;
+        }}
+        {...responderProps}
       >
-        <View style={styles.planSliderTrackBg}>
-          <View style={[styles.planSliderTrackFill, { width: `${pct}%` }]} />
+        <View style={styles.planSliderTrackBg} pointerEvents="none">
+          <View style={[styles.planSliderTrackFill, { width: `${pct}%` }]} pointerEvents="none" />
         </View>
 
         <View
@@ -821,6 +862,7 @@ function PlanSliderRow({
             styles.planSliderThumb,
             { left: `${pct}%` },
           ]}
+          pointerEvents="none"
         />
 
         {Platform.OS === 'web' && (
@@ -829,8 +871,9 @@ function PlanSliderRow({
             min={min}
             max={max}
             step={step}
-            value={value}
-            onChange={handleWebChange}
+            value={localVal}
+            onInput={handleWebInput}
+            onChange={handleWebInput}
             style={{
               position: 'absolute',
               top: 0,
@@ -842,9 +885,163 @@ function PlanSliderRow({
               margin: 0,
               padding: 0,
               zIndex: 10,
+              touchAction: 'none',
             }}
           />
         )}
+      </View>
+    </View>
+  );
+}
+
+function RouteResultBatteryChart({
+  routeChoice,
+  plan,
+  startSoc,
+  minBuffer = 10,
+}: {
+  routeChoice: RouteChoice;
+  plan: TripPlan | null;
+  startSoc: number;
+  minBuffer?: number;
+}) {
+  const width = 340;
+  const height = 120;
+  const padL = 10;
+  const padR = 10;
+  const padT = 12;
+  const padB = 24;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const totalDistM = Math.max(1, routeChoice.distanceM);
+  const xOf = (dM: number) => padL + Math.max(0, Math.min(1, dM / totalDistM)) * plotW;
+  const ySoc = (soc: number) => padT + (1 - Math.max(0, Math.min(100, soc)) / 100) * plotH;
+
+  // Elevation Path
+  const profile = routeChoice.profile || [];
+  const minElev = profile.length > 0 ? Math.min(...profile.map((p) => p.elevationM), 0) : 0;
+  const maxElev = profile.length > 0 ? Math.max(...profile.map((p) => p.elevationM), 100) : 100;
+  const elevRange = Math.max(1, maxElev - minElev);
+  const yElev = (eM: number) => padT + plotH - ((eM - minElev) / elevRange) * (plotH * 0.65);
+
+  let elevPath = '';
+  if (profile.length > 0) {
+    elevPath = `M ${padL} ${padT + plotH} `;
+    profile.forEach((pt) => {
+      elevPath += `L ${xOf(pt.distanceM).toFixed(1)} ${yElev(pt.elevationM).toFixed(1)} `;
+    });
+    elevPath += `L ${padL + plotW} ${padT + plotH} Z`;
+  }
+
+  // Battery SoC Path
+  const trace = plan?.socTrace || [
+    { distanceM: 0, socPercent: startSoc, elevationM: 0 },
+    { distanceM: totalDistM, socPercent: 0, elevationM: 0 },
+  ];
+
+  let socPath = '';
+  trace.forEach((pt, idx) => {
+    const cmd = idx === 0 ? 'M' : 'L';
+    socPath += `${cmd} ${xOf(pt.distanceM).toFixed(1)} ${ySoc(pt.socPercent).toFixed(1)} `;
+  });
+
+  // Empty point if unreachable
+  const emptyPt = !plan?.reachable
+    ? trace.find((p) => p.socPercent <= 0) || trace[trace.length - 1]
+    : null;
+
+  return (
+    <View style={styles.chartBox}>
+      <View style={styles.chartHeaderRow}>
+        <Text style={styles.chartTitle}>Battery along the route</Text>
+        <Text style={styles.chartPeakText}>Peak {routeChoice.peakM || Math.round(maxElev)} m</Text>
+      </View>
+
+      <View style={{ alignItems: 'center', width: '100%' }}>
+        <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
+          {/* Dashed Min Charger Buffer Line */}
+          <Line
+            x1={padL}
+            y1={ySoc(minBuffer)}
+            x2={width - padR}
+            y2={ySoc(minBuffer)}
+            stroke="#EF444460"
+            strokeWidth="1"
+            strokeDasharray="4,3"
+          />
+
+          {/* Elevation Shaded Area */}
+          {elevPath ? (
+            <Path d={elevPath} fill="#1E3A5F" stroke="#38BDF8" strokeWidth="1.2" />
+          ) : null}
+
+          {/* Battery SoC Line */}
+          <Path d={socPath} fill="none" stroke="#34D399" strokeWidth="2.4" />
+
+          {/* Charging Stop Dots */}
+          {plan?.stops.map((s, idx) => (
+            <React.Fragment key={idx}>
+              <Circle
+                cx={xOf(s.charger.alongRouteM)}
+                cy={ySoc(s.arriveSoc)}
+                r="3.5"
+                fill="#F59E0B"
+                stroke="#FFFFFF"
+                strokeWidth="1"
+              />
+              <Circle
+                cx={xOf(s.charger.alongRouteM)}
+                cy={ySoc(s.departSoc)}
+                r="3.5"
+                fill="#10B981"
+                stroke="#FFFFFF"
+                strokeWidth="1"
+              />
+            </React.Fragment>
+          ))}
+
+          {/* Red dot at empty battery if unreachable */}
+          {emptyPt && (
+            <Circle
+              cx={xOf(emptyPt.distanceM)}
+              cy={ySoc(0)}
+              r="4.5"
+              fill="#F87171"
+              stroke="#FFFFFF"
+              strokeWidth="1.5"
+            />
+          )}
+        </Svg>
+      </View>
+
+      {/* Axis distance labels */}
+      <View style={styles.chartAxisRow}>
+        <Text style={styles.chartAxisLabel}>0 km</Text>
+        {emptyPt ? (
+          <Text style={[styles.chartAxisLabel, { color: '#F87171', fontWeight: '800' }]}>
+            Empty at {Math.round(emptyPt.distanceM / 1000)} km
+          </Text>
+        ) : (
+          <Text style={[styles.chartAxisLabel, { color: '#34D399', fontWeight: '700' }]}>
+            Arrive {plan?.arrivalSoc ?? 0}%
+          </Text>
+        )}
+        <Text style={styles.chartAxisLabel}>
+          {(totalDistM / 1000).toFixed(0)} km
+        </Text>
+      </View>
+
+      {/* Legend */}
+      <View style={styles.chartLegendRow}>
+        <View style={styles.chartLegendItem}>
+          <View style={[styles.chartLegendDot, { backgroundColor: '#34D399' }]} />
+          <Text style={styles.chartLegendText}>Battery</Text>
+        </View>
+        <View style={styles.chartLegendItem}>
+          <View style={[styles.chartLegendDot, { backgroundColor: '#38BDF8' }]} />
+          <Text style={styles.chartLegendText}>Elevation</Text>
+        </View>
       </View>
     </View>
   );
@@ -1405,9 +1602,17 @@ export default function App() {
     });
   };
 
-  // Trips Subscreens (Plan a Trip & Trip Detail) Tween State
+  // Trips Subscreens (Plan a Trip, Route Results & Trip Detail) Tween State
   const planSlideAnim = useRef(new Animated.Value(0)).current;
   const [isPlanScreenVisible, setIsPlanScreenVisible] = useState<boolean>(false);
+
+  const routeResultSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isRouteResultVisible, setIsRouteResultVisible] = useState<boolean>(false);
+  const [routeResultSelectedStops, setRouteResultSelectedStops] = useState<PlannedCharger[]>([]);
+  const [routeResultRouteIdx, setRouteResultRouteIdx] = useState<number>(0);
+  const [routeResultShowAllChargers, setRouteResultShowAllChargers] = useState<boolean>(false);
+  const [routeResultPlannedOrigin, setRouteResultPlannedOrigin] = useState<NamedPlace | null>(null);
+  const [routeResultPlannedDest, setRouteResultPlannedDest] = useState<NamedPlace | null>(null);
 
   const handleOpenPlanScreen = () => {
     setIsPlanScreenVisible(true);
@@ -1420,6 +1625,13 @@ export default function App() {
   };
 
   const handleClosePlanScreen = () => {
+    if (isRouteResultVisible) {
+      Animated.timing(routeResultSlideAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: Platform.OS !== 'web',
+      }).start(() => setIsRouteResultVisible(false));
+    }
     Animated.timing(planSlideAnim, {
       toValue: 0,
       duration: 280,
@@ -1427,6 +1639,17 @@ export default function App() {
       useNativeDriver: Platform.OS !== 'web',
     }).start(() => {
       setIsPlanScreenVisible(false);
+    });
+  };
+
+  const handleCloseRouteResult = () => {
+    Animated.timing(routeResultSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setIsRouteResultVisible(false);
     });
   };
 
@@ -3521,12 +3744,112 @@ export default function App() {
         (msg) => setPlanProgressMsg(msg)
       );
       setPlanComputedChoices(choices);
+      setRouteResultRouteIdx(0);
+      setRouteResultSelectedStops([]);
+      setRouteResultShowAllChargers(false);
+      setRouteResultPlannedOrigin(
+        planOriginMode === 'custom' && planCustomOriginPlace
+          ? planCustomOriginPlace
+          : { placeId: 'car-gps', name: 'Car GPS', position: originPos }
+      );
+      setRouteResultPlannedDest(dest);
       setPlanIsComputing(false);
+      setIsRouteResultVisible(true);
+      Animated.timing(routeResultSlideAnim, {
+        toValue: 1,
+        duration: 320,
+        easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+        useNativeDriver: Platform.OS !== 'web',
+      }).start();
       showBanner('ok', `Route planned to ${dest.name}!`);
     } catch (e: any) {
       setPlanIsComputing(false);
       setPlanError(e?.message || 'Could not compute route.');
     }
+  };
+
+  // Active route choice and active trip plan with user-selected charging stops
+  const activeRouteChoice: RouteChoice | null =
+    planComputedChoices[routeResultRouteIdx] || planComputedChoices[0] || null;
+
+  const activeTripPlan: TripPlan | null = useMemo(() => {
+    if (!activeRouteChoice) return null;
+    return buildManualTripPlan(
+      DEFAULT_WINDSOR_PROFILE,
+      {
+        ...DEFAULT_TRIP_SETTINGS,
+        minArrivalAtChargerPercent: planMinCharger,
+        minArrivalAtDestinationPercent: planMinDest,
+        maxChargeTargetPercent: planChargeTo,
+      },
+      activeRouteChoice.profile,
+      planStartSoc,
+      routeResultSelectedStops,
+      activeRouteChoice.chargers,
+      {}
+    );
+  }, [activeRouteChoice, planStartSoc, planMinCharger, planMinDest, planChargeTo, routeResultSelectedStops]);
+
+  const handleAddSelectedStop = (charger: PlannedCharger) => {
+    setRouteResultSelectedStops((prev) => {
+      if (prev.some((p) => p.id === charger.id)) return prev;
+      return [...prev, charger].sort((a, b) => a.alongRouteM - b.alongRouteM);
+    });
+    showBanner('ok', `Added "${charger.name}" as Stop ${routeResultSelectedStops.length + 1}`);
+  };
+
+  const handleRemoveSelectedStop = (index: number) => {
+    setRouteResultSelectedStops((prev) => prev.filter((_, i) => i !== index));
+    showBanner('ok', `Removed Stop ${index + 1}`);
+  };
+
+  const handleClearSelectedStops = () => {
+    setRouteResultSelectedStops([]);
+    showBanner('ok', 'Cleared all selected charging stops');
+  };
+
+  const handleAutoSuggestSelectedStops = () => {
+    if (!activeRouteChoice) return;
+    const planner = new VoltaTripPlanner(
+      DEFAULT_WINDSOR_PROFILE,
+      {
+        ...DEFAULT_TRIP_SETTINGS,
+        minArrivalAtChargerPercent: planMinCharger,
+        minArrivalAtDestinationPercent: planMinDest,
+        maxChargeTargetPercent: planChargeTo,
+      },
+      DEFAULT_CHARGER_PREFS,
+      {}
+    );
+    const options = planner.options(
+      activeRouteChoice.profile,
+      planStartSoc,
+      activeRouteChoice.chargers,
+      activeRouteChoice.durationS / 60.0
+    );
+    const autoPlan = options[0]?.plan;
+    if (autoPlan && autoPlan.stops.length > 0) {
+      setRouteResultSelectedStops(autoPlan.stops.map((s) => s.charger));
+      showBanner('ok', `Auto-suggested ${autoPlan.stops.length} optimal stops based on live traffic & elevation.`);
+    } else {
+      setRouteResultSelectedStops([]);
+      showBanner('ok', 'Route can be driven non-stop without charging!');
+    }
+  };
+
+  const handleOpenRouteInGoogleMaps = () => {
+    if (!activeRouteChoice || !routeResultPlannedDest) return;
+    const originPos = routeResultPlannedOrigin?.position || {
+      lat: snapshot?.status?.gps?.latitude ?? 10.062227,
+      lng: snapshot?.status?.gps?.longitude ?? 76.620519,
+    };
+    const destPos = routeResultPlannedDest.position;
+    const waypoints = routeResultSelectedStops
+      .map((s) => `${s.position.lat},${s.position.lng}`)
+      .join('|');
+    const wpParam = waypoints ? `&waypoints=${encodeURIComponent(waypoints)}` : '';
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${originPos.lat},${originPos.lng}&destination=${destPos.lat},${destPos.lng}${wpParam}&travelmode=driving`;
+    Linking.openURL(url);
   };
 
   // 1. Startup Keychain Check Screen
@@ -3725,7 +4048,7 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
-  // Trips subscreen slide animations (Plan a trip & Trip detail)
+  // Trips subscreen slide animations (Plan a trip, Route Results & Trip detail)
   const tripsSubscreenAnim = Animated.add(planSlideAnim, tripDetailSlideAnim);
   const tripsTranslateX = tripsSubscreenAnim.interpolate({
     inputRange: [0, 1],
@@ -3734,6 +4057,19 @@ export default function App() {
   });
 
   const planTranslateX = planSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const planScreenShiftX = routeResultSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -screenWidth * 0.3],
+    extrapolate: 'clamp',
+  });
+
+  const planEffectiveTranslateX = Animated.add(planTranslateX, planScreenShiftX);
+
+  const routeResultTranslateX = routeResultSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -3891,13 +4227,14 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              {/* 3. Row with 2 Action Buttons: [ ▶ Start trip ] and [ Plan a trip ] */}
+              {/* 3. Row with 3 Action Buttons: [ ▶ Start trip ], [ Plan a trip ], and [ ⚡ Search chargers ] */}
               <View style={styles.tripsActionButtonsRow}>
                 {/* Button 1: Start / End trip */}
                 <TouchableOpacity
                   style={[
-                    styles.tripsStartBtn,
-                    (liveTripTracking || activeTrip) && styles.tripsStartBtnActive,
+                    styles.tripsActionCardBtn,
+                    styles.tripsStartCardBtn,
+                    (liveTripTracking || activeTrip) && styles.tripsStartCardBtnActive,
                   ]}
                   onPress={async () => {
                     if (liveTripTracking || activeTrip) {
@@ -3948,7 +4285,7 @@ export default function App() {
                   </Svg>
                   <Text
                     style={[
-                      styles.tripsStartBtnText,
+                      styles.tripsStartCardBtnText,
                       (liveTripTracking || activeTrip) && { color: '#FFFFFF' },
                     ]}
                   >
@@ -3958,7 +4295,7 @@ export default function App() {
 
                 {/* Button 2: Plan a trip */}
                 <TouchableOpacity
-                  style={styles.tripsPlanBtn}
+                  style={[styles.tripsActionCardBtn, styles.tripsDarkCardBtn]}
                   onPress={handleOpenPlanScreen}
                   activeOpacity={0.7}
                   accessibilityLabel="Plan a trip"
@@ -3968,7 +4305,25 @@ export default function App() {
                     <Path d="M18 6a3 3 0 1 0-3-3v12a3 3 0 1 1-3-3" strokeLinecap="round" strokeLinejoin="round" />
                     <Path d="M18 6h-6a3 3 0 0 0-3 3v6a3 3 0 0 1-3 3H3" strokeLinecap="round" strokeLinejoin="round" />
                   </Svg>
-                  <Text style={styles.tripsPlanBtnText}>Plan a trip</Text>
+                  <Text style={styles.tripsDarkCardBtnText}>Plan a trip</Text>
+                </TouchableOpacity>
+
+                {/* Button 3: Search chargers */}
+                <TouchableOpacity
+                  style={[styles.tripsActionCardBtn, styles.tripsDarkCardBtn]}
+                  onPress={() => {
+                    const lat = status.gps?.latitude ?? 10.062227;
+                    const lon = status.gps?.longitude ?? 76.620519;
+                    Linking.openURL(`https://www.google.com/maps/search/EV+charging+station/@${lat},${lon},13z`);
+                  }}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Search chargers"
+                  accessibilityRole="button"
+                >
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                    <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                  <Text style={styles.tripsDarkCardBtnText}>Search chargers</Text>
                 </TouchableOpacity>
               </View>
 
@@ -7450,7 +7805,7 @@ export default function App() {
           style={[
             styles.planScreenLayer,
             {
-              transform: [{ translateX: planTranslateX }],
+              transform: [{ translateX: planEffectiveTranslateX }],
             },
           ]}
         >
@@ -7767,62 +8122,374 @@ export default function App() {
                 </View>
               )}
 
-              {/* Computed Route Choices Card */}
-              {planComputedChoices.length > 0 && (() => {
-                const choice = planComputedChoices[0];
-                const estKwh = (choice.distanceM / 1000) / 7.5;
-                const estSocUsed = (estKwh / 38) * 100;
-                const estArrivalSoc = Math.max(5, Math.round(planStartSoc - estSocUsed));
-                const destPos = choice.path && choice.path.length > 0 ? choice.path[choice.path.length - 1] : null;
-
-                return (
-                  <View style={styles.planResultCard}>
-                    <Text style={styles.planResultHeader}>✅ Route Computed</Text>
-                    <View style={styles.planResultLine}>
-                      <Text style={styles.planResultLabel}>Total Distance</Text>
-                      <Text style={styles.planResultVal}>
-                        {(choice.distanceM / 1000).toFixed(0)} km
-                      </Text>
-                    </View>
-                    <View style={styles.planResultLine}>
-                      <Text style={styles.planResultLabel}>Estimated Time</Text>
-                      <Text style={styles.planResultVal}>
-                        {Math.floor(choice.durationS / 3600)}h {Math.round((choice.durationS % 3600) / 60)}m
-                      </Text>
-                    </View>
-                    <View style={styles.planResultLine}>
-                      <Text style={styles.planResultLabel}>Arrival Battery</Text>
-                      <Text style={[styles.planResultVal, { color: '#34D399' }]}>
-                        {estArrivalSoc}%
-                      </Text>
-                    </View>
-                    <View style={styles.planResultLine}>
-                      <Text style={styles.planResultLabel}>Charging Corridor</Text>
-                      <Text style={styles.planResultVal}>
-                        {choice.chargers?.length || 0} fast chargers
-                      </Text>
-                    </View>
-
-                    {destPos && (
-                      <TouchableOpacity
-                        style={styles.planNavBtn}
-                        onPress={() => {
-                          Linking.openURL(
-                            `https://www.google.com/maps/dir/?api=1&destination=${destPos.lat},${destPos.lng}`
-                          );
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={styles.planNavBtnText}>🗺️ Start Navigation in Google Maps</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                );
-              })()}
             </ScrollView>
           </SafeAreaView>
         </Animated.View>
       )}
+
+      {/* Route Results Fullscreen Tween Screen */}
+      {isRouteResultVisible && activeRouteChoice && (() => {
+        const destinationName = routeResultPlannedDest?.name || 'Destination';
+        const originName = routeResultPlannedOrigin?.name || 'Your car';
+        const trafficDelay = activeRouteChoice.trafficDelayMin;
+
+        const numSelectedStops = routeResultSelectedStops.length;
+        const lastSelectedStop: PlannedStop | null =
+          activeTripPlan && activeTripPlan.stops.length > 0
+            ? activeTripPlan.stops[activeTripPlan.stops.length - 1]
+            : null;
+
+        const currentLegFromM = lastSelectedStop ? lastSelectedStop.charger.alongRouteM : 0;
+        const currentLegFromSoc = lastSelectedStop ? lastSelectedStop.departSoc : planStartSoc;
+        const currentLegFromName = lastSelectedStop
+          ? `Stop ${numSelectedStops} (${lastSelectedStop.charger.name})`
+          : originName;
+
+        const eligibleChargers = (activeRouteChoice.chargers || []).filter(
+          (c) => c.alongRouteM > currentLegFromM + 500
+        );
+
+        const displayedEligible = routeResultShowAllChargers
+          ? eligibleChargers
+          : eligibleChargers.slice(0, 5);
+
+        return (
+          <Animated.View
+            style={[
+              styles.routeResultScreenLayer,
+              {
+                transform: [{ translateX: routeResultTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.routeResultScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* Header Row */}
+                <View style={styles.routeResultHeader}>
+                  <TouchableOpacity
+                    style={styles.routeResultBackBtn}
+                    onPress={handleCloseRouteResult}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Back to Trip Planning"
+                    accessibilityRole="button"
+                  >
+                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.5}>
+                      <Path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                  </TouchableOpacity>
+
+                  <View style={styles.routeResultHeaderCenter}>
+                    <Text style={styles.routeResultHeaderTitle} numberOfLines={1}>
+                      To {destinationName}
+                    </Text>
+                    <Text style={styles.routeResultHeaderSub} numberOfLines={1}>
+                      From {originName} · live traffic
+                    </Text>
+                  </View>
+
+                  <View style={styles.routeResultTrafficPill}>
+                    <Text style={styles.routeResultTrafficPillText}>
+                      {trafficDelay > 2 ? `+${trafficDelay} min delay` : 'Live traffic'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Route Alternatives Selection Tabs */}
+                {planComputedChoices.length > 1 && (
+                  <View style={styles.routeChoicesRow}>
+                    {planComputedChoices.map((rc, idx) => {
+                      const isActive = idx === routeResultRouteIdx;
+                      const distKm = (rc.distanceM / 1000).toFixed(0);
+                      const durHm = formatHm(rc.durationS / 60);
+
+                      return (
+                        <TouchableOpacity
+                          key={rc.id || `route-${idx}`}
+                          style={[
+                            styles.routeChoiceTab,
+                            isActive && styles.routeChoiceTabActive,
+                          ]}
+                          onPress={() => {
+                            setRouteResultRouteIdx(idx);
+                            setRouteResultSelectedStops([]);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Text
+                            style={[
+                              styles.routeChoiceTabTitle,
+                              isActive && styles.routeChoiceTabTitleActive,
+                            ]}
+                          >
+                            Route {idx + 1}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.routeChoiceTabSub,
+                              isActive && styles.routeChoiceTabSubActive,
+                            ]}
+                          >
+                            {distKm} km · {durHm}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {/* Hero Distance & Driving Summary */}
+                <Text style={styles.routeHeroDist}>
+                  {(activeRouteChoice.distanceM / 1000).toFixed(0)} <Text style={styles.routeHeroDistUnit}>km</Text>
+                </Text>
+
+                <Text style={styles.routeHeroViaText}>
+                  {formatHm(activeRouteChoice.durationS / 60)} drive · {activeRouteChoice.label || activeRouteChoice.description || 'Fastest route'}
+                </Text>
+
+                {/* 3 Metric Columns: Arrival battery, Energy, Climb */}
+                <View style={styles.routeMetrics3Col}>
+                  <View style={styles.routeMetricCol}>
+                    <Text style={styles.routeMetricColLabel}>Arrival battery</Text>
+                    <Text
+                      style={[
+                        styles.routeMetricColVal,
+                        {
+                          color: !activeTripPlan?.reachable
+                            ? '#F87171'
+                            : (activeTripPlan?.arrivalSoc ?? 0) <= 15
+                            ? '#F59E0B'
+                            : '#34D399',
+                        },
+                      ]}
+                    >
+                      {activeTripPlan?.reachable ? `${activeTripPlan.arrivalSoc}%` : 'Unreachable'}
+                    </Text>
+                  </View>
+
+                  <View style={styles.routeMetricCol}>
+                    <Text style={styles.routeMetricColLabel}>Energy</Text>
+                    <Text style={styles.routeMetricColVal}>
+                      {activeTripPlan ? activeTripPlan.energy.totalKwh.toFixed(1) : ((activeRouteChoice.distanceM / 1000) / 7.5).toFixed(1)} kWh
+                    </Text>
+                  </View>
+
+                  <View style={styles.routeMetricCol}>
+                    <Text style={styles.routeMetricColLabel}>Climb</Text>
+                    <Text style={styles.routeMetricColVal}>
+                      +{activeRouteChoice.climbM.toLocaleString()} m
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Battery along the route Elevation & SoC Chart */}
+                <RouteResultBatteryChart
+                  routeChoice={activeRouteChoice}
+                  plan={activeTripPlan}
+                  startSoc={planStartSoc}
+                  minBuffer={planMinCharger}
+                />
+
+                {/* Warning / Charging Stop Required / Route Ready Banner */}
+                {!activeTripPlan?.reachable ? (
+                  <View style={styles.routeWarningCard}>
+                    <Text style={styles.routeWarningTitle}>You need a charging stop</Text>
+                    <Text style={styles.routeWarningSub}>
+                      This route is longer than your battery range. Pick a charger below for stop {numSelectedStops + 1}.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.autoSuggestPillBtn}
+                      onPress={handleAutoSuggestSelectedStops}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.autoSuggestPillBtnText}>Auto-suggest stops</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : numSelectedStops > 0 ? (
+                  <View style={[styles.routeWarningCard, { backgroundColor: '#064E3B20', borderColor: '#10B98160' }]}>
+                    <Text style={[styles.routeWarningTitle, { color: '#34D399' }]}>
+                      Route ready with {numSelectedStops} stop{numSelectedStops > 1 ? 's' : ''}
+                    </Text>
+                    <Text style={[styles.routeWarningSub, { color: '#E2E8F0' }]}>
+                      You will arrive at {destinationName} with {activeTripPlan.arrivalSoc}% battery.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={[styles.routeWarningCard, { backgroundColor: '#064E3B20', borderColor: '#10B98160' }]}>
+                    <Text style={[styles.routeWarningTitle, { color: '#34D399' }]}>
+                      Direct non-stop drive!
+                    </Text>
+                    <Text style={[styles.routeWarningSub, { color: '#E2E8F0' }]}>
+                      Your car can reach {destinationName} with {activeTripPlan.arrivalSoc}% battery without stops.
+                    </Text>
+                  </View>
+                )}
+
+                {/* Selected Charging Stops (if any) */}
+                {activeTripPlan && activeTripPlan.stops.length > 0 && (
+                  <View style={{ marginBottom: 16 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <Text style={{ color: '#F8FAFC', fontSize: 14.5, fontWeight: '800' }}>
+                        Selected Stops ({activeTripPlan.stops.length})
+                      </Text>
+                      <TouchableOpacity onPress={handleClearSelectedStops}>
+                        <Text style={{ color: '#F87171', fontSize: 12, fontWeight: '700' }}>Clear all</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {activeTripPlan.stops.map((stop, sIdx) => {
+                      const backupInfo = findBackupChargerInCorridor(stop.charger, activeRouteChoice.chargers, 20);
+
+                      return (
+                        <View key={`selected-stop-${stop.charger.id}-${sIdx}`} style={styles.selectedStopCard}>
+                          <View style={styles.selectedStopHeader}>
+                            <Text style={styles.selectedStopTitle} numberOfLines={1}>
+                              Stop {sIdx + 1} · {stop.charger.name}
+                            </Text>
+                            <TouchableOpacity onPress={() => handleRemoveSelectedStop(sIdx)}>
+                              <Text style={styles.selectedStopRemoveText}>Remove</Text>
+                            </TouchableOpacity>
+                          </View>
+
+                          <View style={styles.selectedStopMetrics}>
+                            <Text style={styles.selectedStopMetricsText}>
+                              Arrive: <Text style={{ color: '#34D399', fontWeight: '800' }}>{stop.arriveSoc}%</Text>
+                            </Text>
+                            <Text style={styles.selectedStopMetricsText}>
+                              Charge: <Text style={{ color: '#38BDF8', fontWeight: '800' }}>+{stop.chargeMinutes} min</Text>
+                            </Text>
+                            <Text style={styles.selectedStopMetricsText}>
+                              Depart: <Text style={{ color: '#10B981', fontWeight: '800' }}>{stop.departSoc}%</Text>
+                            </Text>
+                          </View>
+
+                          {backupInfo.backup ? (
+                            <Text style={styles.selectedStopBackupText}>
+                              🛡️ Backup in {backupInfo.distanceKm} km: {backupInfo.backup.name} ({backupInfo.backup.maxKw || 60} kW)
+                            </Text>
+                          ) : (
+                            <Text style={[styles.selectedStopBackupText, { color: '#F59E0B' }]}>
+                              ⚠️ No backup charger within 20 km
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {/* Chargers on Route Section */}
+                <View style={styles.chargersSectionHeader}>
+                  <Text style={styles.chargersSectionTitle}>Chargers on route</Text>
+                  <Text style={styles.chargersSectionCount}>
+                    {eligibleChargers.length} available
+                  </Text>
+                </View>
+
+                <Text style={styles.chargersSectionSub}>
+                  {numSelectedStops === 0
+                    ? `Pick a charger below for stop 1 (from ${currentLegFromName}):`
+                    : `Pick next charger to destination (from ${currentLegFromName}):`}
+                </Text>
+
+                {displayedEligible.length === 0 ? (
+                  <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+                    <Text style={{ color: '#64748B', fontSize: 13 }}>
+                      No more chargers ahead along this route corridor.
+                    </Text>
+                  </View>
+                ) : (
+                  displayedEligible.map((charger) => {
+                    const sim = simulateLegToCharger(
+                      DEFAULT_WINDSOR_PROFILE,
+                      activeRouteChoice.profile,
+                      currentLegFromM,
+                      currentLegFromSoc,
+                      charger
+                    );
+                    const legDistKm = Math.max(1, Math.round(sim.distanceM / 1000));
+                    const isSelected = routeResultSelectedStops.some((s) => s.id === charger.id);
+
+                    return (
+                      <View key={`charger-${charger.id}`} style={styles.chargerRowItem}>
+                        <View style={styles.chargerRowLeft}>
+                          <Text style={styles.chargerRowName} numberOfLines={1}>
+                            {charger.name}
+                          </Text>
+                          <Text style={styles.chargerRowSub}>
+                            {legDistKm} km · {charger.maxKw || 60} kW CCS2
+                          </Text>
+                        </View>
+
+                        <View style={styles.chargerRowRight}>
+                          <View style={styles.chargerRowArrivalWrap}>
+                            {sim.isReachable && sim.arriveSoc > 0 ? (
+                              <>
+                                <Text style={styles.chargerRowArrivalPct}>{sim.arriveSoc}%</Text>
+                                <Text style={styles.chargerRowArrivalSub}>on arrival</Text>
+                              </>
+                            ) : (
+                              <Text style={[styles.chargerRowArrivalPct, { color: '#F87171', fontSize: 13 }]}>
+                                Out of range
+                              </Text>
+                            )}
+                          </View>
+
+                          <TouchableOpacity
+                            style={[
+                              styles.chargerSelectBtn,
+                              isSelected && { backgroundColor: '#10B981', borderColor: '#10B981' },
+                            ]}
+                            onPress={() => {
+                              if (!isSelected) {
+                                handleAddSelectedStop(charger);
+                              }
+                            }}
+                            activeOpacity={0.7}
+                            disabled={isSelected}
+                          >
+                            <Text
+                              style={[
+                                styles.chargerSelectBtnText,
+                                isSelected && { color: '#0A0E17', fontWeight: '800' },
+                              ]}
+                            >
+                              {isSelected ? 'Selected ✓' : 'Select'}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+
+                {eligibleChargers.length > 5 && (
+                  <TouchableOpacity
+                    style={{ paddingVertical: 12, alignItems: 'center' }}
+                    onPress={() => setRouteResultShowAllChargers((v) => !v)}
+                  >
+                    <Text style={{ color: '#34D399', fontSize: 13, fontWeight: '700' }}>
+                      {routeResultShowAllChargers ? 'Show less' : `Show all ${eligibleChargers.length}`}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                {/* Bottom Action Button: Open Route in Maps */}
+                <TouchableOpacity
+                  style={styles.openInMapsBtn}
+                  onPress={handleOpenRouteInGoogleMaps}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.openInMapsBtnText}>Open route in Maps</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
 
       {/* Trip Detail Fullscreen Tween Screen */}
       {isTripDetailVisible && selectedTripForDetail && (() => {
@@ -8169,6 +8836,10 @@ export default function App() {
                 if (isPlanScreenVisible) {
                   setIsPlanScreenVisible(false);
                   planSlideAnim.setValue(0);
+                }
+                if (isRouteResultVisible) {
+                  setIsRouteResultVisible(false);
+                  routeResultSlideAnim.setValue(0);
                 }
                 if (isTripDetailVisible) {
                   setIsTripDetailVisible(false);
@@ -12291,7 +12962,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1E293B',
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 16,
     paddingHorizontal: 14,
     marginBottom: 10,
   },
@@ -12421,7 +13092,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1E293B',
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     paddingHorizontal: 16,
     marginTop: 8,
     marginBottom: 12,
@@ -12493,49 +13164,400 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
   },
-  planResultCard: {
-    backgroundColor: '#111827',
+
+  // Trips Screen 3-Button Card Row
+  tripsActionCardBtn: {
+    flex: 1,
+    height: 78,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 4,
+  },
+  tripsStartCardBtn: {
+    backgroundColor: '#10B981',
+  },
+  tripsStartCardBtnActive: {
+    backgroundColor: '#EF4444',
+  },
+  tripsStartCardBtnText: {
+    color: '#0A0E17',
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  tripsDarkCardBtn: {
+    backgroundColor: '#131E2B',
     borderWidth: 1,
     borderColor: '#1E293B',
-    borderRadius: 20,
-    padding: 16,
-    marginTop: 8,
-    marginBottom: 20,
   },
-  planResultHeader: {
+  tripsDarkCardBtnText: {
     color: '#F8FAFC',
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 12,
-  },
-  planResultLine: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
-  },
-  planResultLabel: {
-    color: '#94A3B8',
-    fontSize: 13.5,
-  },
-  planResultVal: {
-    color: '#F8FAFC',
-    fontSize: 14,
+    fontSize: 12.5,
     fontWeight: '700',
+    textAlign: 'center',
   },
-  planNavBtn: {
-    marginTop: 14,
-    height: 46,
-    borderRadius: 14,
-    backgroundColor: '#0F172A',
-    borderWidth: 1.5,
-    borderColor: '#059669',
+
+  // Route Results Dedicated Tween Screen Styles
+  routeResultScreenLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2100,
+  },
+  routeResultScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: (Platform.OS === 'web' ? 120 : 130),
+  },
+  routeResultHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  routeResultBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  planNavBtnText: {
+  routeResultHeaderCenter: {
+    flex: 1,
+    marginHorizontal: 12,
+  },
+  routeResultHeaderTitle: {
+    color: '#F8FAFC',
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  routeResultHeaderSub: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    marginTop: 2,
+  },
+  routeResultTrafficPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  routeResultTrafficPillText: {
     color: '#34D399',
-    fontSize: 14,
+    fontSize: 11.5,
     fontWeight: '700',
+  },
+  routeChoicesRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 16,
+  },
+  routeChoiceTab: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderRadius: 14,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+  },
+  routeChoiceTabActive: {
+    borderColor: '#10B981',
+    backgroundColor: 'rgba(6, 78, 59, 0.25)',
+  },
+  routeChoiceTabTitle: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  routeChoiceTabTitleActive: {
+    color: '#34D399',
+  },
+  routeChoiceTabSub: {
+    color: '#64748B',
+    fontSize: 10.5,
+    fontWeight: '600',
+  },
+  routeChoiceTabSubActive: {
+    color: '#A7F3D0',
+  },
+  routeHeroDist: {
+    color: '#F8FAFC',
+    fontSize: 36,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+    marginTop: 2,
+  },
+  routeHeroDistUnit: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#94A3B8',
+  },
+  routeHeroViaText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    marginTop: 4,
+    marginBottom: 16,
+    lineHeight: 18,
+  },
+  routeMetrics3Col: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+    paddingVertical: 8,
+  },
+  routeMetricCol: {
+    flex: 1,
+  },
+  routeMetricColLabel: {
+    color: '#64748B',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  routeMetricColVal: {
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  chartBox: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 14,
+    marginBottom: 18,
+  },
+  chartHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  chartTitle: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  chartPeakText: {
+    color: '#64748B',
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  chartAxisRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  chartAxisLabel: {
+    color: '#64748B',
+    fontSize: 11,
+  },
+  chartLegendRow: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1E293B',
+  },
+  chartLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  chartLegendDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  chartLegendText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  routeWarningCard: {
+    backgroundColor: '#201317',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#7F1D1D80',
+    padding: 14,
+    marginBottom: 18,
+  },
+  routeWarningTitle: {
+    color: '#F87171',
+    fontSize: 14.5,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  routeWarningSub: {
+    color: '#E2E8F0',
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  autoSuggestPillBtn: {
+    alignSelf: 'flex-start',
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#10B981',
+    backgroundColor: 'rgba(6, 78, 59, 0.3)',
+  },
+  autoSuggestPillBtnText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  chargersSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  chargersSectionTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  chargersSectionCount: {
+    color: '#64748B',
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  chargersSectionSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginBottom: 10,
+    lineHeight: 17,
+  },
+  chargerRowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  chargerRowLeft: {
+    flex: 1,
+    paddingRight: 10,
+  },
+  chargerRowName: {
+    color: '#F8FAFC',
+    fontSize: 13.5,
+    fontWeight: '700',
+    marginBottom: 3,
+  },
+  chargerRowSub: {
+    color: '#64748B',
+    fontSize: 11.5,
+  },
+  chargerRowRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  chargerRowArrivalWrap: {
+    alignItems: 'flex-end',
+  },
+  chargerRowArrivalPct: {
+    color: '#34D399',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  chargerRowArrivalSub: {
+    color: '#64748B',
+    fontSize: 10,
+  },
+  chargerSelectBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#10B981',
+    backgroundColor: 'rgba(6, 78, 59, 0.25)',
+  },
+  chargerSelectBtnText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  selectedStopCard: {
+    backgroundColor: '#161F30',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 12,
+    marginBottom: 10,
+  },
+  selectedStopHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  selectedStopTitle: {
+    color: '#F8FAFC',
+    fontSize: 13.5,
+    fontWeight: '800',
+    flex: 1,
+    paddingRight: 8,
+  },
+  selectedStopRemoveText: {
+    color: '#F87171',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  selectedStopMetrics: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  selectedStopMetricsText: {
+    color: '#94A3B8',
+    fontSize: 11.5,
+  },
+  selectedStopBackupText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  openInMapsBtn: {
+    marginTop: 20,
+    marginBottom: 16,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#38BDF8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#38BDF8',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  openInMapsBtnText: {
+    color: '#0A0E17',
+    fontSize: 15.5,
+    fontWeight: '800',
   },
 
   // Trip Detail Dedicated Screen Styles
