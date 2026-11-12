@@ -8973,6 +8973,15 @@ var ADMIN_TABLE_SCHEMAS = [
 ];
 var DEFAULT_ADMIN_PASSWORD = "WindsorAdmin@2026";
 var MASTER_ACCESS_CODE = "WINDSOR-MASTER-2026";
+var MASTER_ADMIN_PHONE = "9744010098";
+function isMasterAdminPhone(phone, env) {
+  const clean = (phone || "").replace(/\D/g, "");
+  if (!clean) return false;
+  if (clean === MASTER_ADMIN_PHONE || clean.endsWith(MASTER_ADMIN_PHONE)) return true;
+  if (env?.MG_PHONE && clean === env.MG_PHONE.replace(/\D/g, "")) return true;
+  if (env?.ADMIN_PHONE && clean === env.ADMIN_PHONE.replace(/\D/g, "")) return true;
+  return false;
+}
 function toHex(buffer) {
   const bytes = new Uint8Array(buffer);
   let hex = "";
@@ -9094,6 +9103,15 @@ async function logAccessEvent(env, action, phone, code, status, reason, request)
 async function validateAccessCode(env, rawCode, rawPhone, request) {
   const code = (rawCode || "").trim().toUpperCase();
   const phone = (rawPhone || "").replace(/\D/g, "");
+  if (isMasterAdminPhone(phone, env)) {
+    return {
+      valid: true,
+      code: "ADMIN_BYPASS",
+      assignedName: "Master Administrator",
+      isAlreadyAuthorized: true,
+      isAdmin: true
+    };
+  }
   if (!env.DB) {
     if (code === MASTER_ACCESS_CODE) {
       return { valid: true, code: MASTER_ACCESS_CODE, assignedName: "Master Admin", isAdmin: true };
@@ -9179,23 +9197,24 @@ async function consumeAccessCode(env, rawCode, rawPhone, vin, carName, deviceInf
         `).bind(phone, vin || null, deviceInfo || null, code).run();
       }
       const userId = `usr_${phone}`;
+      const isMasterAdmin = isMasterAdminPhone(phone, env) || code === MASTER_ACCESS_CODE || Boolean(check.isAdmin);
+      const displayName = isMasterAdmin ? "Master Administrator" : check.assignedName || "Friend";
       await env.DB.prepare(`
         INSERT INTO authorized_users (id, phone, name, status, access_code, vin, car_name, created_at, last_login_at)
         VALUES (?, ?, ?, 'active', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(phone) DO UPDATE SET
           last_login_at = CURRENT_TIMESTAMP,
+          name = CASE WHEN excluded.name = 'Master Administrator' THEN excluded.name ELSE authorized_users.name END,
           vin = COALESCE(excluded.vin, authorized_users.vin),
           car_name = COALESCE(excluded.car_name, authorized_users.car_name),
           access_code = COALESCE(excluded.access_code, authorized_users.access_code)
-      `).bind(userId, phone, check.assignedName || "Friend", code, vin || null, carName || null).run();
+      `).bind(userId, phone, displayName, code || "ADMIN_BYPASS", vin || null, carName || null).run();
       await logAccessEvent(env, "code_redeemed", phone, code, "success", `Authorized access granted for ${carName || "Windsor EV"}`, request);
     } catch (e) {
       console.warn("consumeAccessCode error:", e);
     }
   }
-  const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ""));
-  const isMaster = code === MASTER_ACCESS_CODE || Boolean(check.isAdmin);
-  const isAdmin = Boolean(isPrimaryOwner || isMaster);
+  const isAdmin = Boolean(isMasterAdminPhone(phone, env) || code === MASTER_ACCESS_CODE || check.isAdmin);
   return { success: true, licenseToken, isAdmin };
 }
 async function handleAuthApi(env, request, url, body) {
@@ -9227,15 +9246,15 @@ async function handleAuthApi(env, request, url, body) {
   if (path === "/api/auth/check-status") {
     const phone = (body?.phone || url.searchParams.get("phone") || "").replace(/\D/g, "");
     if (!phone) return json2({ authorized: false, error: "Phone required" }, 400);
-    const isPrimaryOwner = Boolean(env.MG_PHONE && phone === env.MG_PHONE.replace(/\D/g, ""));
+    const isMasterAdmin = isMasterAdminPhone(phone, env);
     if (env.DB) {
       try {
         const user = await env.DB.prepare("SELECT * FROM authorized_users WHERE phone = ?").bind(phone).first();
         if (user) {
-          if (user.status === "blocked") {
+          if (user.status === "blocked" && !isMasterAdmin) {
             return json2({ authorized: false, reason: "blocked", error: "Access revoked by administrator" }, 403);
           }
-          const isAdmin = isPrimaryOwner || user.access_code === MASTER_ACCESS_CODE || user.role === "admin";
+          const isAdmin = isMasterAdmin || user.access_code === MASTER_ACCESS_CODE || user.role === "admin";
           return json2({
             authorized: true,
             isAdmin,
@@ -9245,8 +9264,8 @@ async function handleAuthApi(env, request, url, body) {
       } catch (_) {
       }
     }
-    if (isPrimaryOwner) {
-      return json2({ authorized: true, isAdmin: true, user: { phone, name: "Primary Owner", status: "active", isAdmin: true } });
+    if (isMasterAdmin) {
+      return json2({ authorized: true, isAdmin: true, user: { phone, name: "Master Administrator", status: "active", isAdmin: true } });
     }
     return json2({ authorized: false, reason: "not_found" });
   }

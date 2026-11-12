@@ -130,6 +130,12 @@ const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const IS_ADMIN_KEY = 'mg_pwa_is_admin_v1';
+const MASTER_ADMIN_PHONE = '9744010098';
+
+function isMasterAdminPhone(phoneStr: string): boolean {
+  const clean = (phoneStr || '').replace(/\D/g, '');
+  return clean === MASTER_ADMIN_PHONE || clean.endsWith(MASTER_ADMIN_PHONE);
+}
 const DEFAULT_CLOUD_SYNC_URL =
   'https://raw.githubusercontent.com/tonyjoseph456/mg-windsor-cloud-logger/main/data/cloud_charging_log.json';
 
@@ -2965,9 +2971,14 @@ export default function App() {
             setIsAuthenticated(true);
             setIsAuthorizedUser(true);
 
+            if (isMasterAdminPhone(saved.phone)) {
+              setIsAdminUser(true);
+              SecureStore.setItemAsync(IS_ADMIN_KEY, 'true').catch(() => {});
+            }
+
             // Remote authorization status check: ensure account is not blocked by administrator
             checkUserAuthorization(saved.phone).then(async (authStatus) => {
-              if (authStatus.authorized === false && authStatus.reason === 'blocked') {
+              if (authStatus.authorized === false && authStatus.reason === 'blocked' && !isMasterAdminPhone(saved.phone)) {
                 await Promise.all([
                   SecureStore.deleteItemAsync(SESSION_KEY),
                   SecureStore.deleteItemAsync(LICENSE_KEY),
@@ -2982,7 +2993,7 @@ export default function App() {
                   authStatus.error || 'Your access has been revoked by the administrator. Please contact admin.'
                 );
               } else if (authStatus.authorized) {
-                if (authStatus.isAdmin) {
+                if (authStatus.isAdmin || isMasterAdminPhone(saved.phone)) {
                   setIsAdminUser(true);
                   await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
                 } else {
@@ -3447,7 +3458,14 @@ export default function App() {
     }
 
     const cleanCode = accessCode.trim().toUpperCase();
-    if (!isAuthorizedUser) {
+    const isAdminPhone = isMasterAdminPhone(cleanPhone);
+
+    if (isAdminPhone) {
+      setIsAdminUser(true);
+      setIsAuthorizedUser(true);
+      await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
+      setIsLoggingIn(true);
+    } else if (!isAuthorizedUser) {
       if (!cleanCode) {
         Alert.alert(
           'Access Code Required',
@@ -3529,7 +3547,7 @@ export default function App() {
         if (cleanCode) {
           await SecureStore.setItemAsync(ACCESS_CODE_KEY, cleanCode);
         }
-        if (consumeRes.isAdmin) {
+        if (consumeRes.isAdmin || isAdminPhone) {
           setIsAdminUser(true);
           await SecureStore.setItemAsync(IS_ADMIN_KEY, 'true');
         }
@@ -4327,8 +4345,8 @@ export default function App() {
             {/* Private App Gate Badge */}
             <View
               style={{
-                backgroundColor: isAuthorizedUser ? '#064E3B28' : '#1E293B',
-                borderColor: isAuthorizedUser ? '#10B98160' : '#334155',
+                backgroundColor: isAuthorizedUser || isMasterAdminPhone(phone) ? '#064E3B28' : '#1E293B',
+                borderColor: isAuthorizedUser || isMasterAdminPhone(phone) ? '#10B98160' : '#334155',
                 borderWidth: 1,
                 borderRadius: 12,
                 padding: 12,
@@ -4338,21 +4356,38 @@ export default function App() {
                 gap: 10,
               }}
             >
-              <Text style={{ fontSize: 20 }}>{isAuthorizedUser ? '🛡️' : '🔐'}</Text>
+              <Text style={{ fontSize: 20 }}>{isAuthorizedUser || isMasterAdminPhone(phone) ? '🛡️' : '🔐'}</Text>
               <View style={{ flex: 1 }}>
-                <Text style={{ color: isAuthorizedUser ? '#34D399' : '#E2E8F0', fontWeight: '700', fontSize: 13 }}>
-                  {isAuthorizedUser ? 'Device Access Authorized' : 'Private App • Access Code Required'}
+                <Text style={{ color: isAuthorizedUser || isMasterAdminPhone(phone) ? '#34D399' : '#E2E8F0', fontWeight: '700', fontSize: 13 }}>
+                  {isMasterAdminPhone(phone)
+                    ? 'Master Administrator'
+                    : isAuthorizedUser
+                    ? 'Device Access Authorized'
+                    : 'Private App • Access Code Required'}
                 </Text>
-                <Text style={{ color: isAuthorizedUser ? '#A7F3D0' : '#94A3B8', fontSize: 11, marginTop: 2, lineHeight: 15 }}>
-                  {isAuthorizedUser
+                <Text style={{ color: isAuthorizedUser || isMasterAdminPhone(phone) ? '#A7F3D0' : '#94A3B8', fontSize: 11, marginTop: 2, lineHeight: 15 }}>
+                  {isMasterAdminPhone(phone)
+                    ? 'Admin phone (+91 9744010098) recognized. Access code bypassed — enter your password below.'
+                    : isAuthorizedUser
                     ? 'This device is verified with an active access license.'
-                    : 'To restrict access to authorized users, enter your one-time access code.'}
+                    : 'This private app requires an admin-issued one-time access code.'}
                 </Text>
               </View>
             </View>
 
-            {/* One-Time Access Code Input (Required for unverified users) */}
-            {!isAuthorizedUser && (
+            <Text style={styles.inputLabel}>10-Digit India Mobile Number *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 9876543210"
+              placeholderTextColor="#64748B"
+              value={phone}
+              onChangeText={setPhone}
+              keyboardType="phone-pad"
+              autoCapitalize="none"
+            />
+
+            {/* One-Time Access Code Input (Required for unverified non-admin users; bypassed for master admin phone) */}
+            {!isAuthorizedUser && !isMasterAdminPhone(phone) && (
               <View style={{ marginBottom: 16 }}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Text style={styles.inputLabel}>One-Time Access Code *</Text>
@@ -4381,17 +4416,6 @@ export default function App() {
                 </Text>
               </View>
             )}
-
-            <Text style={styles.inputLabel}>10-Digit India Mobile Number *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. 9876543210"
-              placeholderTextColor="#64748B"
-              value={phone}
-              onChangeText={setPhone}
-              keyboardType="phone-pad"
-              autoCapitalize="none"
-            />
 
             <Text style={styles.inputLabel}>MG iSMART Password *</Text>
             <TextInput
