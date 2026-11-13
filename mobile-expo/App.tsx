@@ -108,6 +108,12 @@ import {
   LatLng,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
+import {
+  LiquidGlassTabBar,
+  LiquidGlassTabItem,
+  ACTIVE_GREEN,
+  INACTIVE_ICON_WHITE,
+} from './src/LiquidGlassTabBar';
 
 type TabId = 'home' | 'charge' | 'trips' | 'account';
 
@@ -5883,6 +5889,147 @@ export default function App() {
       window.history.go(-delta);
     }
   }, [desiredBackDepth]);
+
+  const handleSelectBottomTab = useCallback(
+    (nextTab: TabId) => {
+      const subscreens: Array<[boolean, (v: boolean) => void, Animated.Value]> = [
+        [isTyresScreenVisible, setIsTyresScreenVisible, tyreSlideAnim],
+        [isLocationScreenVisible, setIsLocationScreenVisible, locationSlideAnim],
+        [isRemoteScreenVisible, setIsRemoteScreenVisible, remoteSlideAnim],
+        [isPlanScreenVisible, setIsPlanScreenVisible, planSlideAnim],
+        [isRouteResultVisible, setIsRouteResultVisible, routeResultSlideAnim],
+        [isTripDetailVisible, setIsTripDetailVisible, tripDetailSlideAnim],
+        [isChargeDetailVisible, setIsChargeDetailVisible, chargeDetailSlideAnim],
+        [isSearchChargersVisible, setIsSearchChargersVisible, searchChargersSlideAnim],
+        [isAccountScreenVisible, setIsAccountScreenVisible, accountScreenSlideAnim],
+        [isAnalyticsScreenVisible, setIsAnalyticsScreenVisible, analyticsSlideAnim],
+        [isTextSizeScreenVisible, setIsTextSizeScreenVisible, textSizeSlideAnim],
+        [isMapsKeyScreenVisible, setIsMapsKeyScreenVisible, mapsKeySlideAnim],
+        [isPushScreenVisible, setIsPushScreenVisible, pushScreenSlideAnim],
+        [isNotifsScreenVisible, setIsNotifsScreenVisible, notifsScreenSlideAnim],
+        [isAutomationScreenVisible, setIsAutomationScreenVisible, automationSlideAnim],
+        [isAdminScreenVisible, setIsAdminScreenVisible, adminSlideAnim],
+        [isCreditsScreenVisible, setIsCreditsScreenVisible, creditsSlideAnim],
+      ];
+      for (const [visible, setVisible, anim] of subscreens) {
+        if (visible) {
+          setVisible(false);
+          anim.setValue(0);
+        }
+      }
+      if (isTripDetailVisible) setSelectedTripForDetail(null);
+      if (isChargeDetailVisible) setSelectedChargeForDetail(null);
+      setTab(nextTab);
+    },
+    [
+      isTyresScreenVisible,
+      isLocationScreenVisible,
+      isRemoteScreenVisible,
+      isPlanScreenVisible,
+      isRouteResultVisible,
+      isTripDetailVisible,
+      isChargeDetailVisible,
+      isSearchChargersVisible,
+      isAccountScreenVisible,
+      isAnalyticsScreenVisible,
+      isTextSizeScreenVisible,
+      isMapsKeyScreenVisible,
+      isPushScreenVisible,
+      isNotifsScreenVisible,
+      isAutomationScreenVisible,
+      isAdminScreenVisible,
+      isCreditsScreenVisible,
+    ]
+  );
+
+  const bottomTabs = useMemo<ReadonlyArray<LiquidGlassTabItem<TabId>>>(
+    () => [
+      {
+        id: 'home',
+        label: 'Home',
+        renderIcon: (active: boolean) => (
+          <Svg
+            width={24}
+            height={24}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={active ? ACTIVE_GREEN : INACTIVE_ICON_WHITE}
+            strokeWidth={active ? 2.25 : 1.9}
+          >
+            <Path
+              d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Svg>
+        ),
+      },
+      {
+        id: 'charge',
+        label: 'Charge',
+        renderIcon: (active: boolean) => (
+          <Svg
+            width={24}
+            height={24}
+            viewBox="0 0 24 24"
+            fill={active ? 'rgba(52, 211, 153, 0.32)' : 'none'}
+            stroke={active ? ACTIVE_GREEN : INACTIVE_ICON_WHITE}
+            strokeWidth={active ? 2.2 : 1.9}
+          >
+            <Path
+              d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Svg>
+        ),
+      },
+      {
+        id: 'trips',
+        label: 'Trips',
+        renderIcon: (active: boolean) => (
+          <Svg
+            width={24}
+            height={24}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={active ? ACTIVE_GREEN : INACTIVE_ICON_WHITE}
+            strokeWidth={active ? 2.25 : 1.9}
+          >
+            <Circle cx="6" cy="19" r="3" />
+            <Circle cx="18" cy="5" r="3" />
+            <Path
+              d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Svg>
+        ),
+      },
+      {
+        id: 'account',
+        label: 'Profile',
+        renderIcon: (active: boolean) => (
+          <Svg
+            width={23}
+            height={23}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={active ? ACTIVE_GREEN : INACTIVE_ICON_WHITE}
+            strokeWidth={active ? 2.25 : 1.9}
+          >
+            <Path
+              d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <Circle cx="12" cy="7" r="4" />
+          </Svg>
+        ),
+      },
+    ],
+    []
+  );
 
   // 1. Startup Keychain Check Screen
   if (booting) {
@@ -13111,148 +13258,12 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* Redesigned Bottom Navigation Tab Bar with Crisp Vector Icons */}
-      <View
-        nativeID="liquid-glass-tabbar"
-        testID="liquid-glass-tabbar"
-        style={[styles.tabBar, Platform.OS === 'web' && ({ className: 'liquid-glass-tabbar' } as any)]}
-      >
-        {(
-          [
-            {
-              id: 'home' as const,
-              label: 'Home',
-              renderIcon: (active: boolean) => (
-                <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
-                  <Path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-              ),
-            },
-            {
-              id: 'charge' as const,
-              label: 'Charge',
-              renderIcon: (active: boolean) => (
-                <Svg width={26} height={26} viewBox="0 0 24 24" fill={active ? '#34D399' : 'none'} stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.1 : 1.9}>
-                  <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-              ),
-            },
-            {
-              id: 'trips' as const,
-              label: 'Trips',
-              renderIcon: (active: boolean) => (
-                <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
-                  <Circle cx="6" cy="19" r="3" />
-                  <Circle cx="18" cy="5" r="3" />
-                  <Path d="M12 19h4.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H9" strokeLinecap="round" strokeLinejoin="round" />
-                </Svg>
-              ),
-            },
-            {
-              id: 'account' as const,
-              label: 'Profile',
-              renderIcon: (active: boolean) => (
-                <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={active ? '#34D399' : '#94A3B8'} strokeWidth={active ? 2.3 : 1.9}>
-                  <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
-                  <Circle cx="12" cy="7" r="4" />
-                </Svg>
-              ),
-            },
-          ]
-        ).map((item) => {
-          const active = tab === item.id;
-          return (
-            <TouchableOpacity
-              key={item.id}
-              onPress={() => {
-                if (isTyresScreenVisible) {
-                  setIsTyresScreenVisible(false);
-                  tyreSlideAnim.setValue(0);
-                }
-                if (isLocationScreenVisible) {
-                  setIsLocationScreenVisible(false);
-                  locationSlideAnim.setValue(0);
-                }
-                if (isRemoteScreenVisible) {
-                  setIsRemoteScreenVisible(false);
-                  remoteSlideAnim.setValue(0);
-                }
-                if (isPlanScreenVisible) {
-                  setIsPlanScreenVisible(false);
-                  planSlideAnim.setValue(0);
-                }
-                if (isRouteResultVisible) {
-                  setIsRouteResultVisible(false);
-                  routeResultSlideAnim.setValue(0);
-                }
-                if (isTripDetailVisible) {
-                  setIsTripDetailVisible(false);
-                  tripDetailSlideAnim.setValue(0);
-                  setSelectedTripForDetail(null);
-                }
-                if (isChargeDetailVisible) {
-                  setIsChargeDetailVisible(false);
-                  chargeDetailSlideAnim.setValue(0);
-                  setSelectedChargeForDetail(null);
-                }
-                if (isSearchChargersVisible) {
-                  setIsSearchChargersVisible(false);
-                  searchChargersSlideAnim.setValue(0);
-                }
-                if (isAccountScreenVisible) {
-                  setIsAccountScreenVisible(false);
-                  accountScreenSlideAnim.setValue(0);
-                }
-                if (isAnalyticsScreenVisible) {
-                  setIsAnalyticsScreenVisible(false);
-                  analyticsSlideAnim.setValue(0);
-                }
-                if (isTextSizeScreenVisible) {
-                  setIsTextSizeScreenVisible(false);
-                  textSizeSlideAnim.setValue(0);
-                }
-                if (isMapsKeyScreenVisible) {
-                  setIsMapsKeyScreenVisible(false);
-                  mapsKeySlideAnim.setValue(0);
-                }
-                if (isPushScreenVisible) {
-                  setIsPushScreenVisible(false);
-                  pushScreenSlideAnim.setValue(0);
-                }
-                if (isNotifsScreenVisible) {
-                  setIsNotifsScreenVisible(false);
-                  notifsScreenSlideAnim.setValue(0);
-                }
-                if (isAutomationScreenVisible) {
-                  setIsAutomationScreenVisible(false);
-                  automationSlideAnim.setValue(0);
-                }
-                if (isAdminScreenVisible) {
-                  setIsAdminScreenVisible(false);
-                  adminSlideAnim.setValue(0);
-                }
-                if (isCreditsScreenVisible) {
-                  setIsCreditsScreenVisible(false);
-                  creditsSlideAnim.setValue(0);
-                }
-                setTab(item.id);
-              }}
-              style={styles.tabItem}
-              activeOpacity={0.7}
-              accessibilityLabel={item.label}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
-            >
-              <View style={[styles.tabIconWrapper, active && styles.tabIconWrapperActive]}>
-                {item.renderIcon(active)}
-              </View>
-              <Text style={[styles.tabLabelText, active && styles.tabLabelTextActive]}>
-                {item.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      {/* iOS 26 Liquid Glass Floating Bottom Navigation Bar */}
+      <LiquidGlassTabBar
+        tabs={bottomTabs}
+        activeTab={tab}
+        onSelectTab={handleSelectBottomTab}
+      />
 
       {/* Windsor EV Color Picker Bottom Sheet (Global across Home, Charge, Trips & Profile) */}
       <Modal
@@ -15685,65 +15696,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
-  tabBar: ({
-    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
-    bottom: (Platform.OS === 'web' ? 18 : Platform.OS === 'ios' ? 24 : 18) as any,
-    left: 16,
-    right: 16,
-    maxWidth: 420,
-    alignSelf: 'center',
-    marginHorizontal: 'auto',
-    borderRadius: 9999,
-    zIndex: 1000,
-    flexDirection: 'row',
-    backgroundColor: (Platform.OS === 'web' ? 'rgba(15, 23, 42, 0.72)' : 'rgba(15, 23, 42, 0.88)') as any,
-    backdropFilter: (Platform.OS === 'web' ? 'blur(32px) saturate(220%) contrast(108%)' : undefined) as any,
-    WebkitBackdropFilter: (Platform.OS === 'web' ? 'blur(32px) saturate(220%) contrast(108%)' : undefined) as any,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.32)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.65,
-    shadowRadius: 28,
-    elevation: 24,
-    boxShadow: (Platform.OS === 'web'
-      ? '0 24px 48px -6px rgba(0, 0, 0, 0.75), 0 10px 24px -3px rgba(0, 0, 0, 0.5), inset 0 1.5px 1.5px 0 rgba(255, 255, 255, 0.65), inset 0 -1.5px 2px 0 rgba(255, 255, 255, 0.15)'
-      : undefined) as any,
-    paddingVertical: 7,
-    paddingHorizontal: 8,
-    justifyContent: 'space-around',
-    alignItems: 'center',
-  } as any),
-  tabItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 2,
-  },
-  tabIconWrapper: {
-    width: 54,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 16,
-  },
-  tabIconWrapperActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.22)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.45)',
-    boxShadow: (Platform.OS === 'web' ? '0 0 16px rgba(16, 185, 129, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.3)' : undefined) as any,
-  },
-  tabText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.1,
-  },
-  tabActive: ({
-    color: '#34D399',
-    fontWeight: '800',
-    textShadow: (Platform.OS === 'web' ? '0 0 8px rgba(52, 211, 153, 0.4)' : undefined) as any,
-  } as any),
 
   // Webhook copy cards in Account Tab
   copyWebhookCard: {
@@ -16819,16 +16771,6 @@ const styles = StyleSheet.create({
   dpTodayBtnText: {
     color: '#062116',
     fontSize: 15.5,
-    fontWeight: '800',
-  },
-  tabLabelText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#94A3B8',
-    marginTop: 2,
-  },
-  tabLabelTextActive: {
-    color: '#34D399',
     fontWeight: '800',
   },
 

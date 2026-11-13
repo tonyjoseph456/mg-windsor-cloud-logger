@@ -97,47 +97,68 @@ const tags = `
       #liquid-glass-tabbar,
       [data-testid="liquid-glass-tabbar"],
       .liquid-glass-tabbar {
+        box-sizing: border-box !important;
         position: fixed !important;
         bottom: calc(18px + env(safe-area-inset-bottom, 0px)) !important;
         left: 16px !important;
         right: 16px !important;
         width: auto !important;
         max-width: 420px !important;
+        height: 64px !important;
         margin-left: auto !important;
         margin-right: auto !important;
-        padding-top: 7px !important;
-        padding-bottom: 7px !important;
-        padding-left: 8px !important;
-        padding-right: 8px !important;
+        padding: 3px 4px !important;
         border-radius: 9999px !important;
-        background: linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0%, rgba(15, 23, 42, 0.72) 35%, rgba(10, 15, 29, 0.82) 100%) !important;
-        -webkit-backdrop-filter: blur(32px) saturate(220%) contrast(108%) !important;
-        backdrop-filter: blur(32px) saturate(220%) contrast(108%) !important;
-        border: 1px solid rgba(255, 255, 255, 0.32) !important;
-        box-shadow: 
-          0 24px 48px -6px rgba(0, 0, 0, 0.75),
-          0 10px 24px -3px rgba(0, 0, 0, 0.5),
-          inset 0 1.5px 1.5px 0 rgba(255, 255, 255, 0.65),
-          inset 0 -1.5px 2px 0 rgba(255, 255, 255, 0.15),
-          0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
         z-index: 9999 !important;
-        overflow: hidden !important;
+        overflow: visible !important;
+        touch-action: none !important;
+        user-select: none !important;
+        -webkit-user-select: none !important;
+        -webkit-touch-callout: none !important;
       }
-      #liquid-glass-tabbar::before,
-      .liquid-glass-tabbar::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        border-radius: 9999px;
-        padding: 1px;
-        background: linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(245, 158, 11, 0.28) 25%, rgba(56, 189, 248, 0.28) 75%, rgba(255, 255, 255, 0.45) 100%);
-        -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-        -webkit-mask-composite: xor;
-        mask-composite: exclude;
-        pointer-events: none;
+      #liquid-glass-tabbar-surface,
+      .liquid-glass-tabbar-surface {
+        box-sizing: border-box !important;
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        border-radius: 9999px !important;
+        overflow: hidden !important;
+        background: rgba(255, 255, 255, 0.07) !important;
+        -webkit-backdrop-filter: blur(22px) saturate(180%) !important;
+        backdrop-filter: blur(22px) saturate(180%) !important;
+        border: 1px solid rgba(255, 255, 255, 0.16) !important;
+        box-shadow:
+          inset 0 1px 0 0 rgba(255, 255, 255, 0.38),
+          0 12px 32px rgba(0, 0, 0, 0.45) !important;
+        pointer-events: none !important;
+      }
+      #liquid-glass-tabbar-surface.reduced-transparency,
+      .liquid-glass-tabbar-surface.reduced-transparency {
+        background: #131B2E !important;
+        -webkit-backdrop-filter: none !important;
+        backdrop-filter: none !important;
+        border: 1px solid rgba(255, 255, 255, 0.18) !important;
+        box-shadow:
+          inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+          0 12px 30px rgba(0, 0, 0, 0.6) !important;
+      }
+      @media (prefers-reduced-transparency: reduce) {
+        #liquid-glass-tabbar-surface,
+        .liquid-glass-tabbar-surface {
+          background: #131B2E !important;
+          -webkit-backdrop-filter: none !important;
+          backdrop-filter: none !important;
+          border: 1px solid rgba(255, 255, 255, 0.18) !important;
+          box-shadow:
+            inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+            0 12px 30px rgba(0, 0, 0, 0.6) !important;
+        }
       }
     </style>
     <script>
