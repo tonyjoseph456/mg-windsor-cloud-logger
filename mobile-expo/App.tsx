@@ -20,7 +20,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import Svg, { Circle, Ellipse, Path, Rect, G, Line, Polyline, Polygon, Defs, LinearGradient, RadialGradient, Stop } from 'react-native-svg';
+import Svg, { Circle, Path, Rect, G, Line, Polyline, Polygon, Defs, LinearGradient, Stop } from 'react-native-svg';
 import * as SecureStore from './src/storage';
 import { setGlobalFontScale, getGlobalFontScale } from './src/webShims';
 import * as Clipboard from 'expo-clipboard';
@@ -11246,20 +11246,6 @@ export default function App() {
                   WINDSOR_COLORS.find((c) => c.key === draftCarColorOverride)) ||
                 serverMatchedColor;
 
-              const previewPalette: Record<
-                string,
-                { top: string; bottom: string; roof: string; glow: string }
-              > = {
-                white: { top: '#F8FAFC', bottom: '#CBD5E1', roof: '#FFFFFF', glow: '#E2E8F0' },
-                black: { top: '#222D40', bottom: '#0F172A', roof: '#334155', glow: '#475569' },
-                green: { top: '#2DD4BF', bottom: '#0D9488', roof: '#5EEAD4', glow: '#2DD4BF' },
-                grey: { top: '#94A3B8', bottom: '#64748B', roof: '#CBD5E1', glow: '#94A3B8' },
-                red: { top: '#EF4444', bottom: '#C82828', roof: '#F87171', glow: '#EF4444' },
-                blue: { top: '#38BDF8', bottom: '#0284C7', roof: '#7DD3FC', glow: '#38BDF8' },
-                ivory: { top: '#FDE047', bottom: '#CA8A04', roof: '#FEF08A', glow: '#FDE047' },
-              };
-              const pal = previewPalette[previewColor.key] || previewPalette.red;
-
               const row1 = WINDSOR_COLORS.slice(0, 4);
               const row2 = WINDSOR_COLORS.slice(4, 7);
               const isAutoSelected = draftCarColorOverride === null;
@@ -11320,71 +11306,26 @@ export default function App() {
                 <>
                   {/* 1. Live Car Preview */}
                   <View style={styles.colorPreviewWrap}>
-                    <Svg width={250} height={106} viewBox="0 0 260 110">
-                      <Defs>
-                        <RadialGradient id="carUnderglow" cx="50%" cy="50%" r="50%">
-                          <Stop offset="0%" stopColor={pal.glow} stopOpacity="0.28" />
-                          <Stop offset="65%" stopColor={pal.glow} stopOpacity="0.08" />
-                          <Stop offset="100%" stopColor="#141B26" stopOpacity="0" />
-                        </RadialGradient>
-                        <LinearGradient id="carBodyGrad" x1="0" y1="0" x2="0" y2="1">
-                          <Stop offset="0%" stopColor={pal.top} />
-                          <Stop offset="100%" stopColor={pal.bottom} />
-                        </LinearGradient>
-                      </Defs>
-
-                      {/* Underglow shadow */}
-                      <Ellipse cx="130" cy="92" rx="108" ry="13" fill="url(#carUnderglow)" />
-
-                      {/* Cabin / Roofline */}
-                      <Path
-                        d="M 60 46 L 73 28 Q 80 20 92 20 L 166 20 Q 178 20 186 28 L 198 46 Z"
-                        fill={pal.roof}
+                    <View style={styles.colorPreviewCarArea}>
+                      <View
+                        style={[
+                          styles.colorPreviewFloorGlow,
+                          {
+                            backgroundColor:
+                              previewColor.key === 'black' ? '#475569' : previewColor.hex,
+                          },
+                        ]}
                       />
-
-                      {/* Rear & Front Side Windows */}
-                      <Path
-                        d="M 73 45 L 82 31 Q 85 27 91 27 L 128 27 L 128 45 Z"
-                        fill="#1A2332"
+                      <Image
+                        source={
+                          Platform.OS === 'web'
+                            ? { uri: previewColor.fallbackUri }
+                            : previewColor.image
+                        }
+                        style={styles.colorPreviewCarImg}
+                        resizeMode="contain"
                       />
-                      <Path
-                        d="M 134 27 L 165 27 Q 172 27 176 31 L 187 45 L 134 45 Z"
-                        fill="#1A2332"
-                      />
-
-                      {/* Main Car Body */}
-                      <Path
-                        d="M 30 50 Q 32 45 40 45 L 210 45 Q 230 46 232 58 L 232 76 Q 232 82 224 82 L 36 82 Q 28 82 28 76 L 28 56 Q 28 52 30 50 Z"
-                        fill="url(#carBodyGrad)"
-                      />
-
-                      {/* Subtle Center Door Seam */}
-                      <Line
-                        x1="131"
-                        y1="45"
-                        x2="131"
-                        y2="82"
-                        stroke="#0A0E17"
-                        strokeOpacity="0.16"
-                        strokeWidth="1.5"
-                      />
-
-                      {/* Taillight (Left) */}
-                      <Rect x="28" y="54" width="6" height="4" rx="1.5" fill="#991B1B" />
-
-                      {/* Headlight (Right) */}
-                      <Rect x="220" y="57" width="12" height="5" rx="2.5" fill="#FEF3C7" />
-
-                      {/* Rear Wheel (Left) */}
-                      <Circle cx="72" cy="82" r="18" fill="#151C28" />
-                      <Circle cx="72" cy="82" r="9.5" fill="#94A3B8" />
-                      <Circle cx="72" cy="82" r="3.8" fill="#1E293B" />
-
-                      {/* Front Wheel (Right) */}
-                      <Circle cx="188" cy="82" r="18" fill="#151C28" />
-                      <Circle cx="188" cy="82" r="9.5" fill="#94A3B8" />
-                      <Circle cx="188" cy="82" r="3.8" fill="#1E293B" />
-                    </Svg>
+                    </View>
                     <Text style={styles.colorPreviewName}>{previewColor.name}</Text>
                   </View>
 
@@ -14550,7 +14491,29 @@ const styles = StyleSheet.create({
   colorPreviewWrap: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 18,
+    marginBottom: 16,
+    width: '100%',
+  },
+  colorPreviewCarArea: {
+    width: '100%',
+    height: 132,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  colorPreviewFloorGlow: {
+    position: 'absolute',
+    bottom: 8,
+    width: '68%',
+    height: 22,
+    borderRadius: 100,
+    opacity: 0.16,
+    transform: [{ scaleY: 0.45 }],
+  },
+  colorPreviewCarImg: {
+    width: '90%',
+    height: '100%',
+    zIndex: 1,
   },
   colorPreviewName: {
     color: '#F8FAFC',
