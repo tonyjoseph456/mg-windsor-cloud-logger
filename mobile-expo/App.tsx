@@ -1870,8 +1870,32 @@ export default function App() {
   // Trips Options Menu State
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
 
-  // Charge Options Menu State
+  // Charge Options Menu Bottom Sheet State & Animation
   const [showChargeOptionsMenu, setShowChargeOptionsMenu] = useState<boolean>(false);
+  const chargeOptionsSlideAnim = useRef(new Animated.Value(0)).current;
+
+  const handleOpenChargeOptionsMenu = () => {
+    setShowChargeOptionsMenu(true);
+    chargeOptionsSlideAnim.setValue(0);
+    Animated.timing(chargeOptionsSlideAnim, {
+      toValue: 1,
+      duration: 280,
+      easing: Easing.bezier(0.22, 1, 0.36, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseChargeOptionsMenu = (afterClose?: () => void) => {
+    Animated.timing(chargeOptionsSlideAnim, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.bezier(0.4, 0, 1, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setShowChargeOptionsMenu(false);
+      if (afterClose) afterClose();
+    });
+  };
 
   // Profile Interactive Modals State
   const [activeProfileModal, setActiveProfileModal] = useState<
@@ -5997,7 +6021,7 @@ export default function App() {
               {/* Overflow More Options Button */}
               <TouchableOpacity
                 style={styles.chargeMoreBtn}
-                onPress={() => setShowChargeOptionsMenu(true)}
+                onPress={handleOpenChargeOptionsMenu}
                 activeOpacity={0.7}
                 accessibilityLabel="More Options"
               >
@@ -6216,68 +6240,156 @@ export default function App() {
               </View>
             )}
 
-            {/* 10. Charge Options Modal */}
-            <Modal visible={showChargeOptionsMenu} transparent animationType="fade">
-              <TouchableOpacity
-                style={styles.modalBackdrop}
-                activeOpacity={1}
-                onPress={() => setShowChargeOptionsMenu(false)}
-              >
-                <View style={styles.tripsOptionsBox}>
-                  <Text style={styles.tripsOptionsTitle}>Charging Options</Text>
+            {/* 10. Charging Data Options Slide-Up Bottom Sheet */}
+            <Modal
+              visible={showChargeOptionsMenu}
+              transparent
+              animationType="none"
+              onRequestClose={() => handleCloseChargeOptionsMenu()}
+            >
+              <View style={styles.colorSheetBackdrop}>
+                {/* Tap outside to dismiss */}
+                <TouchableOpacity
+                  style={StyleSheet.absoluteFill}
+                  activeOpacity={1}
+                  onPress={() => handleCloseChargeOptionsMenu()}
+                  accessibilityLabel="Close charging data options"
+                />
+                <Animated.View
+                  style={[
+                    styles.colorSheetContainer,
+                    {
+                      paddingBottom: Platform.OS === 'ios' ? 30 : 18,
+                      transform: [
+                        {
+                          translateY: chargeOptionsSlideAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [420, 0],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                >
+                  {/* Top Drag Handle */}
+                  <View style={styles.colorSheetHandle} />
 
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowChargeOptionsMenu(false);
-                      handleSyncChargesToD1();
-                    }}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={styles.tripsOptionItemText}>☁️  Sync Charges to Cloudflare D1</Text>
-                  </TouchableOpacity>
+                  {/* Sheet Title */}
+                  <Text style={[styles.colorSheetTitle, { marginBottom: 10 }]}>
+                    Charging data
+                  </Text>
 
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowChargeOptionsMenu(false);
-                      handleRefreshD1Charges();
-                    }}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={[styles.tripsOptionItemText, { color: '#34D399' }]}>🔄  Refresh Charges from Cloudflare D1</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowChargeOptionsMenu(false);
-                      handleCleanAndDeduplicateCharges();
-                    }}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={[styles.tripsOptionItemText, { color: '#94A3B8' }]}>🧹  Clean &amp; Deduplicate D1 Charges</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.tripsOptionItem, { borderBottomWidth: 0 }]}
-                    onPress={() => {
-                      setShowChargeOptionsMenu(false);
-                      handleClearAllD1Charges();
-                    }}
-                    disabled={isD1Syncing}
-                  >
-                    <Text style={[styles.tripsOptionItemText, { color: '#F87171' }]}>🗑️  Clear All Cloudflare D1 Charges</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionsCancelBtn}
-                    onPress={() => setShowChargeOptionsMenu(false)}
-                  >
-                    <Text style={styles.tripsOptionsCancelText}>Close</Text>
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
+                  {(
+                    [
+                      {
+                        key: 'sync',
+                        title: 'Sync to cloud',
+                        subtitle: 'Upload your charging sessions to Cloudflare D1',
+                        destructive: false,
+                        onPress: handleSyncChargesToD1,
+                        renderIcon: () => (
+                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                            <Path
+                              d="M6.5 18h11a4 4 0 0 0 .7-7.93A5.5 5.5 0 0 0 7.4 8.5 4.5 4.5 0 0 0 6.5 18Z"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <Path d="M12 15.5V10.5" strokeLinecap="round" strokeLinejoin="round" />
+                            <Path d="M9.5 12.5 12 10l2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </Svg>
+                        ),
+                      },
+                      {
+                        key: 'refresh',
+                        title: 'Refresh from cloud',
+                        subtitle: 'Download the latest charging sessions',
+                        destructive: false,
+                        onPress: handleRefreshD1Charges,
+                        renderIcon: () => (
+                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                            <Path
+                              d="M21 12a9 9 0 1 1-2.64-6.36"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <Polyline points="21 3 21 9 15 9" strokeLinecap="round" strokeLinejoin="round" />
+                          </Svg>
+                        ),
+                      },
+                      {
+                        key: 'clean',
+                        title: 'Clean & remove duplicates',
+                        subtitle: 'Tidy up repeated sessions',
+                        destructive: false,
+                        onPress: handleCleanAndDeduplicateCharges,
+                        renderIcon: () => (
+                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                            <Path
+                              d="M9.5 4.5 11 8.5 15 10l-4 1.5L9.5 15.5 8 11.5 4 10l4-1.5Z"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <Path
+                              d="M17.5 13.5 18.4 15.6 20.5 16.5l-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9Z"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </Svg>
+                        ),
+                      },
+                      {
+                        key: 'clear',
+                        title: 'Clear all cloud sessions',
+                        subtitle: 'Deletes every charging session stored in D1',
+                        destructive: true,
+                        onPress: handleClearAllD1Charges,
+                        renderIcon: () => (
+                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth={2}>
+                            <Path d="M3 6h18" strokeLinecap="round" strokeLinejoin="round" />
+                            <Path
+                              d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <Path
+                              d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <Line x1="10" y1="11" x2="10" y2="17" strokeLinecap="round" />
+                            <Line x1="14" y1="11" x2="14" y2="17" strokeLinecap="round" />
+                          </Svg>
+                        ),
+                      },
+                    ] as const
+                  ).map((item, idx, arr) => (
+                    <React.Fragment key={item.key}>
+                      <TouchableOpacity
+                        style={styles.chargeOptionsRow}
+                        onPress={() => handleCloseChargeOptionsMenu(item.onPress)}
+                        disabled={isD1Syncing}
+                        activeOpacity={0.7}
+                        accessibilityLabel={item.title}
+                        accessibilityRole="button"
+                      >
+                        <View style={styles.chargeOptionsRowIcon}>{item.renderIcon()}</View>
+                        <View style={styles.chargeOptionsRowBody}>
+                          <Text
+                            style={[
+                              styles.chargeOptionsRowTitle,
+                              item.destructive && { color: '#F87171' },
+                            ]}
+                          >
+                            {item.title}
+                          </Text>
+                          <Text style={styles.chargeOptionsRowSub}>{item.subtitle}</Text>
+                        </View>
+                      </TouchableOpacity>
+                      {idx < arr.length - 1 && <View style={styles.chargeOptionsDivider} />}
+                    </React.Fragment>
+                  ))}
+                </Animated.View>
+              </View>
             </Modal>
           </View>
         )}
@@ -14594,6 +14706,38 @@ const styles = StyleSheet.create({
     color: '#062116',
     fontSize: 16,
     fontWeight: '800',
+  },
+
+  // Charging Data Bottom Sheet Row Styles
+  chargeOptionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 15,
+  },
+  chargeOptionsRowIcon: {
+    width: 34,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  chargeOptionsRowBody: {
+    flex: 1,
+  },
+  chargeOptionsRowTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  chargeOptionsRowSub: {
+    color: '#94A3B8',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  chargeOptionsDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    width: '100%',
   },
   tabLabelText: {
     fontSize: 10,
