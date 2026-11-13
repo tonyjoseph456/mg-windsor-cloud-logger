@@ -412,6 +412,12 @@ function normalizeCloudCharge(c: any): ChargeLogRecord {
   }
   const effectiveKw = rawKw > 0 ? rawKw : (chargerCat === 'DC Fast' ? 30 : (chargerCat === '7.4 kW AC' ? 7.4 : 3.3));
 
+  const rawLat = c.start_lat ?? c.lat;
+  const rawLng = c.start_lng ?? c.lng;
+  const lat = rawLat != null && Number(rawLat) !== 0 ? Number(rawLat) : null;
+  const lng = rawLng != null && Number(rawLng) !== 0 ? Number(rawLng) : null;
+  const location = c.location ? String(c.location) : undefined;
+
   return {
     id: String(c.id),
     startTimestampSec: startSec,
@@ -433,6 +439,9 @@ function normalizeCloudCharge(c: any): ChargeLogRecord {
     energyUsedSinceLastChargeKwh: used,
     efficiencyKmPerKwh: eff,
     durationSeconds: Number(c.durationSeconds ?? Math.max(0, (endSec ?? startSec) - startSec)),
+    location,
+    lat,
+    lng,
     status: c.status === 'charging' ? 'charging' : 'completed',
   };
 }
@@ -460,10 +469,15 @@ function mergeChargeFragments(list: ChargeLogRecord[]): ChargeLogRecord[] {
         endDateTime: c.endTimestampSec ? formatDateTime(endSec) : c.endDateTime,
         endSoc,
         endEnergyKwh: Math.max(prev.endEnergyKwh, c.endEnergyKwh),
+        distanceToEmptyAfterKm:
+          c.distanceToEmptyAfterKm > 0 ? c.distanceToEmptyAfterKm : prev.distanceToEmptyAfterKm,
         maxChargingSpeedKw: peak,
         energyAddedToPackKwh: Number((prev.energyAddedToPackKwh + c.energyAddedToPackKwh).toFixed(2)),
         energyConsumedKwh: Number((prev.energyConsumedKwh + c.energyConsumedKwh).toFixed(2)),
         durationSeconds: Math.max(0, endSec - prev.startTimestampSec),
+        location: prev.location || c.location,
+        lat: prev.lat ?? c.lat ?? null,
+        lng: prev.lng ?? c.lng ?? null,
         status: c.status,
       };
     } else {
@@ -1144,6 +1158,65 @@ function getTripEndCoordinates(
   };
 }
 
+function stripCoordsFromLocation(loc: string | null | undefined): string {
+  if (!loc) return '';
+  return loc.replace(/\s*\([-\d.]+,\s*[-\d.]+\)\s*$/, '').trim();
+}
+
+function getChargeLocationInfo(
+  session: ChargeLogRecord,
+  trips: TripRecord[]
+): { address: string; lat: number | null; lng: number | null } {
+  const rawLoc = (session.location || '').trim();
+  const parsedFromLoc = parseCoordsFromText(rawLoc);
+  let lat =
+    session.lat != null && Number(session.lat) !== 0
+      ? Number(session.lat)
+      : parsedFromLoc?.lat ?? null;
+  let lng =
+    session.lng != null && Number(session.lng) !== 0
+      ? Number(session.lng)
+      : parsedFromLoc?.lng ?? null;
+  let address = stripCoordsFromLocation(rawLoc);
+  if (/^[-\d.]+,\s*[-\d.]+$/.test(address) || address === 'Unknown Location') {
+    address = '';
+  }
+
+  // Fallback for historical sessions without direct GPS columns: match completed trip right before plug-in at same odometer
+  if ((!address || lat == null || lng == null) && Array.isArray(trips) && session.startTimestampSec > 0) {
+    const matchTrip = trips.find((t) => {
+      if (t.status !== 'completed') return false;
+      const endSec = t.endTimestampSec || t.startTimestampSec;
+      if (!endSec || endSec > session.startTimestampSec) return false;
+      if (session.startTimestampSec - endSec > 21600) return false;
+      if (session.odometerKm > 0 && t.endOdometerKm > 0) {
+        return Math.abs(t.endOdometerKm - session.odometerKm) <= 0.3;
+      }
+      return false;
+    });
+    if (matchTrip) {
+      if (lat == null || lng == null) {
+        const endCoords = parseCoordsFromText(matchTrip.endLocation);
+        if (matchTrip.endLat != null && matchTrip.endLng != null && (matchTrip.endLat !== 0 || matchTrip.endLng !== 0)) {
+          lat = matchTrip.endLat;
+          lng = matchTrip.endLng;
+        } else if (endCoords) {
+          lat = endCoords.lat;
+          lng = endCoords.lng;
+        }
+      }
+      if (!address && matchTrip.endLocation) {
+        const tripAddr = stripCoordsFromLocation(matchTrip.endLocation);
+        if (tripAddr && !/^[-\d.]+,\s*[-\d.]+$/.test(tripAddr) && tripAddr !== 'Destination' && tripAddr !== 'Unknown Location') {
+          address = tripAddr;
+        }
+      }
+    }
+  }
+
+  return { address, lat, lng };
+}
+
 interface PlanSliderProps {
   label: string;
   value: number;
@@ -1663,7 +1736,10 @@ function DatePickerBottomSheet({
                     <TouchableOpacity
                       key={cell.dateKey}
                       style={styles.dpDaySlot}
-                      onPress={() => setDraftDateKey(cell.dateKey!)}
+                      onPress={() => {
+                        setDraftDateKey(cell.dateKey!);
+                        handleDismiss(cell.dateKey!);
+                      }}
                       disabled={isFuture}
                       activeOpacity={0.7}
                       accessibilityLabel={cell.dateKey}
@@ -1713,23 +1789,11 @@ function DatePickerBottomSheet({
             <TouchableOpacity
               style={styles.dpTodayBtn}
               onPress={() => handleDismiss(todayKey)}
-              activeOpacity={0.75}
+              activeOpacity={0.8}
               accessibilityLabel="Show today"
               accessibilityRole="button"
             >
               <Text style={styles.dpTodayBtnText}>Today</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.dpShowBtn}
-              onPress={() => handleDismiss(draftDateKey)}
-              activeOpacity={0.8}
-              accessibilityLabel={`Show ${formatDayMonthNumeric(draftDateKey)}`}
-              accessibilityRole="button"
-            >
-              <Text style={styles.dpShowBtnText}>
-                {`Show ${formatDayMonthNumeric(draftDateKey)}`}
-              </Text>
             </TouchableOpacity>
           </View>
         </Animated.View>
@@ -2455,8 +2519,29 @@ export default function App() {
   const chargeDetailSlideAnim = useRef(new Animated.Value(0)).current;
   const [isChargeDetailVisible, setIsChargeDetailVisible] = useState<boolean>(false);
   const [selectedChargeForDetail, setSelectedChargeForDetail] = useState<ChargeLogRecord | null>(null);
+  const [chargeDetailResolvedAddress, setChargeDetailResolvedAddress] = useState<string>('');
+
+  useEffect(() => {
+    let mounted = true;
+    setChargeDetailResolvedAddress('');
+    if (!selectedChargeForDetail) return;
+    const info = getChargeLocationInfo(selectedChargeForDetail, trips);
+    if (info.lat != null && info.lng != null && !info.address) {
+      resolveLocationLabel(info.lat, info.lng).then((label) => {
+        if (!mounted) return;
+        const cleanAddr = stripCoordsFromLocation(label);
+        if (cleanAddr && !/^[-\d.]+,\s*[-\d.]+$/.test(cleanAddr) && cleanAddr !== 'Unknown Location') {
+          setChargeDetailResolvedAddress(cleanAddr);
+        }
+      });
+    }
+    return () => {
+      mounted = false;
+    };
+  }, [selectedChargeForDetail, trips]);
 
   const handleOpenChargeDetail = (chargeSession: ChargeLogRecord) => {
+    setChargeDetailResolvedAddress('');
     setSelectedChargeForDetail(chargeSession);
     setIsChargeDetailVisible(true);
     chargeDetailSlideAnim.stopAnimation();
@@ -2480,6 +2565,7 @@ export default function App() {
       if (finished) {
         setIsChargeDetailVisible(false);
         setSelectedChargeForDetail(null);
+        setChargeDetailResolvedAddress('');
       }
     });
   };
@@ -2488,10 +2574,15 @@ export default function App() {
   const accountScreenSlideAnim = useRef(new Animated.Value(0)).current;
   const [isAccountScreenVisible, setIsAccountScreenVisible] = useState<boolean>(false);
   const [accountPinInput, setAccountPinInput] = useState<string>('');
+  const [isAccountVinRevealed, setIsAccountVinRevealed] = useState<boolean>(false);
+  const [isPushVinRevealed, setIsPushVinRevealed] = useState<boolean>(false);
+  const [vinCopiedBadge, setVinCopiedBadge] = useState<'account' | 'push' | null>(null);
   const accountPinInputRef = useRef<any>(null);
 
   const handleOpenAccountScreen = () => {
     setAccountPinInput(pin || '');
+    setIsAccountVinRevealed(false);
+    setVinCopiedBadge(null);
     setIsAccountScreenVisible(true);
     accountScreenSlideAnim.stopAnimation();
     accountScreenSlideAnim.setValue(0);
@@ -2513,6 +2604,8 @@ export default function App() {
     }).start(({ finished }) => {
       if (finished) {
         setIsAccountScreenVisible(false);
+        setIsAccountVinRevealed(false);
+        setVinCopiedBadge(null);
       }
     });
   };
@@ -2617,6 +2710,8 @@ export default function App() {
   const [isPushScreenVisible, setIsPushScreenVisible] = useState<boolean>(false);
 
   const handleOpenPushScreen = () => {
+    setIsPushVinRevealed(false);
+    setVinCopiedBadge(null);
     setIsPushScreenVisible(true);
     pushScreenSlideAnim.stopAnimation();
     pushScreenSlideAnim.setValue(0);
@@ -2638,6 +2733,8 @@ export default function App() {
     }).start(({ finished }) => {
       if (finished) {
         setIsPushScreenVisible(false);
+        setIsPushVinRevealed(false);
+        setVinCopiedBadge(null);
       }
     });
   };
@@ -2802,6 +2899,13 @@ export default function App() {
 
       const dateStr = session.startDateTime ? extractDate(session.startDateTime) : 'Charging Session';
       const timeRange = `${extractTime(session.startDateTime)} → ${extractTime(session.endDateTime)}`;
+      const locInfo = getChargeLocationInfo(session, trips);
+      const locDisplay =
+        locInfo.address && locInfo.lat != null && locInfo.lng != null
+          ? `${locInfo.address} (${locInfo.lat.toFixed(5)}, ${locInfo.lng.toFixed(5)})`
+          : locInfo.lat != null && locInfo.lng != null
+          ? `${locInfo.lat.toFixed(5)}, ${locInfo.lng.toFixed(5)}`
+          : locInfo.address || 'Not recorded';
 
       if (Platform.OS === 'web' && typeof document !== 'undefined') {
         const blob = await renderTelemetryCardToBlob({
@@ -2826,6 +2930,7 @@ export default function App() {
             { label: '6. Grid Consumed', value: `${wallKwh.toFixed(2)} kWh` },
             { label: '7. Odometer', value: `${session.odometerKm.toLocaleString()} km` },
             { label: '8. Range After Charge', value: `${session.distanceToEmptyAfterKm || Math.round((session.endSoc / 100) * 320)} km` },
+            { label: '9. Location', value: locDisplay },
           ],
         });
 
@@ -2844,7 +2949,7 @@ export default function App() {
         if (await Sharing.isAvailableAsync()) {
           Share.share({
             title: 'MG Windsor EV Charging Session',
-            message: `⚡ MG Windsor EV Charging Telemetry\n🔋 +${addedKwh.toFixed(1)} kWh (${session.startSoc}% → ${session.endSoc}%)\n⏱️ ${formatDurationHm(durSec)} on ${session.chargerCategory || '3.3 kW AC'}\n🔌 Wall Energy: ${wallKwh.toFixed(1)} kWh`,
+            message: `⚡ MG Windsor EV Charging Telemetry\n🔋 +${addedKwh.toFixed(1)} kWh (${session.startSoc}% → ${session.endSoc}%)\n⏱️ ${formatDurationHm(durSec)} on ${session.chargerCategory || '3.3 kW AC'}\n🔌 Wall Energy: ${wallKwh.toFixed(1)} kWh\n📍 Location: ${locDisplay}`,
           });
         }
       }
@@ -3398,8 +3503,10 @@ export default function App() {
         : Number(ongoingD1?.last_power_kw || ongoingD1?.peak_power_kw || activeCharge?.maxChargingSpeedKw || (isCharging ? 3.3 : 0));
 
     const d1DerivedRange =
-      ongoingD1?.start_range_km
-        ? Math.round(ongoingD1.start_range_km + (ongoingD1.soc_added || Math.max(0, (ongoingD1.end_soc ?? ongoingD1.start_soc) - ongoingD1.start_soc)) * 3.31)
+      ongoingD1?.end_range_km && Number(ongoingD1.end_range_km) > 0
+        ? Math.round(Number(ongoingD1.end_range_km))
+        : ongoingD1?.start_range_km
+        ? Math.round(ongoingD1.start_range_km + (ongoingD1.soc_added || Math.max(0, (ongoingD1.end_soc ?? ongoingD1.start_soc) - ongoingD1.start_soc)) * 3.2)
         : null;
 
     // Base verified distance-to-empty range
@@ -3410,7 +3517,7 @@ export default function App() {
         ? d1DerivedRange
         : st.range_km && Number(st.range_km) > 0
         ? Number(st.range_km)
-        : Math.round((verifiedSoc / 100) * 331);
+        : Math.round((verifiedSoc / 100) * 320);
 
     // Synchronize anchor reading when verified telemetry arrives or charging state flips
     const now = Date.now();
@@ -3440,8 +3547,8 @@ export default function App() {
       const socGain = (addedKwh / 38) * 100;
       soc = Math.min(100, Math.max(anchor.soc, Number((anchor.soc + socGain).toFixed(1))));
 
-      // Windsor EV rated 331 km on 38 kWh battery: each 1% SoC gain adds ~3.31 km range
-      const rangeGainKm = (soc - anchor.soc) * 3.31;
+      // Windsor EV BMS reports 320 km at 100% SoC (~3.2 km per 1% SoC)
+      const rangeGainKm = (soc - anchor.soc) * 3.2;
       estRange = Math.round(anchor.rangeKm + rangeGainKm);
     }
 
@@ -3782,6 +3889,28 @@ export default function App() {
     } catch (err) {
       showBanner('err', `Could not copy: ${(err as Error).message}`);
     }
+  };
+
+  const handleRevealAndCopyVin = async (target: 'account' | 'push', fullVinVal: string) => {
+    const cleanVin = (fullVinVal || '').trim();
+    if (!cleanVin || cleanVin === 'Discovering...' || cleanVin === 'Active Session') return;
+    if (target === 'account') {
+      setIsAccountVinRevealed(true);
+    } else {
+      setIsPushVinRevealed(true);
+    }
+    try {
+      await Clipboard.setStringAsync(cleanVin);
+    } catch {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(cleanVin).catch(() => {});
+      }
+    }
+    setVinCopiedBadge(target);
+    setTimeout(() => {
+      setVinCopiedBadge((prev) => (prev === target ? null : prev));
+    }, 2500);
+    showBanner('ok', `Copied VIN: ${cleanVin}`);
   };
 
   // Restore saved session & cached vehicle snapshot on startup
@@ -6841,6 +6970,13 @@ export default function App() {
                     preChargeBaseline?.energyUsedSinceLastChargeKwh ||
                     (startSocVal < 98 ? Number((((100 - startSocVal) / 100) * nominalCapacityKwh).toFixed(2)) : 0);
 
+                  const manualLat = status.gps?.latitude ?? null;
+                  const manualLng = status.gps?.longitude ?? null;
+                  const manualLocation =
+                    manualLat != null && manualLng != null && (manualLat !== 0 || manualLng !== 0)
+                      ? await resolveLocationLabel(manualLat, manualLng)
+                      : undefined;
+
                   const manualSession: ChargeLogRecord = {
                     id: `chg-manual-${Date.now()}`,
                     startTimestampSec: startSec,
@@ -6862,6 +6998,9 @@ export default function App() {
                     energyUsedSinceLastChargeKwh: used,
                     efficiencyKmPerKwh: used > 0 ? Number((dist / used).toFixed(2)) : 0,
                     durationSeconds: Math.max(60, nowSec - startSec),
+                    location: manualLocation,
+                    lat: manualLat,
+                    lng: manualLng,
                     status: 'completed',
                   };
 
@@ -7047,6 +7186,8 @@ export default function App() {
 
                   const startSoc = Math.round(Number(session.startSoc) || 0);
                   const endSoc = Math.round(Number(session.endSoc) || 0);
+                  const itemLoc = getChargeLocationInfo(session, trips);
+                  const itemPlace = cleanLocationSummary(itemLoc.address || session.location);
 
                   return (
                     <View key={session.id || idx}>
@@ -7062,6 +7203,11 @@ export default function App() {
                           <Text style={styles.chargeSessionMetaText}>
                             {durStr} · {powerStr}
                           </Text>
+                          {Boolean(itemPlace) && (
+                            <Text style={styles.chargeSessionMetaText} numberOfLines={1}>
+                              📍 {itemPlace}
+                            </Text>
+                          )}
                         </View>
                         <View style={{ alignItems: 'flex-end', marginRight: 10 }}>
                           <Text style={styles.chargeSessionKwhText}>+{addedKwh.toFixed(1)} kWh</Text>
@@ -10489,7 +10635,14 @@ export default function App() {
             ? Math.round(session.distanceToEmptyAfterKm)
             : endSoc > 0
             ? Math.round((endSoc / 100) * 320)
-            : 324;
+            : 320;
+
+        const chargeLoc = getChargeLocationInfo(session, trips);
+        const displayLocAddress =
+          chargeDetailResolvedAddress ||
+          chargeLoc.address ||
+          (chargeLoc.lat != null && chargeLoc.lng != null ? 'Address resolving...' : '');
+        const hasChargeCoords = chargeLoc.lat != null && chargeLoc.lng != null;
 
         return (
           <Animated.View
@@ -10610,6 +10763,43 @@ export default function App() {
                       <Text style={styles.chargeDetailTimelineVal}>{endFullStr}</Text>
                     </View>
                   </View>
+                </View>
+
+                {/* 5b. Charging Location Card (Address + GPS Coordinates) */}
+                <View style={styles.chargeDetailCard}>
+                  <View style={styles.chargeDetailLocHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                        <Path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" strokeLinecap="round" strokeLinejoin="round" />
+                        <Circle cx="12" cy="9" r="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                      <Text style={styles.chargeDetailTimelineLabel}>Charging location</Text>
+                    </View>
+                    {hasChargeCoords && (
+                      <TouchableOpacity
+                        style={styles.chargeDetailLocMapsBtn}
+                        onPress={() => {
+                          const query = `${chargeLoc.lat},${chargeLoc.lng}`;
+                          Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`);
+                        }}
+                        activeOpacity={0.7}
+                        accessibilityLabel="Open charging location in Google Maps"
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.chargeDetailLocMapsText}>Open in Maps ↗</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <Text style={styles.chargeDetailLocAddr}>
+                    {displayLocAddress || 'Location unavailable for this session'}
+                  </Text>
+                  {hasChargeCoords ? (
+                    <Text style={styles.chargeDetailLocCoords} selectable>
+                      📍 {chargeLoc.lat!.toFixed(6)}, {chargeLoc.lng!.toFixed(6)}
+                    </Text>
+                  ) : (
+                    <Text style={styles.chargeDetailGridSub}>GPS coordinates not recorded</Text>
+                  )}
                 </View>
 
                 {/* 6. Card 2: 6-Metric Driving & Efficiency Grid */}
@@ -10968,10 +11158,43 @@ export default function App() {
                   <Text style={styles.accountInfoVal}>{rawVehicle?.series || 'EQ100'}</Text>
                 </View>
                 <View style={styles.accountInfoDivider} />
-                <View style={styles.accountInfoRow}>
-                  <Text style={styles.accountInfoLabel}>VIN</Text>
-                  <Text style={styles.accountInfoVal}>...{displayVin ? displayVin.slice(-8) : '8H014788'}</Text>
-                </View>
+                {(() => {
+                  const fullVin = (rawVehicle?.vin || vin || '').trim();
+                  const maskedVin = fullVin.length > 8 ? `...${fullVin.slice(-8)}` : fullVin || '...8H014788';
+                  const shownVin = isAccountVinRevealed && fullVin ? fullVin : maskedVin;
+                  const canCopy = Boolean(fullVin && fullVin !== 'Discovering...');
+                  return (
+                    <TouchableOpacity
+                      style={styles.accountInfoRow}
+                      onPress={() => handleRevealAndCopyVin('account', fullVin)}
+                      disabled={!canCopy}
+                      activeOpacity={0.7}
+                      accessibilityLabel={isAccountVinRevealed ? `Copy VIN ${shownVin}` : 'Tap to reveal and copy full VIN'}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.accountInfoLabel}>VIN</Text>
+                      <View style={styles.vinValueWrap}>
+                        <Text
+                          style={[styles.accountInfoVal, styles.vinValueText]}
+                          selectable={isAccountVinRevealed}
+                          numberOfLines={1}
+                        >
+                          {shownVin}
+                        </Text>
+                        {canCopy && (
+                          vinCopiedBadge === 'account' ? (
+                            <Text style={styles.vinCopiedTag}>Copied</Text>
+                          ) : (
+                            <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth={2}>
+                              <Rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                              <Path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                            </Svg>
+                          )
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })()}
                 <View style={styles.accountInfoDivider} />
                 <View style={styles.accountInfoRow}>
                   <Text style={styles.accountInfoLabel}>Control PIN</Text>
@@ -11868,10 +12091,41 @@ export default function App() {
                     <Text style={styles.pnInfoValue}>Apple APNs / Google FCM</Text>
                   </View>
                   <View style={styles.pnInfoDivider} />
-                  <View style={styles.pnInfoRow}>
-                    <Text style={styles.pnInfoLabel}>Vehicle VIN</Text>
-                    <Text style={styles.pnInfoValue}>{shortVin}</Text>
-                  </View>
+                  {(() => {
+                    const shownVin = isPushVinRevealed && rawVin ? rawVin : shortVin;
+                    const canCopy = Boolean(rawVin && rawVin !== 'Discovering...');
+                    return (
+                      <TouchableOpacity
+                        style={styles.pnInfoRow}
+                        onPress={() => handleRevealAndCopyVin('push', rawVin)}
+                        disabled={!canCopy}
+                        activeOpacity={0.7}
+                        accessibilityLabel={isPushVinRevealed ? `Copy VIN ${shownVin}` : 'Tap to reveal and copy full VIN'}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.pnInfoLabel}>Vehicle VIN</Text>
+                        <View style={styles.vinValueWrap}>
+                          <Text
+                            style={[styles.pnInfoValue, styles.vinValueText]}
+                            selectable={isPushVinRevealed}
+                            numberOfLines={1}
+                          >
+                            {shownVin}
+                          </Text>
+                          {canCopy && (
+                            vinCopiedBadge === 'push' ? (
+                              <Text style={styles.vinCopiedTag}>Copied</Text>
+                            ) : (
+                              <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth={2}>
+                                <Rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                <Path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                              </Svg>
+                            )
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })()}
                 </View>
 
                 {/* 4. Alert Checklist Card */}
@@ -13273,6 +13527,11 @@ function formatChargeTextReport(
     `📉 Energy Loss: ${session.energyLossPercent}%`,
     `🚗 Pre-charge Drive: ${preDriveVal}`,
     `📊 Pre-charge Efficiency: ${preEffVal}${cycleStr}`,
+    ...(session.location
+      ? [`📍 Location: ${session.location}`]
+      : session.lat != null && session.lng != null
+      ? [`📍 Location: ${session.lat.toFixed(6)}, ${session.lng.toFixed(6)}`]
+      : []),
     `🛣️ Odometer: ${session.odometerKm.toLocaleString()} km`,
   ].join('\n');
 }
@@ -16056,32 +16315,17 @@ const styles = StyleSheet.create({
   dpActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   dpTodayBtn: {
     flex: 1,
-    height: 50,
-    borderRadius: 16,
-    backgroundColor: '#0E141F',
-    borderWidth: 1,
-    borderColor: '#232F42',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  dpTodayBtnText: {
-    color: '#F8FAFC',
-    fontSize: 15.5,
-    fontWeight: '700',
-  },
-  dpShowBtn: {
-    flex: 1.85,
     height: 50,
     borderRadius: 16,
     backgroundColor: '#34E096',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dpShowBtnText: {
+  dpTodayBtnText: {
     color: '#062116',
     fontSize: 15.5,
     fontWeight: '800',
@@ -18748,6 +18992,38 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 2,
   },
+  chargeDetailLocHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  chargeDetailLocMapsBtn: {
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.35)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  chargeDetailLocMapsText: {
+    color: '#34D399',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  chargeDetailLocAddr: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  chargeDetailLocCoords: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 5,
+    fontFamily: Platform.OS === 'web' ? 'monospace' : undefined,
+  },
   chargeDetailGridRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -19106,6 +19382,28 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 15,
     fontWeight: '700',
+  },
+  vinValueWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    flexShrink: 1,
+    marginLeft: 12,
+  },
+  vinValueText: {
+    textAlign: 'right',
+    flexShrink: 1,
+  },
+  vinCopiedTag: {
+    color: '#34D399',
+    fontSize: 11.5,
+    fontWeight: '800',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    overflow: 'hidden',
   },
   accountInfoDivider: {
     height: 1,

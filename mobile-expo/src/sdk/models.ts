@@ -197,5 +197,8 @@ export interface ChargeLogRecord {
   energyUsedSinceLastChargeKwh: number;
   efficiencyKmPerKwh: number;
   durationSeconds: number;
+  location?: string;
+  lat?: number | null;
+  lng?: number | null;
   status: 'charging' | 'completed';
 }

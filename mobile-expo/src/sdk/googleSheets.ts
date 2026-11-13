@@ -987,6 +987,21 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
   const lossKwh = Number(r.charging_loss_kwh) || Math.max(0, Number((energyUsed - energyAdded).toFixed(2)));
   const lossPct = energyUsed > 0 ? Number(((lossKwh / energyUsed) * 100).toFixed(1)) : (isDc ? 6.0 : (chargerCategory === '7.4 kW AC' ? 9.5 : 11.5));
 
+  const rawEndRange = Number(r.end_range_km) || 0;
+  const startRange = Number(r.start_range_km) || 0;
+  const validEndRange =
+    rawEndRange > 0 && !(endSoc >= 99 && rawEndRange < 250)
+      ? Math.round(rawEndRange)
+      : startRange > 0 && socAdded <= 1
+      ? Math.round(startRange)
+      : Math.round((endSoc / 100) * 320);
+
+  const rawLat = r.start_lat ?? r.lat;
+  const rawLng = r.start_lng ?? r.lng;
+  const lat = rawLat != null && Number(rawLat) !== 0 ? Number(rawLat) : null;
+  const lng = rawLng != null && Number(rawLng) !== 0 ? Number(rawLng) : null;
+  const location = r.location ? String(r.location) : undefined;
+
   return {
     id: String(r.id),
     startTimestampSec: startSec,
@@ -998,7 +1013,7 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
     startEnergyKwh: Number(((startSoc / 100) * 38).toFixed(2)),
     endEnergyKwh: Number(((endSoc / 100) * 38).toFixed(2)),
     odometerKm: odo,
-    distanceToEmptyAfterKm: r.start_range_km ? Math.round(Number(r.start_range_km) + (socAdded * 3.3)) : Math.round((endSoc / 100) * 331),
+    distanceToEmptyAfterKm: validEndRange,
     chargerCategory,
     maxChargingSpeedKw: effectivePeakKw,
     energyAddedToPackKwh: Math.max(0, energyAdded),
@@ -1008,6 +1023,9 @@ export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
     energyUsedSinceLastChargeKwh: 0,
     efficiencyKmPerKwh: 0,
     durationSeconds,
+    location,
+    lat,
+    lng,
     status: (r.status === 'ongoing' || r.status === 'paused' || r.status === 'charging') ? 'charging' : 'completed',
   };
 }
@@ -1144,6 +1162,10 @@ export async function syncChargesToD1(charges: ChargeLogRecord[], vinOverride?: 
       charger_type: c.chargerCategory,
       peak_kw: c.maxChargingSpeedKw,
       odometer_km: c.odometerKm,
+      end_range_km: c.distanceToEmptyAfterKm || null,
+      lat: c.lat ?? null,
+      lng: c.lng ?? null,
+      location: c.location || null,
       status: c.status,
     }));
     const res = await fetch(`${BACKEND_URL}/api/charges/sync${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
@@ -1226,6 +1248,10 @@ export interface ChargingSessionRecord {
   last_power_kw: number;
   start_odometer_km: number;
   start_range_km: number;
+  end_range_km?: number | null;
+  start_lat?: number | null;
+  start_lng?: number | null;
+  location?: string | null;
   outage_count: number;
   paused_at?: number | null;
   active_duration_seconds: number;

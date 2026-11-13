@@ -152,3 +152,58 @@ export function evaluateChargingStateDecision(
     pausePendingAt: hasValidPending ? existingPending : nowSec,
   };
 }
+
+export const BMS_FULL_RANGE_KM = 320;
+
+export function hasValidGpsCoords(
+  lat: number | null | undefined,
+  lng: number | null | undefined
+): boolean {
+  return (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001)
+  );
+}
+
+/**
+ * Selects the best verified BMS ending range (km) for a charging session.
+ * MG's BMS often leaves `range_km` frozen at the pre-charge value during slow
+ * AC charging, so stale unchanged readings after substantial SoC gain are
+ * skipped; at 100% completion, falls back to 320 km if BMS hasn't updated yet.
+ */
+export function resolveChargingEndRangeKm(params: {
+  startRangeKm?: number | null;
+  storedEndRangeKm?: number | null;
+  liveRangeKm?: number | null;
+  startSoc?: number | null;
+  endSoc?: number | null;
+  isComplete?: boolean;
+}): number | null {
+  const startRange = Number(params.startRangeKm) || 0;
+  const storedEnd = Number(params.storedEndRangeKm) || 0;
+  const liveRange = Number(params.liveRangeKm) || 0;
+  const startSoc = Number(params.startSoc) || 0;
+  const endSoc = Number(params.endSoc) || startSoc;
+  const socAdded = Math.max(0, endSoc - startSoc);
+
+  const isFrozenPreCharge = startRange > 0 && socAdded >= 5 && liveRange <= startRange + 2;
+  const isImplausibleFull = endSoc >= 99 && liveRange < 250;
+  const isFreshLiveRange = liveRange > 0 && !isFrozenPreCharge && !isImplausibleFull;
+
+  if (isFreshLiveRange) {
+    return Math.round(liveRange);
+  }
+
+  if (storedEnd > 0 && !(endSoc >= 99 && storedEnd < 250)) {
+    return Math.round(storedEnd);
+  }
+
+  if (params.isComplete && endSoc > 0) {
+    return Math.round((endSoc / 100) * BMS_FULL_RANGE_KM);
+  }
+
+  return null;
+}

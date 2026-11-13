@@ -20,9 +20,12 @@ import { hashControlPin } from '../src/sdk/crypto';
 import legacy from './silent-webhook';
 import mgProxy from './worker';
 import {
+  BMS_FULL_RANGE_KM,
   evaluateChargingStateDecision,
+  hasValidGpsCoords,
   parseTelemetryFromStatus,
   ParsedCarTelemetry,
+  resolveChargingEndRangeKm,
 } from './charging-sync';
 import {
   initAccessControlD1,
@@ -1017,6 +1020,10 @@ const D1_TABLE_SCHEMAS = [
     charger_type TEXT,
     peak_kw REAL,
     odometer_km REAL,
+    end_range_km REAL,
+    lat REAL,
+    lng REAL,
+    location TEXT,
     status TEXT DEFAULT 'completed',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
@@ -1038,6 +1045,10 @@ const D1_TABLE_SCHEMAS = [
     last_power_kw REAL DEFAULT 0,
     start_odometer_km REAL,
     start_range_km REAL,
+    end_range_km REAL,
+    start_lat REAL,
+    start_lng REAL,
+    location TEXT,
     outage_count INTEGER DEFAULT 0,
     paused_at INTEGER,
     pause_pending_at INTEGER,
@@ -1116,9 +1127,24 @@ async function initD1(db: any) {
       await db.prepare(`ALTER TABLE trips ADD COLUMN ${col}`).run();
     } catch (_) {}
   }
-  try {
-    await db.prepare('ALTER TABLE charging_sessions ADD COLUMN pause_pending_at INTEGER').run();
-  } catch (_) {}
+  const chargingSessionCols = [
+    'pause_pending_at INTEGER',
+    'end_range_km REAL',
+    'start_lat REAL',
+    'start_lng REAL',
+    'location TEXT',
+  ];
+  for (const col of chargingSessionCols) {
+    try {
+      await db.prepare(`ALTER TABLE charging_sessions ADD COLUMN ${col}`).run();
+    } catch (_) {}
+  }
+  const chargeCols = ['end_range_km REAL', 'lat REAL', 'lng REAL', 'location TEXT'];
+  for (const col of chargeCols) {
+    try {
+      await db.prepare(`ALTER TABLE charges ADD COLUMN ${col}`).run();
+    } catch (_) {}
+  }
   // Backfill any pre-existing single-user rows (where vin IS NULL) to the primary owner's VIN from mg_active_session
   try {
     const sessRow: any = await db.prepare("SELECT value FROM kv_store WHERE key = 'mg_active_session'").first();
@@ -1151,6 +1177,46 @@ async function initD1(db: any) {
     await db.prepare(
       "UPDATE charges SET charge_type = 'AC Standard', charger_type = 'AC Standard' WHERE peak_kw > 0 AND peak_kw <= 11.0 AND (charge_type LIKE '%DC%' OR charger_type LIKE '%DC%')"
     ).run();
+    // Backfill charging location/GPS on historical charging_sessions when a trip ended right before plug-in at the same odometer
+    await db.prepare(`
+      UPDATE charging_sessions
+      SET
+        start_lat = COALESCE(start_lat, (
+          SELECT t.end_lat FROM trips t
+          WHERE t.status = 'completed'
+            AND (charging_sessions.vin IS NULL OR charging_sessions.vin = '' OR t.vin = charging_sessions.vin)
+            AND t.end_lat IS NOT NULL AND t.end_lng IS NOT NULL
+            AND t.end_timestamp IS NOT NULL AND t.end_timestamp <= charging_sessions.start_time
+            AND (charging_sessions.start_time - t.end_timestamp) <= 21600
+            AND t.end_odometer_km IS NOT NULL AND charging_sessions.start_odometer_km IS NOT NULL
+            AND ABS(t.end_odometer_km - charging_sessions.start_odometer_km) <= 0.3
+          ORDER BY t.end_timestamp DESC LIMIT 1
+        )),
+        start_lng = COALESCE(start_lng, (
+          SELECT t.end_lng FROM trips t
+          WHERE t.status = 'completed'
+            AND (charging_sessions.vin IS NULL OR charging_sessions.vin = '' OR t.vin = charging_sessions.vin)
+            AND t.end_lat IS NOT NULL AND t.end_lng IS NOT NULL
+            AND t.end_timestamp IS NOT NULL AND t.end_timestamp <= charging_sessions.start_time
+            AND (charging_sessions.start_time - t.end_timestamp) <= 21600
+            AND t.end_odometer_km IS NOT NULL AND charging_sessions.start_odometer_km IS NOT NULL
+            AND ABS(t.end_odometer_km - charging_sessions.start_odometer_km) <= 0.3
+          ORDER BY t.end_timestamp DESC LIMIT 1
+        )),
+        location = COALESCE(NULLIF(location, ''), (
+          SELECT t.end_location FROM trips t
+          WHERE t.status = 'completed'
+            AND (charging_sessions.vin IS NULL OR charging_sessions.vin = '' OR t.vin = charging_sessions.vin)
+            AND t.end_location IS NOT NULL AND t.end_location != ''
+            AND t.end_timestamp IS NOT NULL AND t.end_timestamp <= charging_sessions.start_time
+            AND (charging_sessions.start_time - t.end_timestamp) <= 21600
+            AND t.end_odometer_km IS NOT NULL AND charging_sessions.start_odometer_km IS NOT NULL
+            AND ABS(t.end_odometer_km - charging_sessions.start_odometer_km) <= 0.3
+          ORDER BY t.end_timestamp DESC LIMIT 1
+        ))
+      WHERE (location IS NULL OR location = '' OR start_lat IS NULL OR start_lng IS NULL)
+        AND start_odometer_km IS NOT NULL
+    `).run();
   } catch (_) {}
   if (d1InitErrors.length === 0) {
     d1Initialized = true;
@@ -1861,8 +1927,9 @@ async function d1BatchSyncCharges(env: Env, rawCharges: any[], defaultVin?: stri
         await env.DB.prepare(`
           INSERT OR REPLACE INTO charges (
             id, vin, date, start_timestamp, end_timestamp, duration_seconds,
-            start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km,
+            end_range_km, lat, lng, location, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           id, v, date, Number(charge.start_timestamp) || 0,
           charge.end_timestamp ? Number(charge.end_timestamp) : null,
@@ -1873,6 +1940,10 @@ async function d1BatchSyncCharges(env: Env, rawCharges: any[], defaultVin?: stri
           charge.charger_type || 'AC 3.3 kW',
           charge.peak_kw != null ? Number(charge.peak_kw) : null,
           charge.odometer_km != null ? Number(charge.odometer_km) : null,
+          charge.end_range_km != null ? Number(charge.end_range_km) : null,
+          charge.lat != null ? Number(charge.lat) : null,
+          charge.lng != null ? Number(charge.lng) : null,
+          charge.location || null,
           charge.status || 'completed'
         ).run();
         count++;
@@ -2461,9 +2532,10 @@ async function d1CreateChargingSession(env: Env, session: any) {
           id, vin, status, start_time, end_time, start_soc, end_soc,
           soc_added, kwh_added, energy_used_kwh, charging_loss_kwh,
           charge_type, peak_power_kw, last_power_kw, start_odometer_km,
-          start_range_km, outage_count, paused_at, active_duration_seconds,
+          start_range_km, end_range_km, start_lat, start_lng, location,
+          outage_count, paused_at, active_duration_seconds,
           last_poll_time, date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         session.id, v || null, session.status, session.start_time, session.end_time || null,
         session.start_soc, session.end_soc || session.start_soc,
@@ -2471,7 +2543,9 @@ async function d1CreateChargingSession(env: Env, session: any) {
         session.energy_used_kwh || 0, session.charging_loss_kwh || 0,
         session.charge_type || 'AC', session.peak_power_kw || 0,
         session.last_power_kw || 0, session.start_odometer_km || 0,
-        session.start_range_km || 0, session.outage_count || 0,
+        session.start_range_km || 0, session.end_range_km ?? null,
+        session.start_lat ?? null, session.start_lng ?? null, session.location || null,
+        session.outage_count || 0,
         session.paused_at || null, session.active_duration_seconds || 0,
         session.last_poll_time || session.start_time, session.date
       ).run();
@@ -2504,6 +2578,10 @@ async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any
           charge_type = COALESCE(?, charge_type),
           peak_power_kw = COALESCE(?, peak_power_kw),
           last_power_kw = COALESCE(?, last_power_kw),
+          end_range_km = COALESCE(?, end_range_km),
+          start_lat = COALESCE(?, start_lat),
+          start_lng = COALESCE(?, start_lng),
+          location = COALESCE(?, location),
           outage_count = COALESCE(?, outage_count),
           paused_at = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(?, paused_at) END,
           pause_pending_at = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(?, pause_pending_at) END,
@@ -2525,6 +2603,10 @@ async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any
         updates.charge_type ?? null,
         updates.peak_power_kw ?? null,
         updates.last_power_kw ?? null,
+        updates.end_range_km ?? null,
+        updates.start_lat ?? null,
+        updates.start_lng ?? null,
+        updates.location ?? null,
         updates.outage_count ?? null,
         updates.paused_at === null ? 1 : 0,
         updates.paused_at ?? null,
@@ -2653,6 +2735,23 @@ async function syncChargingSessionState(
           const grossEnergyUsed = Number((kwhAdded / effFactor).toFixed(2));
           const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
           const peakKw = chargeType === 'DC' ? Math.max(30, impliedKw) : (impliedKw > 4.2 ? 7.4 : 3.3);
+          const recLat = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+            ? liveTelem.lat
+            : (hasValidGpsCoords(lastTrip.end_lat, lastTrip.end_lng) ? lastTrip.end_lat : null);
+          const recLng = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+            ? liveTelem.lng
+            : (hasValidGpsCoords(lastTrip.end_lat, lastTrip.end_lng) ? lastTrip.end_lng : null);
+          const recLocation = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+            ? await resolveLocation(liveTelem.lat, liveTelem.lng)
+            : (lastTrip.end_location || (hasValidGpsCoords(recLat, recLng) ? await resolveLocation(recLat, recLng) : null));
+          const estStartRangeKm = Math.round((parkSoc / 100) * BMS_FULL_RANGE_KM);
+          const recEndRangeKm = resolveChargingEndRangeKm({
+            startRangeKm: estStartRangeKm,
+            liveRangeKm: liveTelem.rangeKm,
+            startSoc: parkSoc,
+            endSoc: liveTelem.soc,
+            isComplete: true,
+          });
           const recoveredSession = {
             id: 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
             vin: v || null,
@@ -2669,7 +2768,11 @@ async function syncChargingSessionState(
             peak_power_kw: peakKw,
             last_power_kw: 0,
             start_odometer_km: liveTelem.odometer,
-            start_range_km: Math.round((parkSoc / 100) * 330),
+            start_range_km: estStartRangeKm,
+            end_range_km: recEndRangeKm,
+            start_lat: recLat,
+            start_lng: recLng,
+            location: recLocation,
             outage_count: 0,
             paused_at: null,
             active_duration_seconds: estDurationSec,
@@ -2705,13 +2808,26 @@ async function syncChargingSessionState(
       (nowSec - Number(lastSession.end_time) < 21600) &&
       (Math.abs(liveTelem.odometer - Number(lastSession.start_odometer_km)) < 0.2)
     ) {
-      const updates = {
+      const resumedEndRange = resolveChargingEndRangeKm({
+        startRangeKm: lastSession.start_range_km,
+        storedEndRangeKm: lastSession.end_range_km,
+        liveRangeKm: liveTelem.rangeKm,
+        startSoc: Number(lastSession.start_soc) || 0,
+        endSoc: Math.max(liveTelem.soc, Number(lastSession.end_soc) || 0),
+      });
+      const updates: any = {
         status: 'ongoing',
         end_time: null,
         last_power_kw: liveTelem.powerKw,
         peak_power_kw: Math.max(Number(lastSession.peak_power_kw) || 0, liveTelem.powerKw),
+        end_range_km: resumedEndRange ?? undefined,
         last_poll_time: nowSec,
       };
+      if ((!lastSession.location || lastSession.start_lat == null) && hasValidGpsCoords(liveTelem.lat, liveTelem.lng)) {
+        updates.start_lat = liveTelem.lat;
+        updates.start_lng = liveTelem.lng;
+        updates.location = await resolveLocation(liveTelem.lat, liveTelem.lng);
+      }
       await d1UpdateChargingSession(env, lastSession.id, updates);
       return { ...lastSession, ...updates };
     }
@@ -2761,6 +2877,16 @@ async function syncChargingSessionState(
     const initialEnergyUsed = Math.max(prePollWallKwh, Number((initialKwhAdded / effFactor).toFixed(2)));
     const initialLossKwh = Math.max(0, Number((initialEnergyUsed - initialKwhAdded).toFixed(2)));
 
+    const startLat = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+      ? liveTelem.lat
+      : (isSameOdoAsLastTrip && hasValidGpsCoords(lastTrip?.end_lat, lastTrip?.end_lng) ? lastTrip.end_lat : null);
+    const startLng = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+      ? liveTelem.lng
+      : (isSameOdoAsLastTrip && hasValidGpsCoords(lastTrip?.end_lat, lastTrip?.end_lng) ? lastTrip.end_lng : null);
+    const chargeLocation = hasValidGpsCoords(startLat, startLng)
+      ? await resolveLocation(startLat, startLng)
+      : (isSameOdoAsLastTrip && lastTrip?.end_location ? lastTrip.end_location : null);
+
     const newSession = {
       id: 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       vin: v || null,
@@ -2778,6 +2904,15 @@ async function syncChargingSessionState(
       last_power_kw: liveTelem.powerKw,
       start_odometer_km: liveTelem.odometer,
       start_range_km: liveTelem.rangeKm,
+      end_range_km: resolveChargingEndRangeKm({
+        startRangeKm: liveTelem.rangeKm,
+        liveRangeKm: liveTelem.rangeKm,
+        startSoc,
+        endSoc: liveTelem.soc,
+      }),
+      start_lat: startLat,
+      start_lng: startLng,
+      location: chargeLocation,
       outage_count: 0,
       paused_at: null,
       active_duration_seconds: bmsElapsedSec,
@@ -2837,6 +2972,15 @@ async function syncChargingSessionState(
     const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
     const durationMin = Math.round(activeSec / 60);
 
+    const completedEndRangeKm = resolveChargingEndRangeKm({
+      startRangeKm: activeSession.start_range_km,
+      storedEndRangeKm: activeSession.end_range_km,
+      liveRangeKm: liveTelem.rangeKm,
+      startSoc,
+      endSoc: currentSoc,
+      isComplete: true,
+    });
+
     const completedUpdates = {
       status: 'completed',
       end_time: nowSec,
@@ -2847,6 +2991,7 @@ async function syncChargingSessionState(
       charging_loss_kwh: lossKwh,
       peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
       last_power_kw: 0,
+      end_range_km: completedEndRangeKm,
       pause_pending_at: null,
       active_duration_seconds: activeSec,
       last_poll_time: nowSec,
@@ -2893,8 +3038,16 @@ async function syncChargingSessionState(
     const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
     const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
     const durationMin = Math.round(activeSec / 60);
+    const fullEndRangeKm = resolveChargingEndRangeKm({
+      startRangeKm: activeSession.start_range_km,
+      storedEndRangeKm: activeSession.end_range_km,
+      liveRangeKm: liveTelem.rangeKm,
+      startSoc,
+      endSoc,
+      isComplete: true,
+    });
 
-    const completedUpdates = {
+    const completedUpdates: any = {
       status: 'completed',
       end_time: nowSec,
       end_soc: endSoc,
@@ -2904,10 +3057,16 @@ async function syncChargingSessionState(
       charging_loss_kwh: lossKwh,
       peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
       last_power_kw: 0,
+      end_range_km: fullEndRangeKm,
       pause_pending_at: null,
       active_duration_seconds: activeSec,
       last_poll_time: nowSec,
     };
+    if ((!activeSession.location || activeSession.start_lat == null) && hasValidGpsCoords(liveTelem.lat, liveTelem.lng)) {
+      completedUpdates.start_lat = liveTelem.lat;
+      completedUpdates.start_lng = liveTelem.lng;
+      completedUpdates.location = await resolveLocation(liveTelem.lat, liveTelem.lng);
+    }
     await d1UpdateChargingSession(env, activeSession.id, completedUpdates);
 
     // NOTIFICATIONS ENGINE: Full Charge (100%)
@@ -2978,6 +3137,14 @@ async function syncChargingSessionState(
       const effFactor = (activeSession.charge_type === 'DC') ? 0.94 : 0.88;
       const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
       const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
+      const pausedTimeoutEndRangeKm = resolveChargingEndRangeKm({
+        startRangeKm: activeSession.start_range_km,
+        storedEndRangeKm: activeSession.end_range_km,
+        liveRangeKm: liveTelem.rangeKm,
+        startSoc,
+        endSoc: currentSoc,
+        isComplete: true,
+      });
       const updates = {
         status: 'completed',
         end_time: activeSession.paused_at || nowSec,
@@ -2986,6 +3153,7 @@ async function syncChargingSessionState(
         kwh_added: kwhAdded,
         energy_used_kwh: grossEnergyUsed,
         charging_loss_kwh: lossKwh,
+        end_range_km: pausedTimeoutEndRangeKm,
         pause_pending_at: null,
         last_poll_time: nowSec,
       };
@@ -3033,6 +3201,14 @@ async function syncChargingSessionState(
     const grossEnergyUsed = Math.max(integratedKwh, Number((kwhAdded / effFactor).toFixed(2)));
     const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
 
+    const ongoingEndRangeKm = resolveChargingEndRangeKm({
+      startRangeKm: activeSession.start_range_km,
+      storedEndRangeKm: activeSession.end_range_km,
+      liveRangeKm: liveTelem.rangeKm,
+      startSoc,
+      endSoc: currentSoc,
+    });
+
     const updates: any = {
       status: 'ongoing',
       end_soc: currentSoc,
@@ -3049,6 +3225,14 @@ async function syncChargingSessionState(
       pause_pending_at: null,
       last_poll_time: nowSec,
     };
+    if (ongoingEndRangeKm != null) {
+      updates.end_range_km = ongoingEndRangeKm;
+    }
+    if ((!activeSession.location || activeSession.start_lat == null) && hasValidGpsCoords(liveTelem.lat, liveTelem.lng)) {
+      updates.start_lat = liveTelem.lat;
+      updates.start_lng = liveTelem.lng;
+      updates.location = await resolveLocation(liveTelem.lat, liveTelem.lng);
+    }
     if (updatedStartTime !== undefined) {
       updates.start_time = updatedStartTime;
       updates.date = updatedDate;
@@ -3895,7 +4079,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       isPluggedIn: true,
       powerKw: qKw,
       chargeType: qKw > 11 ? 'DC' : 'AC',
-      rangeKm: Math.round((qSoc / 100) * 331),
+      rangeKm: Math.round((qSoc / 100) * BMS_FULL_RANGE_KM),
     };
     const session = await syncChargingSessionState(env, url, dummyTelem, 'test_start', reqVin);
     return json({
@@ -3926,7 +4110,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
       isPluggedIn: false,
       powerKw: 0,
       chargeType: active.charge_type || 'AC',
-      rangeKm: Math.round((qSoc / 100) * 331),
+      rangeKm: Math.round((qSoc / 100) * BMS_FULL_RANGE_KM),
     };
     const fakeDeltaSec = 2700;
     active.active_duration_seconds = (Number(active.active_duration_seconds) || 0) + fakeDeltaSec;

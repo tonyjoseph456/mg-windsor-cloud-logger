@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  BMS_FULL_RANGE_KM,
   DEFAULT_PAUSE_CONFIRM_SECONDS,
   evaluateChargingStateDecision,
+  hasValidGpsCoords,
   parseTelemetryFromStatus,
+  resolveChargingEndRangeKm,
 } from '../charging-sync';
 
 describe('Charging Telemetry & Pause Debounce State Machine', () => {
@@ -122,5 +125,62 @@ describe('Charging Telemetry & Pause Debounce State Machine', () => {
       1000 + DEFAULT_PAUSE_CONFIRM_SECONDS + 600
     );
     assert.deepEqual(stillPaused, { action: 'stay_paused' });
+  });
+
+  it('captures real BMS end range (320 km at 100%) and ignores frozen pre-charge values', () => {
+    // 1. Fresh BMS reading at 100% -> uses real BMS value directly
+    assert.equal(
+      resolveChargingEndRangeKm({
+        startRangeKm: 142,
+        liveRangeKm: 320,
+        startSoc: 45,
+        endSoc: 100,
+        isComplete: true,
+      }),
+      320
+    );
+
+    // 2. Real BMS variation (e.g. 316 km) is preserved without forcing 320/324
+    assert.equal(
+      resolveChargingEndRangeKm({
+        startRangeKm: 142,
+        liveRangeKm: 316,
+        startSoc: 45,
+        endSoc: 100,
+        isComplete: true,
+      }),
+      316
+    );
+
+    // 3. Frozen BMS range mid-charge (still 142 km at 72%) is ignored rather than saved as end_range_km
+    assert.equal(
+      resolveChargingEndRangeKm({
+        startRangeKm: 142,
+        liveRangeKm: 142,
+        startSoc: 45,
+        endSoc: 72,
+        isComplete: false,
+      }),
+      null
+    );
+
+    // 4. Frozen BMS range (142 km) on 100% completion falls back to real 320 km rating (not 324)
+    assert.equal(
+      resolveChargingEndRangeKm({
+        startRangeKm: 142,
+        liveRangeKm: 142,
+        startSoc: 45,
+        endSoc: 100,
+        isComplete: true,
+      }),
+      BMS_FULL_RANGE_KM
+    );
+  });
+
+  it('validates non-zero GPS coordinates for charging location capture', () => {
+    assert.equal(hasValidGpsCoords(10.0512, 76.6214), true);
+    assert.equal(hasValidGpsCoords(0, 0), false);
+    assert.equal(hasValidGpsCoords(null, 76.6214), false);
+    assert.equal(hasValidGpsCoords(NaN, 76.6214), false);
   });
 });

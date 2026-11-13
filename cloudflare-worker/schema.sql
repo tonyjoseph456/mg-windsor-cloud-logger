@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS charges (
   charger_type TEXT,                      -- 'AC 3.3 kW', 'AC 7.4 kW', 'DC Fast'
   peak_kw REAL,
   odometer_km REAL,
+  end_range_km REAL,
+  lat REAL,
+  lng REAL,
+  location TEXT,
   status TEXT DEFAULT 'completed',        -- 'charging' | 'completed'
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
