@@ -2239,6 +2239,37 @@ export default function App() {
     });
   };
 
+  // Dedicated Text Size Screen State & Animation (Horizontal tween from right to centre)
+  const textSizeSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isTextSizeScreenVisible, setIsTextSizeScreenVisible] = useState<boolean>(false);
+  const textSizeTrackWidthRef = useRef<number>(220);
+
+  const handleOpenTextSizeScreen = () => {
+    setIsTextSizeScreenVisible(true);
+    textSizeSlideAnim.stopAnimation();
+    textSizeSlideAnim.setValue(0);
+    Animated.timing(textSizeSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseTextSizeScreen = () => {
+    textSizeSlideAnim.stopAnimation();
+    Animated.timing(textSizeSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsTextSizeScreenVisible(false);
+      }
+    });
+  };
+
   // Trips & Charge Data Options Bottom Sheet States
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
   const [showChargeOptionsMenu, setShowChargeOptionsMenu] = useState<boolean>(false);
@@ -2247,7 +2278,6 @@ export default function App() {
   const [activeProfileModal, setActiveProfileModal] = useState<
     | 'vehicle'
     | 'analytics'
-    | 'text_size'
     | 'maps_key'
     | 'push'
     | 'notifs_log'
@@ -5176,7 +5206,10 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
-  const profileSubscreenAnim = Animated.add(accountScreenSlideAnim, analyticsSlideAnim);
+  const profileSubscreenAnim = Animated.add(
+    accountScreenSlideAnim,
+    Animated.add(analyticsSlideAnim, textSizeSlideAnim)
+  );
   const profileTranslateX = profileSubscreenAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0, -screenWidth],
@@ -5189,6 +5222,11 @@ export default function App() {
   });
 
   const analyticsTranslateX = analyticsSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const textSizeTranslateX = textSizeSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -6812,7 +6850,7 @@ export default function App() {
                   {/* Text size */}
                   <TouchableOpacity
                     style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('text_size')}
+                    onPress={handleOpenTextSizeScreen}
                     activeOpacity={0.7}
                   >
                     <View style={styles.profileRowIconWrap}>
@@ -6991,7 +7029,6 @@ export default function App() {
                       <Text style={styles.profileModalTitle}>
                         {activeProfileModal === 'vehicle' && 'Connected Vehicle'}
                         {activeProfileModal === 'analytics' && 'Monthly Analytics'}
-                        {activeProfileModal === 'text_size' && 'Display & Text Size'}
                         {activeProfileModal === 'maps_key' && 'Google Maps API Key'}
                         {activeProfileModal === 'push' && 'Push Notifications'}
                         {activeProfileModal === 'notifs_log' && 'Notification History'}
@@ -7135,206 +7172,7 @@ export default function App() {
               </AccountSectionCard>
             )}
 
-            {/* CARD 2: DISPLAY & TEXT SIZE SCALING */}
-            {activeProfileModal === 'text_size' && (
-              <AccountSectionCard
-                defaultExpanded={true}
-              title="Display & Text Size Scaling"
-              icon="🔤"
-              badge={`${Math.round(fontScale * 100)}%`}
-              badgeBg={fontScale < 1 ? '#064E3B' : fontScale > 1 ? '#0C4A6E' : '#1E293B'}
-              badgeColor={fontScale < 1 ? '#34D399' : fontScale > 1 ? '#38BDF8' : '#94A3B8'}
-              preview={`Font scale: ${Math.round(fontScale * 100)}% • ${
-                fontScale <= 0.85
-                  ? 'Compact (Best for Small Screens)'
-                  : fontScale <= 0.95
-                  ? 'Slightly Compact'
-                  : fontScale === 1
-                  ? 'Standard Default'
-                  : fontScale <= 1.1
-                  ? 'Large Text'
-                  : 'Extra Large Text'
-              }`}
-            >
-              <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 17, marginBottom: 14 }}>
-                Scale app-wide text up or down to comfortably fit your device screen. Selecting{' '}
-                <Text style={{ color: '#34D399', fontWeight: '800' }}>85%</Text> or{' '}
-                <Text style={{ color: '#38BDF8', fontWeight: '800' }}>90%</Text> prevents text wrapping and ensures
-                all metrics, battery targets, and trip corridor details fit neatly inside their boxes on smaller mobile screens.
-              </Text>
-
-              {/* Slider Track with Step Buttons */}
-              <View style={styles.fontSliderContainer}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <Text style={styles.fontSliderLabel}>FONT SIZE SCALE</Text>
-                  <View style={styles.fontScaleBadge}>
-                    <Text style={styles.fontScaleBadgeText}>
-                      {Math.round(fontScale * 100)}% {fontScale <= 0.85 ? '· Compact' : fontScale === 1.0 ? '· Default' : fontScale >= 1.15 ? '· Large' : ''}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Interactive Slider Bar + Steppers */}
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TouchableOpacity
-                    style={[styles.stepperBtn, fontScale <= 0.8 && { opacity: 0.4 }]}
-                    disabled={fontScale <= 0.8}
-                    onPress={() => handleFontScaleChange(Math.max(0.8, fontScale - 0.05))}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.stepperBtnText}>−</Text>
-                  </TouchableOpacity>
-
-                  {/* Slider Track */}
-                  <View style={{ flex: 1, position: 'relative', height: 36, justifyContent: 'center' }}>
-                    {/* Background Track */}
-                    <View style={styles.sliderTrack}>
-                      {/* Active Fill */}
-                      <View
-                        style={[
-                          styles.sliderFill,
-                          { width: `${Math.max(0, Math.min(100, ((fontScale - 0.8) / (1.25 - 0.8)) * 100))}%` },
-                        ]}
-                      />
-                    </View>
-
-                    {/* Visual Knob */}
-                    <View
-                      style={[
-                        styles.sliderKnob,
-                        {
-                          left: `${Math.max(0, Math.min(100, ((fontScale - 0.8) / (1.25 - 0.8)) * 100))}%`,
-                          transform: [{ translateX: -11 }],
-                        },
-                      ]}
-                    />
-
-                    {/* Transparent HTML Range Input on Web for native touch dragging */}
-                    {Platform.OS === 'web' && (
-                      <input
-                        type="range"
-                        min="80"
-                        max="125"
-                        step="5"
-                        value={Math.round(fontScale * 100)}
-                        onChange={(e: any) => handleFontScaleChange(Number(e.target.value) / 100)}
-                        style={{
-                          position: 'absolute',
-                          left: 0,
-                          top: 0,
-                          width: '100%',
-                          height: '100%',
-                          opacity: 0,
-                          cursor: 'pointer',
-                          margin: 0,
-                          padding: 0,
-                        } as any}
-                      />
-                    )}
-                  </View>
-
-                  <TouchableOpacity
-                    style={[styles.stepperBtn, fontScale >= 1.25 && { opacity: 0.4 }]}
-                    disabled={fontScale >= 1.25}
-                    onPress={() => handleFontScaleChange(Math.min(1.25, fontScale + 0.05))}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.stepperBtnText}>+</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              {/* Quick Preset Chips */}
-              <View style={{ marginTop: 14 }}>
-                <Text style={[styles.fontSliderLabel, { marginBottom: 6 }]}>QUICK PRESETS</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                  {[
-                    { scale: 0.8, label: '80% Extra Compact' },
-                    { scale: 0.85, label: '85% Compact (Recommended)' },
-                    { scale: 0.9, label: '90% Small' },
-                    { scale: 1.0, label: '100% Default' },
-                    { scale: 1.1, label: '110% Large' },
-                    { scale: 1.2, label: '120% Extra Large' },
-                  ].map((preset) => {
-                    const isSelected = Math.abs(fontScale - preset.scale) < 0.02;
-                    return (
-                      <TouchableOpacity
-                        key={preset.scale}
-                        style={[
-                          styles.presetChip,
-                          isSelected && styles.presetChipActive,
-                        ]}
-                        onPress={() => handleFontScaleChange(preset.scale)}
-                        activeOpacity={0.7}
-                      >
-                        <Text
-                          style={[
-                            styles.presetChipText,
-                            isSelected && styles.presetChipTextActive,
-                          ]}
-                        >
-                          {isSelected ? '✓ ' : ''}{preset.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </View>
-
-              {/* Live Interactive Preview Box */}
-              <View style={styles.previewBox}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <Text style={styles.previewTitle}>📱 LIVE PREVIEW AT {Math.round(fontScale * 100)}% SCALE</Text>
-                  <Text style={{ color: '#34D399', fontSize: 10, fontWeight: '800' }}>Fits inside boxes</Text>
-                </View>
-
-                <View style={styles.previewCardInner}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
-                      🚗 MG Windsor EV (Pearl White)
-                    </Text>
-                    <View style={styles.previewSocBadge}>
-                      <Text style={{ color: '#34D399', fontSize: 11, fontWeight: '900' }}>85% SOC</Text>
-                    </View>
-                  </View>
-
-                  <View style={{ flexDirection: 'row', gap: 12, marginTop: 6, flexWrap: 'wrap' }}>
-                    <Text style={{ color: '#94A3B8', fontSize: 11 }}>
-                      ⚡ Range: <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>270 km</Text>
-                    </Text>
-                    <Text style={{ color: '#94A3B8', fontSize: 11 }}>
-                      🔋 12V Aux: <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>12.8 V</Text>
-                    </Text>
-                    <Text style={{ color: '#94A3B8', fontSize: 11 }}>
-                      🌿 Health: <Text style={{ color: '#34D399', fontWeight: '700' }}>97.1% SOH</Text>
-                    </Text>
-                  </View>
-
-                  <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1E293B', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={{ color: '#38BDF8', fontSize: 11, fontWeight: '700' }}>
-                      📍 Kochi → Bengaluru (542 km • 3 stops)
-                    </Text>
-                    <Text style={{ color: '#FCD34D', fontSize: 10, fontWeight: '700' }}>
-                      🛡️ 18 km backup
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Reset to Default Button */}
-              {Math.abs(fontScale - 1.0) > 0.02 && (
-                <TouchableOpacity
-                  style={styles.resetFontBtn}
-                  onPress={() => handleFontScaleChange(1.0)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.resetFontBtnText}>↺ Reset to 100% Default Font Size</Text>
-                </TouchableOpacity>
-              )}
-            </AccountSectionCard>
-          )}
-
-          {/* CARD: GOOGLE MAPS API KEY */}
+            {/* CARD: GOOGLE MAPS API KEY */}
           {activeProfileModal === 'maps_key' && (
             <AccountSectionCard
               defaultExpanded={true}
@@ -11433,6 +11271,196 @@ export default function App() {
         );
       })()}
 
+      {/* Text Size Fullscreen Tween Screen */}
+      {isTextSizeScreenVisible && (() => {
+        const scalePct = Math.round(fontScale * 100);
+        const sliderFillPct = Math.max(0, Math.min(100, ((fontScale - 0.8) / (1.25 - 0.8)) * 100));
+        const presets = [
+          { scale: 0.8, label: '80%' },
+          { scale: 0.85, label: '85% · Recommended' },
+          { scale: 0.9, label: '90%' },
+          { scale: 1.0, label: '100% · Default' },
+          { scale: 1.1, label: '110%' },
+          { scale: 1.2, label: '120%' },
+        ];
+        const handleNativeTrackTouch = (locationX: number) => {
+          const w = textSizeTrackWidthRef.current || 220;
+          const ratio = Math.max(0, Math.min(1, locationX / w));
+          const stepped = Math.round((0.8 + ratio * 0.45) * 20) / 20;
+          handleFontScaleChange(Math.max(0.8, Math.min(1.25, stepped)));
+        };
+
+        return (
+          <Animated.View
+            style={[
+              styles.accountScreenLayer,
+              {
+                transform: [{ translateX: textSizeTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.tsScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* 1. Header Row */}
+                <View style={styles.accountHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <TouchableOpacity
+                      style={styles.accountBackBtn}
+                      onPress={handleCloseTextSizeScreen}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Back to Profile"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    </TouchableOpacity>
+                    <Text style={styles.accountHeaderTitle}>Text size</Text>
+                  </View>
+                </View>
+
+                {/* 2. Scale Slider Card */}
+                <View style={styles.tsCard}>
+                  <View style={styles.tsScaleHeaderRow}>
+                    <Text style={styles.tsScaleLabel}>Scale</Text>
+                    <Text style={styles.tsScalePercent}>{scalePct}%</Text>
+                  </View>
+
+                  <View style={styles.tsSliderRow}>
+                    <TouchableOpacity
+                      style={[styles.tsStepperBtn, fontScale <= 0.8 && { opacity: 0.4 }]}
+                      disabled={fontScale <= 0.8}
+                      onPress={() => handleFontScaleChange(Math.max(0.8, fontScale - 0.05))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Decrease text size"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.tsStepperBtnText}>−</Text>
+                    </TouchableOpacity>
+
+                    <View
+                      style={styles.tsSliderTouchArea}
+                      onLayout={(e) => {
+                        textSizeTrackWidthRef.current = e.nativeEvent.layout.width;
+                      }}
+                      onStartShouldSetResponder={() => Platform.OS !== 'web'}
+                      onMoveShouldSetResponder={() => Platform.OS !== 'web'}
+                      onResponderGrant={(e) => handleNativeTrackTouch(e.nativeEvent.locationX)}
+                      onResponderMove={(e) => handleNativeTrackTouch(e.nativeEvent.locationX)}
+                    >
+                      <View style={styles.tsSliderTrack}>
+                        <View style={[styles.tsSliderFill, { width: `${sliderFillPct}%` }]} />
+                      </View>
+                      <View style={[styles.tsSliderThumb, { left: `${sliderFillPct}%` }]} />
+
+                      {Platform.OS === 'web' && (
+                        <input
+                          type="range"
+                          min="80"
+                          max="125"
+                          step="5"
+                          value={scalePct}
+                          onChange={(e: any) => handleFontScaleChange(Number(e.target.value) / 100)}
+                          aria-label="Text size scale"
+                          style={{
+                            position: 'absolute',
+                            left: 0,
+                            top: 0,
+                            width: '100%',
+                            height: '100%',
+                            opacity: 0,
+                            cursor: 'pointer',
+                            margin: 0,
+                            padding: 0,
+                          } as any}
+                        />
+                      )}
+                    </View>
+
+                    <TouchableOpacity
+                      style={[styles.tsStepperBtn, fontScale >= 1.25 && { opacity: 0.4 }]}
+                      disabled={fontScale >= 1.25}
+                      onPress={() => handleFontScaleChange(Math.min(1.25, fontScale + 0.05))}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Increase text size"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.tsStepperBtnText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* 3. Preset Pills */}
+                <View style={styles.tsPresetsWrap}>
+                  {presets.map((preset) => {
+                    const isSelected = Math.abs(fontScale - preset.scale) < 0.02;
+                    return (
+                      <TouchableOpacity
+                        key={preset.scale}
+                        style={[styles.tsPresetPill, isSelected && styles.tsPresetPillActive]}
+                        onPress={() => handleFontScaleChange(preset.scale)}
+                        activeOpacity={0.7}
+                        accessibilityLabel={preset.label}
+                        accessibilityRole="button"
+                      >
+                        <Text
+                          style={[
+                            styles.tsPresetPillText,
+                            isSelected && styles.tsPresetPillTextActive,
+                          ]}
+                        >
+                          {preset.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* 4. Helper Note */}
+                <Text style={styles.tsHelpNote}>
+                  85–90% stops text wrapping on smaller screens.
+                </Text>
+
+                {/* 5. Preview Card */}
+                <View style={styles.tsCard}>
+                  <Text style={styles.tsPreviewLabel}>Preview</Text>
+                  <View style={styles.tsPreviewTopRow}>
+                    <Text style={styles.tsPreviewTitle}>MG Windsor EV</Text>
+                    <View style={styles.tsPreviewSocBadge}>
+                      <Text style={styles.tsPreviewSocBadgeText}>85% SOC</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.tsPreviewStats}>
+                    Range 270 km · 12V 12.8 V · Health 97.1%
+                  </Text>
+                  <Text style={styles.tsPreviewRoute}>
+                    Kochi → Bengaluru · 542 km · 3 stops
+                  </Text>
+                </View>
+
+                {/* Spacer to push Reset button to bottom */}
+                <View style={{ flex: 1, minHeight: 28 }} />
+
+                {/* 6. Reset to 100% Button */}
+                <TouchableOpacity
+                  style={styles.tsResetBtn}
+                  onPress={() => handleFontScaleChange(1.0)}
+                  activeOpacity={0.75}
+                  accessibilityLabel="Reset to 100%"
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.tsResetBtnText}>Reset to 100%</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -11559,6 +11587,10 @@ export default function App() {
                 if (isAnalyticsScreenVisible) {
                   setIsAnalyticsScreenVisible(false);
                   analyticsSlideAnim.setValue(0);
+                }
+                if (isTextSizeScreenVisible) {
+                  setIsTextSizeScreenVisible(false);
+                  textSizeSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -18458,5 +18490,181 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#1E293B',
     width: '100%',
+  },
+
+  // Dedicated Text Size Screen Styles
+  tsScrollContent: {
+    flexGrow: 1,
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 32 : 24,
+  },
+  tsCard: {
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+  },
+  tsScaleHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  tsScaleLabel: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  tsScalePercent: {
+    color: '#F8FAFC',
+    fontSize: 25,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  tsSliderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  tsStepperBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#0C111C',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tsStepperBtnText: {
+    color: '#F8FAFC',
+    fontSize: 20,
+    fontWeight: '600',
+    lineHeight: 22,
+  },
+  tsSliderTouchArea: {
+    flex: 1,
+    height: 36,
+    marginHorizontal: 14,
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  tsSliderTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#1E293B',
+    width: '100%',
+    overflow: 'hidden',
+  },
+  tsSliderFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: '#34E096',
+  },
+  tsSliderThumb: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    marginLeft: -12,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 3.5,
+    borderColor: '#34E096',
+  },
+  tsPresetsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 18,
+  },
+  tsPresetPill: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginRight: 10,
+    marginBottom: 10,
+  },
+  tsPresetPillActive: {
+    backgroundColor: 'rgba(6, 78, 59, 0.45)',
+    borderColor: '#34E096',
+  },
+  tsPresetPillText: {
+    color: '#F8FAFC',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  tsPresetPillTextActive: {
+    color: '#34E096',
+    fontWeight: '700',
+  },
+  tsHelpNote: {
+    color: '#94A3B8',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 6,
+    marginBottom: 18,
+    paddingHorizontal: 2,
+  },
+  tsPreviewLabel: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 10,
+  },
+  tsPreviewTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  tsPreviewTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  tsPreviewSocBadge: {
+    backgroundColor: 'rgba(6, 78, 59, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  tsPreviewSocBadgeText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  tsPreviewStats: {
+    color: '#94A3B8',
+    fontSize: 13,
+    marginBottom: 6,
+  },
+  tsPreviewRoute: {
+    color: '#38BDF8',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  tsResetBtn: {
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tsResetBtnText: {
+    color: '#F8FAFC',
+    fontSize: 15.5,
+    fontWeight: '700',
   },
 });
