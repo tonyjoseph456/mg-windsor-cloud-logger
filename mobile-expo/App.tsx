@@ -633,6 +633,39 @@ function formatDisplayDateKey(dateKey: string): string {
   return dateKey;
 }
 
+const CHARGE_MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+] as const;
+
+/** Format a minute count cleanly, using "X Hour(s) Y minute(s)" above 60 minutes. */
+function formatChargeMinutes(totalMinutes: number): string {
+  const safeMins = Math.max(0, Math.round(totalMinutes));
+  if (safeMins > 60) {
+    const hrs = Math.floor(safeMins / 60);
+    const mins = safeMins % 60;
+    const hrLabel = hrs === 1 ? 'Hour' : 'Hours';
+    if (mins === 0) return `${hrs} ${hrLabel}`;
+    const minLabel = mins === 1 ? 'minute' : 'minutes';
+    return `${hrs} ${hrLabel} ${mins} ${minLabel}`;
+  }
+  const minLabel = safeMins === 1 ? 'minute' : 'minutes';
+  return `${safeMins} ${minLabel}`;
+}
+
+/** Format charging completion timestamp as "D MMM YYYY at h:mm AM/PM". */
+function formatChargingCompletionTime(completionDate: Date): string {
+  const day = completionDate.getDate();
+  const month = CHARGE_MONTH_NAMES[completionDate.getMonth()];
+  const year = completionDate.getFullYear();
+  const hours24 = completionDate.getHours();
+  const mins = completionDate.getMinutes();
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = hours24 % 12 || 12;
+  const minsPadded = String(mins).padStart(2, '0');
+  return `${day} ${month} ${year} at ${hours12}:${minsPadded} ${period}`;
+}
+
 const QUICK_DESTINATIONS: { name: string; position: { lat: number; lng: number } }[] = [
   { name: 'Kochi', position: { lat: 10.0274, lng: 76.3082 } },
   { name: 'Munnar', position: { lat: 10.0889, lng: 77.0595 } },
@@ -5833,11 +5866,45 @@ export default function App() {
               const elapsedMinutes = charge?.is_charging
                 ? Math.round((charge?.charge_time_elapsed_s || 0) / 60)
                 : 0;
+              const elapsedStr = formatChargeMinutes(elapsedMinutes);
+
+              const fullCapacityEstimate =
+                derivedFullCapacityKwh || nominalCapacityKwh || WINDSOR_FACTORY_USABLE_KWH;
+              const rawRemainingMin = charge?.is_charging
+                ? charge?.charge_time_remaining_min != null &&
+                  charge.charge_time_remaining_min >= 0
+                  ? Math.round(charge.charge_time_remaining_min)
+                  : chargingKw > 0 && clampedSoc < 100
+                  ? Math.round(
+                      (Math.max(
+                        0,
+                        fullCapacityEstimate -
+                          (charge?.battery_energy_kwh ??
+                            (clampedSoc / 100) * fullCapacityEstimate)
+                      ) /
+                        chargingKw) *
+                        60
+                    )
+                  : null
+                : null;
+
               const timeRemainingStr =
-                charge?.is_charging && charge?.charge_time_remaining_min != null
-                  ? `${charge.charge_time_remaining_min} min`
+                rawRemainingMin !== null
+                  ? formatChargeMinutes(rawRemainingMin)
+                  : charge?.is_charging && clampedSoc >= 100
+                  ? formatChargeMinutes(0)
                   : '— min';
-              const timeSubStr = charge?.is_charging ? 'Charging' : 'Not charging';
+
+              const timeSubStr =
+                rawRemainingMin !== null
+                  ? `Charging would complete by ${formatChargingCompletionTime(
+                      new Date(Date.now() + rawRemainingMin * 60 * 1000)
+                    )}`
+                  : charge?.is_charging
+                  ? clampedSoc >= 100
+                    ? 'Battery full'
+                    : ''
+                  : 'Not charging';
 
               return (
                 <View style={styles.chargeGridCard}>
@@ -5852,8 +5919,24 @@ export default function App() {
                     </View>
                     <View style={styles.chargeGridCell}>
                       <Text style={styles.chargeGridLabel}>Time to 100%</Text>
-                      <Text style={styles.chargeGridVal}>{timeRemainingStr}</Text>
-                      <Text style={styles.chargeGridSub}>{timeSubStr}</Text>
+                      <Text
+                        style={[
+                          styles.chargeGridVal,
+                          timeRemainingStr.length > 11 && styles.chargeGridValCompact,
+                        ]}
+                      >
+                        {timeRemainingStr}
+                      </Text>
+                      {timeSubStr ? (
+                        <Text
+                          style={[
+                            styles.chargeGridSub,
+                            charge?.is_charging && styles.chargeGridCompletionSub,
+                          ]}
+                        >
+                          {timeSubStr}
+                        </Text>
+                      ) : null}
                     </View>
                   </View>
 
@@ -5884,7 +5967,14 @@ export default function App() {
                     </View>
                     <View style={styles.chargeGridCell}>
                       <Text style={styles.chargeGridLabel}>Elapsed</Text>
-                      <Text style={styles.chargeGridVal}>{elapsedMinutes} min</Text>
+                      <Text
+                        style={[
+                          styles.chargeGridVal,
+                          elapsedStr.length > 11 && styles.chargeGridValCompact,
+                        ]}
+                      >
+                        {elapsedStr}
+                      </Text>
                       <Text style={styles.chargeGridSub}>This session</Text>
                     </View>
                   </View>
@@ -16974,10 +17064,19 @@ const styles = StyleSheet.create({
     fontSize: 19,
     fontWeight: '800',
   },
+  chargeGridValCompact: {
+    fontSize: 15.5,
+    lineHeight: 21,
+  },
   chargeGridSub: {
     color: '#64748B',
     fontSize: 12,
     marginTop: 2,
+  },
+  chargeGridCompletionSub: {
+    fontSize: 11.5,
+    lineHeight: 15,
+    marginTop: 3,
   },
   chargeLiveActivityCard: {
     backgroundColor: '#111827',
