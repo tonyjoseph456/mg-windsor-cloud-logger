@@ -20,7 +20,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import Svg, { Circle, Path, Rect, G, Line, Polyline, Polygon, Defs, LinearGradient, Stop } from 'react-native-svg';
+import Svg, { Circle, Ellipse, Path, Rect, G, Line, Polyline, Polygon, Defs, LinearGradient, RadialGradient, Stop } from 'react-native-svg';
 import * as SecureStore from './src/storage';
 import { setGlobalFontScale, getGlobalFontScale } from './src/webShims';
 import * as Clipboard from 'expo-clipboard';
@@ -1563,7 +1563,32 @@ export default function App() {
   // Home Screen Redesign: Color & Detail Sections State
   const [carColorOverride, setCarColorOverride] = useState<string | null>(null);
   const [showColorPicker, setShowColorPicker] = useState<boolean>(false);
+  const [draftCarColorOverride, setDraftCarColorOverride] = useState<string | null>(null);
+  const colorSheetSlideAnim = useRef(new Animated.Value(0)).current;
   const [openDetailSection, setOpenDetailSection] = useState<'remote' | null>(null);
+
+  const handleOpenColorPicker = () => {
+    setDraftCarColorOverride(carColorOverride);
+    setShowColorPicker(true);
+    colorSheetSlideAnim.setValue(0);
+    Animated.timing(colorSheetSlideAnim, {
+      toValue: 1,
+      duration: 280,
+      easing: Easing.bezier(0.22, 1, 0.36, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseColorPicker = () => {
+    Animated.timing(colorSheetSlideAnim, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.bezier(0.4, 0, 1, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      setShowColorPicker(false);
+    });
+  };
 
   // Tyres & Closures Screen Horizontal Tween Animation State
   const tyreSlideAnim = useRef(new Animated.Value(0)).current;
@@ -4699,7 +4724,7 @@ export default function App() {
       setCarColorOverride(null);
       await SecureStore.deleteItemAsync(COLOR_OVERRIDE_KEY);
     }
-    setShowColorPicker(false);
+    handleCloseColorPicker();
   };
 
   // Screen Width for Horizontal Tween Animations between Home, Tyres, Location, and Remote Commands
@@ -4902,7 +4927,7 @@ export default function App() {
                   <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
                   <TouchableOpacity
                     style={styles.mockupSublineRow}
-                    onPress={() => setShowColorPicker(true)}
+                    onPress={handleOpenColorPicker}
                     activeOpacity={0.7}
                     accessibilityLabel="Change vehicle color"
                     accessibilityRole="button"
@@ -5311,7 +5336,7 @@ export default function App() {
                 <Text style={styles.mockupTitle}>Windsor EV</Text>
                 <TouchableOpacity
                   style={styles.mockupSublineRow}
-                  onPress={() => setShowColorPicker(true)}
+                  onPress={handleOpenColorPicker}
                   activeOpacity={0.7}
                   accessibilityLabel="Change vehicle color"
                   accessibilityRole="button"
@@ -5685,7 +5710,7 @@ export default function App() {
                 <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
                 <TouchableOpacity
                   style={styles.mockupSublineRow}
-                  onPress={() => setShowColorPicker(true)}
+                  onPress={handleOpenColorPicker}
                   activeOpacity={0.7}
                   accessibilityLabel="Change vehicle color"
                   accessibilityRole="button"
@@ -6311,7 +6336,7 @@ export default function App() {
                   <Text style={styles.mockupTitle}>{displayName || 'Windsor EV'}</Text>
                   <TouchableOpacity
                     style={styles.mockupSublineRow}
-                    onPress={() => setShowColorPicker(true)}
+                    onPress={handleOpenColorPicker}
                     activeOpacity={0.7}
                     accessibilityLabel="Change vehicle color"
                     accessibilityRole="button"
@@ -11173,53 +11198,269 @@ export default function App() {
         })}
       </View>
 
-      {/* Windsor EV Color Picker Modal (Global across Home, Trips & Charge) */}
+      {/* Windsor EV Color Picker Bottom Sheet (Global across Home, Charge, Trips & Profile) */}
       <Modal
         visible={showColorPicker}
         transparent
-        animationType="fade"
-        onRequestClose={() => setShowColorPicker(false)}
+        animationType="none"
+        onRequestClose={handleCloseColorPicker}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.colorModalCard}>
-            <Text style={styles.colorModalTitle}>Windsor EV Colors</Text>
-            <Text style={styles.colorModalSubtitle}>
-              Select your vehicle exterior shade (or auto-detect from MG iSMART):
+        <View style={styles.colorSheetBackdrop}>
+          {/* Tapping outside closes the sheet */}
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={handleCloseColorPicker}
+            accessibilityLabel="Close car colour picker"
+          />
+          <Animated.View
+            style={[
+              styles.colorSheetContainer,
+              {
+                transform: [
+                  {
+                    translateY: colorSheetSlideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [480, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            {/* Top Drag Handle */}
+            <View style={styles.colorSheetHandle} />
+
+            {/* Header */}
+            <Text style={styles.colorSheetTitle}>Car colour</Text>
+            <Text style={styles.colorSheetSubtitle}>
+              Pick your shade, or use the colour from MG iSMART.
             </Text>
-            <ScrollView style={{ maxHeight: 340 }}>
-              {WINDSOR_COLORS.map((opt) => {
-                const isSelected = activeWindsorColor.key === opt.key;
+
+            {(() => {
+              const serverMatchedColor = matchWindsorColor(
+                rawVehicle?.color_name || snapshot?.vehicle?.color_name
+              );
+              const previewColor =
+                (draftCarColorOverride &&
+                  WINDSOR_COLORS.find((c) => c.key === draftCarColorOverride)) ||
+                serverMatchedColor;
+
+              const previewPalette: Record<
+                string,
+                { top: string; bottom: string; roof: string; glow: string }
+              > = {
+                white: { top: '#F8FAFC', bottom: '#CBD5E1', roof: '#FFFFFF', glow: '#E2E8F0' },
+                black: { top: '#222D40', bottom: '#0F172A', roof: '#334155', glow: '#475569' },
+                green: { top: '#2DD4BF', bottom: '#0D9488', roof: '#5EEAD4', glow: '#2DD4BF' },
+                grey: { top: '#94A3B8', bottom: '#64748B', roof: '#CBD5E1', glow: '#94A3B8' },
+                red: { top: '#EF4444', bottom: '#C82828', roof: '#F87171', glow: '#EF4444' },
+                blue: { top: '#38BDF8', bottom: '#0284C7', roof: '#7DD3FC', glow: '#38BDF8' },
+                ivory: { top: '#FDE047', bottom: '#CA8A04', roof: '#FEF08A', glow: '#FDE047' },
+              };
+              const pal = previewPalette[previewColor.key] || previewPalette.red;
+
+              const row1 = WINDSOR_COLORS.slice(0, 4);
+              const row2 = WINDSOR_COLORS.slice(4, 7);
+              const isAutoSelected = draftCarColorOverride === null;
+
+              const renderColorSwatch = (opt: WindsorColorOption) => {
+                const isSelected = draftCarColorOverride === opt.key;
+                const isLightSwatch = opt.key === 'white' || opt.key === 'ivory';
                 return (
                   <TouchableOpacity
                     key={opt.key}
-                    style={[styles.colorOptionRow, isSelected && styles.colorOptionRowSelected]}
-                    onPress={() => handleSelectCarColor(opt.key)}
-                    activeOpacity={0.7}
+                    style={styles.colorGridCell}
+                    onPress={() => setDraftCarColorOverride(opt.key)}
+                    activeOpacity={0.75}
+                    accessibilityLabel={opt.name}
+                    accessibilityRole="button"
                   >
-                    <View style={[styles.colorSwatchCircle, { backgroundColor: opt.hex }]} />
-                    <Text style={styles.colorOptionName}>{opt.name}</Text>
-                    {isSelected && <Text style={{ color: '#34D399', fontWeight: 'bold' }}>✓ Selected</Text>}
+                    <View
+                      style={[
+                        styles.colorCircleRing,
+                        isSelected && styles.colorCircleRingSelected,
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.colorCircleInner,
+                          { backgroundColor: opt.hex },
+                          opt.key === 'black' && !isSelected && styles.colorCircleBlackBorder,
+                        ]}
+                      >
+                        {isSelected && (
+                          <Svg
+                            width={22}
+                            height={22}
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke={isLightSwatch ? '#0F172A' : '#FFFFFF'}
+                            strokeWidth={2.8}
+                          >
+                            <Polyline points="20 6 9 17 4 12" strokeLinecap="round" strokeLinejoin="round" />
+                          </Svg>
+                        )}
+                      </View>
+                    </View>
+                    <Text
+                      style={[
+                        styles.colorGridLabel,
+                        isSelected && styles.colorGridLabelSelected,
+                      ]}
+                      numberOfLines={2}
+                    >
+                      {opt.name}
+                    </Text>
                   </TouchableOpacity>
                 );
-              })}
-            </ScrollView>
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-              <TouchableOpacity
-                style={styles.resetColorBtn}
-                onPress={() => handleSelectCarColor(null)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.resetColorBtnText}>Reset to Server Color</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.resetColorBtn, { backgroundColor: '#334155' }]}
-                onPress={() => setShowColorPicker(false)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.resetColorBtnText, { color: '#E2E8F0' }]}>Close</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+              };
+
+              return (
+                <>
+                  {/* 1. Live Car Preview */}
+                  <View style={styles.colorPreviewWrap}>
+                    <Svg width={250} height={106} viewBox="0 0 260 110">
+                      <Defs>
+                        <RadialGradient id="carUnderglow" cx="50%" cy="50%" r="50%">
+                          <Stop offset="0%" stopColor={pal.glow} stopOpacity="0.28" />
+                          <Stop offset="65%" stopColor={pal.glow} stopOpacity="0.08" />
+                          <Stop offset="100%" stopColor="#141B26" stopOpacity="0" />
+                        </RadialGradient>
+                        <LinearGradient id="carBodyGrad" x1="0" y1="0" x2="0" y2="1">
+                          <Stop offset="0%" stopColor={pal.top} />
+                          <Stop offset="100%" stopColor={pal.bottom} />
+                        </LinearGradient>
+                      </Defs>
+
+                      {/* Underglow shadow */}
+                      <Ellipse cx="130" cy="92" rx="108" ry="13" fill="url(#carUnderglow)" />
+
+                      {/* Cabin / Roofline */}
+                      <Path
+                        d="M 60 46 L 73 28 Q 80 20 92 20 L 166 20 Q 178 20 186 28 L 198 46 Z"
+                        fill={pal.roof}
+                      />
+
+                      {/* Rear & Front Side Windows */}
+                      <Path
+                        d="M 73 45 L 82 31 Q 85 27 91 27 L 128 27 L 128 45 Z"
+                        fill="#1A2332"
+                      />
+                      <Path
+                        d="M 134 27 L 165 27 Q 172 27 176 31 L 187 45 L 134 45 Z"
+                        fill="#1A2332"
+                      />
+
+                      {/* Main Car Body */}
+                      <Path
+                        d="M 30 50 Q 32 45 40 45 L 210 45 Q 230 46 232 58 L 232 76 Q 232 82 224 82 L 36 82 Q 28 82 28 76 L 28 56 Q 28 52 30 50 Z"
+                        fill="url(#carBodyGrad)"
+                      />
+
+                      {/* Subtle Center Door Seam */}
+                      <Line
+                        x1="131"
+                        y1="45"
+                        x2="131"
+                        y2="82"
+                        stroke="#0A0E17"
+                        strokeOpacity="0.16"
+                        strokeWidth="1.5"
+                      />
+
+                      {/* Taillight (Left) */}
+                      <Rect x="28" y="54" width="6" height="4" rx="1.5" fill="#991B1B" />
+
+                      {/* Headlight (Right) */}
+                      <Rect x="220" y="57" width="12" height="5" rx="2.5" fill="#FEF3C7" />
+
+                      {/* Rear Wheel (Left) */}
+                      <Circle cx="72" cy="82" r="18" fill="#151C28" />
+                      <Circle cx="72" cy="82" r="9.5" fill="#94A3B8" />
+                      <Circle cx="72" cy="82" r="3.8" fill="#1E293B" />
+
+                      {/* Front Wheel (Right) */}
+                      <Circle cx="188" cy="82" r="18" fill="#151C28" />
+                      <Circle cx="188" cy="82" r="9.5" fill="#94A3B8" />
+                      <Circle cx="188" cy="82" r="3.8" fill="#1E293B" />
+                    </Svg>
+                    <Text style={styles.colorPreviewName}>{previewColor.name}</Text>
+                  </View>
+
+                  {/* 2 & 3. Colour Circles Grid (4 per row) + Auto Tile */}
+                  <View style={styles.colorGridRow}>
+                    {row1.map(renderColorSwatch)}
+                  </View>
+                  <View style={[styles.colorGridRow, { marginTop: 14 }]}>
+                    {row2.map(renderColorSwatch)}
+
+                    {/* 8th Tile: Auto */}
+                    <TouchableOpacity
+                      style={styles.colorGridCell}
+                      onPress={() => setDraftCarColorOverride(null)}
+                      activeOpacity={0.75}
+                      accessibilityLabel="Auto color from MG iSMART"
+                      accessibilityRole="button"
+                    >
+                      <View
+                        style={[
+                          styles.colorCircleRing,
+                          isAutoSelected && styles.colorCircleRingSelected,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.colorAutoCircleInner,
+                            isAutoSelected && styles.colorAutoCircleInnerSelected,
+                          ]}
+                        >
+                          <Svg
+                            width={22}
+                            height={22}
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke={isAutoSelected ? '#34D399' : '#94A3B8'}
+                            strokeWidth={2.2}
+                          >
+                            <Path
+                              d="M21 12a9 9 0 1 1-2.64-6.36"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <Polyline
+                              points="21 3 21 9 15 9"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </Svg>
+                        </View>
+                      </View>
+                      <Text
+                        style={[
+                          styles.colorGridLabel,
+                          isAutoSelected && styles.colorGridLabelSelected,
+                        ]}
+                      >
+                        Auto
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              );
+            })()}
+
+            {/* 4. Green Done Button */}
+            <TouchableOpacity
+              style={styles.colorDoneBtn}
+              onPress={() => handleSelectCarColor(draftCarColorOverride)}
+              activeOpacity={0.85}
+              accessibilityLabel="Done"
+              accessibilityRole="button"
+            >
+              <Text style={styles.colorDoneBtnText}>Done</Text>
+            </TouchableOpacity>
+          </Animated.View>
         </View>
       </Modal>
     </View>
@@ -14267,66 +14508,129 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     paddingTop: 4,
   },
-  colorModalCard: {
-    backgroundColor: '#131B2E',
-    borderRadius: 24,
-    padding: 20,
-    width: '92%',
-    maxWidth: 380,
-    borderWidth: 1,
-    borderColor: '#334155',
+  // Car Colour Bottom Sheet Styles
+  colorSheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
   },
-  colorModalTitle: {
-    fontSize: 18,
+  colorSheetContainer: {
+    width: '100%',
+    maxWidth: 440,
+    backgroundColor: '#141B26',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderTopWidth: 1,
+    borderColor: '#1E293B',
+    paddingHorizontal: 22,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 24,
+  },
+  colorSheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#334155',
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  colorSheetTitle: {
+    color: '#F8FAFC',
+    fontSize: 21,
     fontWeight: '800',
-    color: '#FFFFFF',
-    marginBottom: 4,
+    letterSpacing: -0.3,
   },
-  colorModalSubtitle: {
-    fontSize: 13,
+  colorSheetSubtitle: {
     color: '#94A3B8',
+    fontSize: 13,
+    marginTop: 4,
     marginBottom: 14,
   },
-  colorOptionRow: {
-    flexDirection: 'row',
+  colorPreviewWrap: {
     alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    marginBottom: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    justifyContent: 'center',
+    marginBottom: 18,
   },
-  colorOptionRowSelected: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    borderWidth: 1,
+  colorPreviewName: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+    marginTop: 4,
+    letterSpacing: -0.2,
+  },
+  colorGridRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  colorGridCell: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: 2,
+  },
+  colorCircleRing: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  colorCircleRingSelected: {
     borderColor: '#34D399',
   },
-  colorSwatchCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    marginRight: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  colorOptionName: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#F1F5F9',
-  },
-  resetColorBtn: {
-    flex: 1,
-    paddingVertical: 11,
-    borderRadius: 12,
-    backgroundColor: '#064E3B',
+  colorCircleInner: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  resetColorBtnText: {
-    fontSize: 13,
+  colorCircleBlackBorder: {
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  colorAutoCircleInner: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: '#475569',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  colorAutoCircleInnerSelected: {
+    borderColor: '#34D399',
+    backgroundColor: 'rgba(52, 211, 153, 0.1)',
+  },
+  colorGridLabel: {
+    color: '#94A3B8',
+    fontSize: 11.5,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 7,
+    lineHeight: 15,
+  },
+  colorGridLabelSelected: {
+    color: '#34D399',
     fontWeight: '700',
-    color: '#6EE7B7',
+  },
+  colorDoneBtn: {
+    backgroundColor: '#34E096',
+    borderRadius: 16,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 22,
+  },
+  colorDoneBtnText: {
+    color: '#062116',
+    fontSize: 16,
+    fontWeight: '800',
   },
   tabLabelText: {
     fontSize: 10,
