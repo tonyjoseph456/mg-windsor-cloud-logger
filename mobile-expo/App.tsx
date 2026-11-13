@@ -1915,6 +1915,8 @@ export default function App() {
   const handleOpenChargeDetail = (chargeSession: ChargeLogRecord) => {
     setSelectedChargeForDetail(chargeSession);
     setIsChargeDetailVisible(true);
+    chargeDetailSlideAnim.stopAnimation();
+    chargeDetailSlideAnim.setValue(0);
     Animated.timing(chargeDetailSlideAnim, {
       toValue: 1,
       duration: 320,
@@ -1924,14 +1926,17 @@ export default function App() {
   };
 
   const handleCloseChargeDetail = () => {
+    chargeDetailSlideAnim.stopAnimation();
     Animated.timing(chargeDetailSlideAnim, {
       toValue: 0,
       duration: 280,
       easing: Easing.bezier(0.25, 0.1, 0.25, 1),
       useNativeDriver: Platform.OS !== 'web',
-    }).start(() => {
-      setIsChargeDetailVisible(false);
-      setSelectedChargeForDetail(null);
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsChargeDetailVisible(false);
+        setSelectedChargeForDetail(null);
+      }
     });
   };
 
@@ -4940,6 +4945,12 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
+  const chargeTranslateX = chargeDetailSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -screenWidth],
+    extrapolate: 'clamp',
+  });
+
   const chargeDetailTranslateX = chargeDetailSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
@@ -5837,7 +5848,14 @@ export default function App() {
 
         {/* TAB 2: EV CHARGING (REDESIGNED TO MATCH MOCKUP) */}
         {tab === 'charge' && (
-          <View style={styles.chargeMainContainer}>
+          <Animated.View
+            style={[
+              styles.chargeMainContainer,
+              {
+                transform: [{ translateX: chargeTranslateX }],
+              },
+            ]}
+          >
             {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
             <View style={styles.mockupHeader}>
               <View style={{ flex: 1, paddingRight: 8 }}>
@@ -6546,7 +6564,7 @@ export default function App() {
               onSelectDate={(dateKey) => setSelectedChargeDate(dateKey)}
               onClose={() => setShowChargeCalendar(false)}
             />
-          </View>
+          </Animated.View>
         )}
 
 
