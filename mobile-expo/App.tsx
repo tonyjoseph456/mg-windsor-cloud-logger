@@ -638,6 +638,24 @@ const CHARGE_MONTH_NAMES = [
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ] as const;
 
+const LONG_MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+] as const;
+
+/** Format dateKey "YYYY-MM-DD" as "D MMM" (e.g. "10 Nov"). */
+function formatDayMonthNumeric(dateKey: string): string {
+  if (!dateKey || dateKey === 'all') return '--';
+  const parts = dateKey.split('-');
+  if (parts.length === 3) {
+    const m = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    const mon = CHARGE_MONTH_NAMES[m] ?? '';
+    if (day > 0 && mon) return `${day} ${mon}`;
+  }
+  return dateKey;
+}
+
 /** Format a minute count cleanly, using "X Hour(s) Y minute(s)" above 60 minutes. */
 function formatChargeMinutes(totalMinutes: number): string {
   const safeMins = Math.max(0, Math.round(totalMinutes));
@@ -1128,219 +1146,289 @@ function getChargeDateKey(session: ChargeLogRecord): string {
   return '';
 }
 
-interface HistoryCalendarProps {
+interface DatePickerBottomSheetProps {
+  visible: boolean;
   selectedDateKey: string;
   activeDateKeys: Set<string>;
   legendLabel?: string;
   onSelectDate: (dateKey: string) => void;
-  onShowAll: () => void;
   onClose: () => void;
 }
 
-function HistoryCalendar({
+/** Slide-up bottom sheet calendar date picker shared by Trips and Charge screens. */
+function DatePickerBottomSheet({
+  visible,
   selectedDateKey,
   activeDateKeys,
-  legendLabel = 'Dates with activity',
+  legendLabel = 'Days with activity',
   onSelectDate,
-  onShowAll,
   onClose,
-}: HistoryCalendarProps) {
+}: DatePickerBottomSheetProps) {
   const todayKey = getTodayDateKey();
-  const [viewDate, setViewDate] = useState(() => {
-    if (selectedDateKey && selectedDateKey !== 'all') {
-      const parts = selectedDateKey.split('-');
+  const [modalVisible, setModalVisible] = useState<boolean>(visible);
+  const slideAnim = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  const isClosingRef = useRef<boolean>(false);
+  const prevVisibleRef = useRef<boolean>(visible);
+
+  const parseMonthStart = (key: string) => {
+    if (key && key !== 'all') {
+      const parts = key.split('-');
       if (parts.length === 3) {
         return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
       }
     }
-    return new Date();
-  });
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  };
+
+  const initialKey =
+    selectedDateKey && selectedDateKey !== 'all' ? selectedDateKey : todayKey;
+  const [draftDateKey, setDraftDateKey] = useState<string>(initialKey);
+  const [viewDate, setViewDate] = useState<Date>(() => parseMonthStart(initialKey));
+
+  useEffect(() => {
+    const wasVisible = prevVisibleRef.current;
+    prevVisibleRef.current = visible;
+
+    if (visible && !wasVisible) {
+      isClosingRef.current = false;
+      const startKey =
+        selectedDateKey && selectedDateKey !== 'all' ? selectedDateKey : getTodayDateKey();
+      setDraftDateKey(startKey);
+      setViewDate(parseMonthStart(startKey));
+      slideAnim.stopAnimation();
+      slideAnim.setValue(0);
+      setModalVisible(true);
+      Animated.timing(slideAnim, {
+        toValue: 1,
+        duration: 280,
+        easing: Easing.bezier(0.22, 1, 0.36, 1),
+        useNativeDriver: Platform.OS !== 'web',
+      }).start();
+    } else if (!visible && wasVisible && modalVisible && !isClosingRef.current) {
+      isClosingRef.current = true;
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.bezier(0.4, 0, 1, 1),
+        useNativeDriver: Platform.OS !== 'web',
+      }).start(() => {
+        isClosingRef.current = false;
+        setModalVisible(false);
+      });
+    }
+  }, [visible]);
+
+  const handleDismiss = (confirmDateKey?: string) => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    if (confirmDateKey) {
+      onSelectDate(confirmDateKey);
+    }
+    Animated.timing(slideAnim, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.bezier(0.4, 0, 1, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      isClosingRef.current = false;
+      setModalVisible(false);
+      onClose();
+    });
+  };
+
+  if (!modalVisible) return null;
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
-
-  const handlePrevMonth = () => {
-    setViewDate(new Date(year, month - 1, 1));
-  };
-
-  const handleNextMonth = () => {
-    setViewDate(new Date(year, month + 1, 1));
-  };
-
-  const handleTodayPress = () => {
-    onSelectDate(todayKey);
-  };
-
-  const monthLabel = viewDate.toLocaleDateString('en-IN', {
-    month: 'long',
-    year: 'numeric',
-  });
-
+  const monthLabel = `${LONG_MONTH_NAMES[month]} ${year}`;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const firstDayOfWeek = new Date(year, month, 1).getDay(); // 0 = Sunday
+  const firstDayOfWeek = new Date(year, month, 1).getDay();
+  const totalSlots = Math.ceil((firstDayOfWeek + daysInMonth) / 7) * 7;
 
-  const dayNames = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  const weeks: Array<Array<{ day: number | null; dateKey: string | null }>> = [];
+  let currentWeek: Array<{ day: number | null; dateKey: string | null }> = [];
+  for (let i = 0; i < totalSlots; i++) {
+    const dayNum = i - firstDayOfWeek + 1;
+    if (dayNum >= 1 && dayNum <= daysInMonth) {
+      const mStr = String(month + 1).padStart(2, '0');
+      const dStr = String(dayNum).padStart(2, '0');
+      currentWeek.push({ day: dayNum, dateKey: `${year}-${mStr}-${dStr}` });
+    } else {
+      currentWeek.push({ day: null, dateKey: null });
+    }
+    if (currentWeek.length === 7) {
+      weeks.push(currentWeek);
+      currentWeek = [];
+    }
+  }
 
-  const cells: Array<{ day: number | null; dateKey: string | null }> = [];
-  for (let i = 0; i < firstDayOfWeek; i++) {
-    cells.push({ day: null, dateKey: null });
-  }
-  for (let d = 1; d <= daysInMonth; d++) {
-    const mStr = String(month + 1).padStart(2, '0');
-    const dStr = String(d).padStart(2, '0');
-    cells.push({
-      day: d,
-      dateKey: `${year}-${mStr}-${dStr}`,
-    });
-  }
+  const weekdayLetters = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
   return (
-    <View style={styles.calendarContainer}>
-      {/* Header */}
-      <View style={styles.calendarHeader}>
+    <Modal
+      visible={modalVisible}
+      transparent
+      animationType="none"
+      onRequestClose={() => handleDismiss()}
+    >
+      <View style={styles.colorSheetBackdrop}>
+        {/* Tapping outside closes without applying */}
         <TouchableOpacity
-          style={styles.calendarNavBtn}
-          onPress={handlePrevMonth}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={StyleSheet.absoluteFill}
+          activeOpacity={1}
+          onPress={() => handleDismiss()}
+          accessibilityLabel="Close date picker"
+        />
+        <Animated.View
+          style={[
+            styles.colorSheetContainer,
+            styles.dpSheetContainer,
+            {
+              transform: [
+                {
+                  translateY: slideAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [560, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
         >
-          <Text style={styles.calendarNavText}>◀</Text>
-        </TouchableOpacity>
+          {/* Top Handle */}
+          <View style={styles.colorSheetHandle} />
 
-        <View style={styles.calendarTitleWrap}>
-          <Text style={styles.calendarMonthText}>{monthLabel}</Text>
-        </View>
-
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <TouchableOpacity
-            style={[
-              styles.calendarTodayBtn,
-              selectedDateKey === todayKey && styles.calendarTodayBtnActive,
-            ]}
-            onPress={handleTodayPress}
-          >
-            <Text
-              style={[
-                styles.calendarTodayBtnText,
-                selectedDateKey === todayKey && styles.calendarTodayBtnTextActive,
-              ]}
-            >
-              Today
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.calendarNavBtn}
-            onPress={handleNextMonth}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Text style={styles.calendarNavText}>▶</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Week Day Labels */}
-      <View style={styles.calendarWeekRow}>
-        {dayNames.map((name, idx) => (
-          <View key={idx} style={styles.calendarWeekHeaderCell}>
-            <Text
-              style={[
-                styles.calendarWeekHeaderText,
-                idx === 0 && { color: '#F87171' },
-              ]}
-            >
-              {name}
-            </Text>
-          </View>
-        ))}
-      </View>
-
-      {/* Calendar Grid */}
-      <View style={styles.calendarGrid}>
-        {cells.map((cell, idx) => {
-          if (!cell.day || !cell.dateKey) {
-            return <View key={`empty-${idx}`} style={styles.calendarDayCell} />;
-          }
-
-          const isSelected = cell.dateKey === selectedDateKey;
-          const isToday = cell.dateKey === todayKey;
-          const hasActivity = activeDateKeys.has(cell.dateKey);
-
-          return (
+          {/* Month Header */}
+          <View style={styles.dpHeaderRow}>
             <TouchableOpacity
-              key={cell.dateKey}
-              style={[
-                styles.calendarDayCell,
-                isSelected && styles.calendarDayCellSelected,
-                !isSelected && isToday && styles.calendarDayCellToday,
-              ]}
-              onPress={() => onSelectDate(cell.dateKey!)}
+              style={styles.dpNavCircleBtn}
+              onPress={() => setViewDate(new Date(year, month - 1, 1))}
               activeOpacity={0.7}
+              accessibilityLabel="Previous month"
+              accessibilityRole="button"
             >
-              <Text
-                style={[
-                  styles.calendarDayText,
-                  isSelected && styles.calendarDayTextSelected,
-                  !isSelected && isToday && styles.calendarDayTextToday,
-                  !isSelected && !isToday && hasActivity && styles.calendarDayTextHasTrips,
-                ]}
-              >
-                {cell.day}
-              </Text>
-              {hasActivity && (
-                <View
-                  style={[
-                    styles.calendarTripDot,
-                    isSelected && styles.calendarTripDotSelected,
-                  ]}
-                />
-              )}
+              <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#E2E8F0" strokeWidth={2.4}>
+                <Polyline points="15 18 9 12 15 6" strokeLinecap="round" strokeLinejoin="round" />
+              </Svg>
             </TouchableOpacity>
-          );
-        })}
-      </View>
 
-      {/* Footer with Legend and Controls */}
-      <View style={styles.calendarFooter}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <View style={styles.calendarLegendDot} />
-          <Text style={styles.calendarLegendText}>{legendLabel}</Text>
-        </View>
+            <Text style={styles.dpMonthTitle}>{monthLabel}</Text>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-          <TouchableOpacity onPress={onShowAll}>
-            <Text style={[styles.calendarCloseText, { color: '#34D399' }]}>Show All Dates</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={styles.calendarCloseText}>Hide ▲</Text>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity
+              style={styles.dpNavCircleBtn}
+              onPress={() => setViewDate(new Date(year, month + 1, 1))}
+              activeOpacity={0.7}
+              accessibilityLabel="Next month"
+              accessibilityRole="button"
+            >
+              <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#E2E8F0" strokeWidth={2.4}>
+                <Polyline points="9 18 15 12 9 6" strokeLinecap="round" strokeLinejoin="round" />
+              </Svg>
+            </TouchableOpacity>
+          </View>
+
+          {/* Weekday Labels */}
+          <View style={styles.dpWeekHeaderRow}>
+            {weekdayLetters.map((letter, idx) => (
+              <View key={idx} style={styles.dpDaySlot}>
+                <Text style={styles.dpWeekHeaderText}>{letter}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Calendar Grid Rows */}
+          <View style={styles.dpGridWrap}>
+            {weeks.map((week, wIdx) => (
+              <View key={wIdx} style={styles.dpWeekGridRow}>
+                {week.map((cell, dIdx) => {
+                  if (!cell.day || !cell.dateKey) {
+                    return <View key={`empty-${wIdx}-${dIdx}`} style={styles.dpDaySlot} />;
+                  }
+
+                  const isSelected = cell.dateKey === draftDateKey;
+                  const isToday = cell.dateKey === todayKey;
+                  const hasActivity = activeDateKeys.has(cell.dateKey);
+                  const isFuture = cell.dateKey > todayKey && !hasActivity;
+
+                  return (
+                    <TouchableOpacity
+                      key={cell.dateKey}
+                      style={styles.dpDaySlot}
+                      onPress={() => setDraftDateKey(cell.dateKey!)}
+                      disabled={isFuture}
+                      activeOpacity={0.7}
+                      accessibilityLabel={cell.dateKey}
+                      accessibilityRole="button"
+                    >
+                      <View
+                        style={[
+                          styles.dpDayCircle,
+                          isSelected && styles.dpDayCircleSelected,
+                          !isSelected && isToday && styles.dpDayCircleToday,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.dpDayText,
+                            isFuture && styles.dpDayTextFuture,
+                            !isSelected && isToday && styles.dpDayTextToday,
+                            isSelected && styles.dpDayTextSelected,
+                          ]}
+                        >
+                          {cell.day}
+                        </Text>
+                        {hasActivity && (
+                          <View
+                            style={[
+                              styles.dpDayDot,
+                              isSelected && styles.dpDayDotSelected,
+                            ]}
+                          />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+
+          {/* Legend */}
+          <View style={styles.dpLegendRow}>
+            <View style={styles.dpLegendDot} />
+            <Text style={styles.dpLegendText}>{legendLabel}</Text>
+          </View>
+
+          {/* Bottom Actions */}
+          <View style={styles.dpActionsRow}>
+            <TouchableOpacity
+              style={styles.dpTodayBtn}
+              onPress={() => handleDismiss(todayKey)}
+              activeOpacity={0.75}
+              accessibilityLabel="Show today"
+              accessibilityRole="button"
+            >
+              <Text style={styles.dpTodayBtnText}>Today</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.dpShowBtn}
+              onPress={() => handleDismiss(draftDateKey)}
+              activeOpacity={0.8}
+              accessibilityLabel={`Show ${formatDayMonthNumeric(draftDateKey)}`}
+              accessibilityRole="button"
+            >
+              <Text style={styles.dpShowBtnText}>
+                {`Show ${formatDayMonthNumeric(draftDateKey)}`}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
       </View>
-    </View>
+    </Modal>
   );
 }
-
-const TripCalendar = ({
-  selectedDateKey,
-  tripDateKeys,
-  onSelectDate,
-  onShowAll,
-  onClose,
-}: {
-  selectedDateKey: string;
-  tripDateKeys: Set<string>;
-  onSelectDate: (dateKey: string) => void;
-  onShowAll: () => void;
-  onClose: () => void;
-}) => (
-  <HistoryCalendar
-    selectedDateKey={selectedDateKey}
-    activeDateKeys={tripDateKeys}
-    legendLabel="Dates with trips"
-    onSelectDate={onSelectDate}
-    onShowAll={onShowAll}
-    onClose={onClose}
-  />
-);
 
 
 const LIVE_ACTIVITY_KEY = 'mg_live_activity_enabled';
@@ -5158,7 +5246,7 @@ export default function App() {
                           styles.tripsDatePill,
                           showTripCalendar && styles.tripsDatePillActive,
                         ]}
-                        onPress={() => setShowTripCalendar((v) => !v)}
+                        onPress={() => setShowTripCalendar(true)}
                         activeOpacity={0.7}
                       >
                         <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
@@ -5172,34 +5260,13 @@ export default function App() {
                             ? 'All Dates'
                             : formatDisplayDateKey(selectedTripDate)}
                         </Text>
-                        <Text style={styles.tripsDatePillChevron}>
-                          {showTripCalendar ? '▲' : '▼'}
-                        </Text>
+                        <Text style={styles.tripsDatePillChevron}>▼</Text>
                       </TouchableOpacity>
 
                       <Text style={styles.tripsCountText}>
                         {summaryTrips.length} {summaryTrips.length === 1 ? 'trip' : 'trips'}
                       </Text>
                     </View>
-
-                    {/* Interactive Calendar Dropdown (if toggled) */}
-                    {showTripCalendar && (
-                      <View style={{ marginBottom: 16 }}>
-                        <TripCalendar
-                          selectedDateKey={selectedTripDate}
-                          tripDateKeys={tripDateKeysSet}
-                          onSelectDate={(dateKey) => {
-                            setSelectedTripDate(dateKey);
-                            setShowTripCalendar(false);
-                          }}
-                          onShowAll={() => {
-                            setSelectedTripDate('all');
-                            setShowTripCalendar(false);
-                          }}
-                          onClose={() => setShowTripCalendar(false)}
-                        />
-                      </View>
-                    )}
 
                     {/* Daily / Selected Date Total Distance & Energy Usage Hero */}
                     <View style={styles.tripsHeroStats}>
@@ -5342,6 +5409,16 @@ export default function App() {
                 </View>
               </TouchableOpacity>
             </Modal>
+
+            {/* Trips Slide-Up Date Picker Bottom Sheet */}
+            <DatePickerBottomSheet
+              visible={showTripCalendar}
+              selectedDateKey={selectedTripDate}
+              activeDateKeys={tripDateKeysSet}
+              legendLabel="Days with trips"
+              onSelectDate={(dateKey) => setSelectedTripDate(dateKey)}
+              onClose={() => setShowTripCalendar(false)}
+            />
         </View>
       ) : (
         <ScrollView
@@ -6021,7 +6098,7 @@ export default function App() {
                   styles.chargeDatePill,
                   showChargeCalendar && styles.chargeDatePillActive,
                 ]}
-                onPress={() => setShowChargeCalendar((v) => !v)}
+                onPress={() => setShowChargeCalendar(true)}
                 activeOpacity={0.7}
               >
                 <Text style={styles.chargeDatePillIcon}>📅</Text>
@@ -6032,9 +6109,7 @@ export default function App() {
                     ? `Today · ${formatShortDayMonth(selectedChargeDate)}`
                     : formatDisplayDateKey(selectedChargeDate)}
                 </Text>
-                <Text style={styles.chargeDatePillChevron}>
-                  {showChargeCalendar ? '▲' : '▼'}
-                </Text>
+                <Text style={styles.chargeDatePillChevron}>▼</Text>
               </TouchableOpacity>
 
               {/* Save Session Pill Button */}
@@ -6172,27 +6247,7 @@ export default function App() {
               );
             })()}
 
-            {/* 7. Interactive Calendar (when open) */}
-            {showChargeCalendar && (
-              <View style={{ marginBottom: 16 }}>
-                <HistoryCalendar
-                  selectedDateKey={selectedChargeDate}
-                  activeDateKeys={chargeDateKeysSet}
-                  legendLabel="Dates with charges"
-                  onSelectDate={(dateKey) => {
-                    setSelectedChargeDate(dateKey);
-                    setShowChargeCalendar(false);
-                  }}
-                  onShowAll={() => {
-                    setSelectedChargeDate('all');
-                    setShowChargeCalendar(false);
-                  }}
-                  onClose={() => setShowChargeCalendar(false)}
-                />
-              </View>
-            )}
-
-            {/* 8. Active Charging Session (if actively charging) */}
+            {/* 7. Active Charging Session (if actively charging) */}
             {activeCharge && (
               <View style={[styles.card, { borderColor: '#06B6D4', borderWidth: 1.5, marginBottom: 16 }]}>
                 <View
@@ -6481,6 +6536,16 @@ export default function App() {
                 </Animated.View>
               </View>
             </Modal>
+
+            {/* Charge Slide-Up Date Picker Bottom Sheet */}
+            <DatePickerBottomSheet
+              visible={showChargeCalendar}
+              selectedDateKey={selectedChargeDate}
+              activeDateKeys={chargeDateKeysSet}
+              legendLabel="Days with charges"
+              onSelectDate={(dateKey) => setSelectedChargeDate(dateKey)}
+              onClose={() => setShowChargeCalendar(false)}
+            />
           </View>
         )}
 
@@ -14828,6 +14893,154 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#1E293B',
     width: '100%',
+  },
+
+  // Slide-Up Date Picker Bottom Sheet Styles
+  dpSheetContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 32 : 22,
+  },
+  dpHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+    paddingHorizontal: 2,
+  },
+  dpNavCircleBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#0E141F',
+    borderWidth: 1,
+    borderColor: '#232F42',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dpMonthTitle: {
+    color: '#F8FAFC',
+    fontSize: 19,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  dpWeekHeaderRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+  },
+  dpWeekHeaderText: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  dpGridWrap: {
+    width: '100%',
+  },
+  dpWeekGridRow: {
+    flexDirection: 'row',
+    marginVertical: 2,
+  },
+  dpDaySlot: {
+    flex: 1,
+    height: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dpDayCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  dpDayCircleSelected: {
+    backgroundColor: '#34E096',
+  },
+  dpDayCircleToday: {
+    borderWidth: 1.5,
+    borderColor: '#34E096',
+  },
+  dpDayText: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  dpDayTextFuture: {
+    color: '#4B5563',
+    fontWeight: '600',
+  },
+  dpDayTextToday: {
+    color: '#F8FAFC',
+    fontWeight: '800',
+  },
+  dpDayTextSelected: {
+    color: '#062116',
+    fontWeight: '800',
+  },
+  dpDayDot: {
+    position: 'absolute',
+    bottom: 5,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#34E096',
+  },
+  dpDayDotSelected: {
+    backgroundColor: '#062116',
+  },
+  dpLegendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    marginBottom: 18,
+    paddingHorizontal: 4,
+  },
+  dpLegendDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#34E096',
+    marginRight: 8,
+  },
+  dpLegendText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  dpActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dpTodayBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: '#0E141F',
+    borderWidth: 1,
+    borderColor: '#232F42',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  dpTodayBtnText: {
+    color: '#F8FAFC',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+  dpShowBtn: {
+    flex: 1.85,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: '#34E096',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dpShowBtnText: {
+    color: '#062116',
+    fontSize: 15.5,
+    fontWeight: '800',
   },
   tabLabelText: {
     fontSize: 10,
