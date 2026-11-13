@@ -1430,6 +1430,242 @@ function DatePickerBottomSheet({
   );
 }
 
+type DataSheetIconKind =
+  | 'cloud_upload'
+  | 'refresh'
+  | 'sparkles'
+  | 'add_circle'
+  | 'spreadsheet'
+  | 'trash';
+
+interface DataSheetOptionItem {
+  key: string;
+  title: string;
+  subtitle: string;
+  icon: DataSheetIconKind;
+  destructive?: boolean;
+  onPress: () => void;
+}
+
+interface DataOptionsBottomSheetProps {
+  visible: boolean;
+  title: string;
+  options: DataSheetOptionItem[];
+  disabled?: boolean;
+  onClose: () => void;
+}
+
+function renderDataSheetIcon(kind: DataSheetIconKind, destructive?: boolean) {
+  const strokeColor = destructive ? '#F87171' : '#34D399';
+  switch (kind) {
+    case 'cloud_upload':
+      return (
+        <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={strokeColor} strokeWidth={2}>
+          <Path
+            d="M6.5 18h11a4 4 0 0 0 .7-7.93A5.5 5.5 0 0 0 7.4 8.5 4.5 4.5 0 0 0 6.5 18Z"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Path d="M12 15.5V10.5" strokeLinecap="round" strokeLinejoin="round" />
+          <Path d="M9.5 12.5 12 10l2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      );
+    case 'refresh':
+      return (
+        <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={strokeColor} strokeWidth={2}>
+          <Path
+            d="M21 12a9 9 0 1 1-2.64-6.36"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Polyline points="21 3 21 9 15 9" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      );
+    case 'sparkles':
+      return (
+        <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={strokeColor} strokeWidth={2}>
+          <Path
+            d="M9.5 4.5 11 8.5 15 10l-4 1.5L9.5 15.5 8 11.5 4 10l4-1.5Z"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M17.5 13.5 18.4 15.6 20.5 16.5l-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9Z"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </Svg>
+      );
+    case 'add_circle':
+      return (
+        <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={strokeColor} strokeWidth={2}>
+          <Circle cx="12" cy="12" r="9" />
+          <Line x1="12" y1="8.5" x2="12" y2="15.5" strokeLinecap="round" />
+          <Line x1="8.5" y1="12" x2="15.5" y2="12" strokeLinecap="round" />
+        </Svg>
+      );
+    case 'spreadsheet':
+      return (
+        <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={strokeColor} strokeWidth={2}>
+          <Rect x="4" y="4" width="16" height="16" rx="2" />
+          <Line x1="4" y1="10" x2="20" y2="10" />
+          <Line x1="10" y1="10" x2="10" y2="20" />
+        </Svg>
+      );
+    case 'trash':
+      return (
+        <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={strokeColor} strokeWidth={2}>
+          <Path d="M3 6h18" strokeLinecap="round" strokeLinejoin="round" />
+          <Path
+            d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Line x1="10" y1="11" x2="10" y2="17" strokeLinecap="round" />
+          <Line x1="14" y1="11" x2="14" y2="17" strokeLinecap="round" />
+        </Svg>
+      );
+  }
+}
+
+/** Shared slide-up data management options bottom sheet for Trips and Charge screens. */
+function DataOptionsBottomSheet({
+  visible,
+  title,
+  options,
+  disabled = false,
+  onClose,
+}: DataOptionsBottomSheetProps) {
+  const [modalVisible, setModalVisible] = useState<boolean>(visible);
+  const slideAnim = useRef(new Animated.Value(visible ? 1 : 0)).current;
+  const isClosingRef = useRef<boolean>(false);
+  const prevVisibleRef = useRef<boolean>(visible);
+
+  useEffect(() => {
+    const wasVisible = prevVisibleRef.current;
+    prevVisibleRef.current = visible;
+
+    if (visible && !wasVisible) {
+      isClosingRef.current = false;
+      slideAnim.stopAnimation();
+      slideAnim.setValue(0);
+      setModalVisible(true);
+      Animated.timing(slideAnim, {
+        toValue: 1,
+        duration: 280,
+        easing: Easing.bezier(0.22, 1, 0.36, 1),
+        useNativeDriver: Platform.OS !== 'web',
+      }).start();
+    } else if (!visible && wasVisible && modalVisible && !isClosingRef.current) {
+      isClosingRef.current = true;
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.bezier(0.4, 0, 1, 1),
+        useNativeDriver: Platform.OS !== 'web',
+      }).start(() => {
+        isClosingRef.current = false;
+        setModalVisible(false);
+      });
+    }
+  }, [visible]);
+
+  const handleDismiss = (afterClose?: () => void) => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    Animated.timing(slideAnim, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.bezier(0.4, 0, 1, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(() => {
+      isClosingRef.current = false;
+      setModalVisible(false);
+      onClose();
+      if (afterClose) afterClose();
+    });
+  };
+
+  if (!modalVisible) return null;
+
+  return (
+    <Modal
+      visible={modalVisible}
+      transparent
+      animationType="none"
+      onRequestClose={() => handleDismiss()}
+    >
+      <View style={styles.colorSheetBackdrop}>
+        {/* Tapping outside closes the sheet */}
+        <TouchableOpacity
+          style={StyleSheet.absoluteFill}
+          activeOpacity={1}
+          onPress={() => handleDismiss()}
+          accessibilityLabel={`Close ${title} options`}
+        />
+        <Animated.View
+          style={[
+            styles.colorSheetContainer,
+            {
+              paddingBottom: Platform.OS === 'ios' ? 30 : 18,
+              transform: [
+                {
+                  translateY: slideAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [480, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          {/* Top Drag Handle */}
+          <View style={styles.colorSheetHandle} />
+
+          {/* Sheet Title */}
+          <Text style={[styles.colorSheetTitle, { marginBottom: 10 }]}>
+            {title}
+          </Text>
+
+          {options.map((item, idx) => (
+            <React.Fragment key={item.key}>
+              <TouchableOpacity
+                style={styles.chargeOptionsRow}
+                onPress={() => handleDismiss(item.onPress)}
+                disabled={disabled}
+                activeOpacity={0.7}
+                accessibilityLabel={item.title}
+                accessibilityRole="button"
+              >
+                <View style={styles.chargeOptionsRowIcon}>
+                  {renderDataSheetIcon(item.icon, item.destructive)}
+                </View>
+                <View style={styles.chargeOptionsRowBody}>
+                  <Text
+                    style={[
+                      styles.chargeOptionsRowTitle,
+                      item.destructive && { color: '#F87171' },
+                    ]}
+                  >
+                    {item.title}
+                  </Text>
+                  <Text style={styles.chargeOptionsRowSub}>{item.subtitle}</Text>
+                </View>
+              </TouchableOpacity>
+              {idx < options.length - 1 && <View style={styles.chargeOptionsDivider} />}
+            </React.Fragment>
+          ))}
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
 
 const LIVE_ACTIVITY_KEY = 'mg_live_activity_enabled';
 
@@ -1993,35 +2229,9 @@ export default function App() {
     });
   };
 
-  // Trips Options Menu State
+  // Trips & Charge Data Options Bottom Sheet States
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
-
-  // Charge Options Menu Bottom Sheet State & Animation
   const [showChargeOptionsMenu, setShowChargeOptionsMenu] = useState<boolean>(false);
-  const chargeOptionsSlideAnim = useRef(new Animated.Value(0)).current;
-
-  const handleOpenChargeOptionsMenu = () => {
-    setShowChargeOptionsMenu(true);
-    chargeOptionsSlideAnim.setValue(0);
-    Animated.timing(chargeOptionsSlideAnim, {
-      toValue: 1,
-      duration: 280,
-      easing: Easing.bezier(0.22, 1, 0.36, 1),
-      useNativeDriver: Platform.OS !== 'web',
-    }).start();
-  };
-
-  const handleCloseChargeOptionsMenu = (afterClose?: () => void) => {
-    Animated.timing(chargeOptionsSlideAnim, {
-      toValue: 0,
-      duration: 220,
-      easing: Easing.bezier(0.4, 0, 1, 1),
-      useNativeDriver: Platform.OS !== 'web',
-    }).start(() => {
-      setShowChargeOptionsMenu(false);
-      if (afterClose) afterClose();
-    });
-  };
 
   // Profile Interactive Modals State
   const [activeProfileModal, setActiveProfileModal] = useState<
@@ -5339,87 +5549,62 @@ export default function App() {
           </Animated.View>
         </ScrollView>
 
-        {/* Overflow Options Modal for Cloudflare D1 & Syncing */}
-            <Modal visible={showTripsOptionsMenu} transparent animationType="fade">
-              <TouchableOpacity
-                style={styles.modalBackdrop}
-                activeOpacity={1}
-                onPress={() => setShowTripsOptionsMenu(false)}
-              >
-                <View style={styles.tripsOptionsBox}>
-                  <Text style={styles.tripsOptionsTitle}>Trips Database & Management</Text>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleSyncTripsToD1();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>☁️  Sync Trips to Cloudflare D1</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleRefreshD1Trips();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>🔄  Refresh Trips from Cloudflare D1</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleCleanAndDeduplicateD1();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>🧹  Clean & Deduplicate D1 Trips</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionItem}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleManualLogTrip();
-                    }}
-                  >
-                    <Text style={styles.tripsOptionItemText}>➕  Log Current Trip Telemetry Now</Text>
-                  </TouchableOpacity>
-
-                  {googleConfig?.accessToken && googleConfig?.spreadsheetId && (
-                    <TouchableOpacity
-                      style={styles.tripsOptionItem}
-                      onPress={() => {
-                        setShowTripsOptionsMenu(false);
-                        handleSyncGoogleSheetNow();
-                      }}
-                    >
-                      <Text style={styles.tripsOptionItemText}>📊  Sync Trips to Google Sheets</Text>
-                    </TouchableOpacity>
-                  )}
-
-                  <TouchableOpacity
-                    style={[styles.tripsOptionItem, { borderBottomWidth: 0 }]}
-                    onPress={() => {
-                      setShowTripsOptionsMenu(false);
-                      handleClearAllD1Trips();
-                    }}
-                  >
-                    <Text style={[styles.tripsOptionItemText, { color: '#F87171' }]}>🗑️  Clear All Cloudflare D1 Trips</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.tripsOptionsCancelBtn}
-                    onPress={() => setShowTripsOptionsMenu(false)}
-                  >
-                    <Text style={styles.tripsOptionsCancelText}>Close</Text>
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
-            </Modal>
+        {/* Trips Data Options Slide-Up Bottom Sheet */}
+        <DataOptionsBottomSheet
+          visible={showTripsOptionsMenu}
+          title="Trips data"
+          disabled={isD1Syncing}
+          onClose={() => setShowTripsOptionsMenu(false)}
+          options={[
+            {
+              key: 'sync',
+              title: 'Sync to cloud',
+              subtitle: 'Upload your trips to Cloudflare D1',
+              icon: 'cloud_upload',
+              onPress: handleSyncTripsToD1,
+            },
+            {
+              key: 'refresh',
+              title: 'Refresh from cloud',
+              subtitle: 'Download the latest trips',
+              icon: 'refresh',
+              onPress: handleRefreshD1Trips,
+            },
+            {
+              key: 'clean',
+              title: 'Clean & remove duplicates',
+              subtitle: 'Tidy up repeated trips',
+              icon: 'sparkles',
+              onPress: handleCleanAndDeduplicateD1,
+            },
+            {
+              key: 'log_now',
+              title: 'Log trip now',
+              subtitle: 'Save the current telemetry as a trip',
+              icon: 'add_circle',
+              onPress: handleManualLogTrip,
+            },
+            ...(googleConfig?.accessToken && googleConfig?.spreadsheetId
+              ? [
+                  {
+                    key: 'gsheets',
+                    title: 'Sync trips to Google Sheets',
+                    subtitle: 'Upload your trips to Google Sheets',
+                    icon: 'spreadsheet' as const,
+                    onPress: handleSyncGoogleSheetNow,
+                  },
+                ]
+              : []),
+            {
+              key: 'clear',
+              title: 'Clear all cloud trips',
+              subtitle: 'Deletes every trip stored in D1',
+              icon: 'trash',
+              destructive: true,
+              onPress: handleClearAllD1Trips,
+            },
+          ]}
+        />
 
             {/* Trips Slide-Up Date Picker Bottom Sheet */}
             <DatePickerBottomSheet
@@ -6204,7 +6389,7 @@ export default function App() {
               {/* Overflow More Options Button */}
               <TouchableOpacity
                 style={styles.chargeMoreBtn}
-                onPress={handleOpenChargeOptionsMenu}
+                onPress={() => setShowChargeOptionsMenu(true)}
                 activeOpacity={0.7}
                 accessibilityLabel="More Options"
               >
@@ -6404,156 +6589,43 @@ export default function App() {
             )}
 
             {/* 10. Charging Data Options Slide-Up Bottom Sheet */}
-            <Modal
+            <DataOptionsBottomSheet
               visible={showChargeOptionsMenu}
-              transparent
-              animationType="none"
-              onRequestClose={() => handleCloseChargeOptionsMenu()}
-            >
-              <View style={styles.colorSheetBackdrop}>
-                {/* Tap outside to dismiss */}
-                <TouchableOpacity
-                  style={StyleSheet.absoluteFill}
-                  activeOpacity={1}
-                  onPress={() => handleCloseChargeOptionsMenu()}
-                  accessibilityLabel="Close charging data options"
-                />
-                <Animated.View
-                  style={[
-                    styles.colorSheetContainer,
-                    {
-                      paddingBottom: Platform.OS === 'ios' ? 30 : 18,
-                      transform: [
-                        {
-                          translateY: chargeOptionsSlideAnim.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [420, 0],
-                          }),
-                        },
-                      ],
-                    },
-                  ]}
-                >
-                  {/* Top Drag Handle */}
-                  <View style={styles.colorSheetHandle} />
-
-                  {/* Sheet Title */}
-                  <Text style={[styles.colorSheetTitle, { marginBottom: 10 }]}>
-                    Charging data
-                  </Text>
-
-                  {(
-                    [
-                      {
-                        key: 'sync',
-                        title: 'Sync to cloud',
-                        subtitle: 'Upload your charging sessions to Cloudflare D1',
-                        destructive: false,
-                        onPress: handleSyncChargesToD1,
-                        renderIcon: () => (
-                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
-                            <Path
-                              d="M6.5 18h11a4 4 0 0 0 .7-7.93A5.5 5.5 0 0 0 7.4 8.5 4.5 4.5 0 0 0 6.5 18Z"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                            <Path d="M12 15.5V10.5" strokeLinecap="round" strokeLinejoin="round" />
-                            <Path d="M9.5 12.5 12 10l2.5 2.5" strokeLinecap="round" strokeLinejoin="round" />
-                          </Svg>
-                        ),
-                      },
-                      {
-                        key: 'refresh',
-                        title: 'Refresh from cloud',
-                        subtitle: 'Download the latest charging sessions',
-                        destructive: false,
-                        onPress: handleRefreshD1Charges,
-                        renderIcon: () => (
-                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
-                            <Path
-                              d="M21 12a9 9 0 1 1-2.64-6.36"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                            <Polyline points="21 3 21 9 15 9" strokeLinecap="round" strokeLinejoin="round" />
-                          </Svg>
-                        ),
-                      },
-                      {
-                        key: 'clean',
-                        title: 'Clean & remove duplicates',
-                        subtitle: 'Tidy up repeated sessions',
-                        destructive: false,
-                        onPress: handleCleanAndDeduplicateCharges,
-                        renderIcon: () => (
-                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
-                            <Path
-                              d="M9.5 4.5 11 8.5 15 10l-4 1.5L9.5 15.5 8 11.5 4 10l4-1.5Z"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                            <Path
-                              d="M17.5 13.5 18.4 15.6 20.5 16.5l-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9Z"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </Svg>
-                        ),
-                      },
-                      {
-                        key: 'clear',
-                        title: 'Clear all cloud sessions',
-                        subtitle: 'Deletes every charging session stored in D1',
-                        destructive: true,
-                        onPress: handleClearAllD1Charges,
-                        renderIcon: () => (
-                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth={2}>
-                            <Path d="M3 6h18" strokeLinecap="round" strokeLinejoin="round" />
-                            <Path
-                              d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                            <Path
-                              d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                            <Line x1="10" y1="11" x2="10" y2="17" strokeLinecap="round" />
-                            <Line x1="14" y1="11" x2="14" y2="17" strokeLinecap="round" />
-                          </Svg>
-                        ),
-                      },
-                    ] as const
-                  ).map((item, idx, arr) => (
-                    <React.Fragment key={item.key}>
-                      <TouchableOpacity
-                        style={styles.chargeOptionsRow}
-                        onPress={() => handleCloseChargeOptionsMenu(item.onPress)}
-                        disabled={isD1Syncing}
-                        activeOpacity={0.7}
-                        accessibilityLabel={item.title}
-                        accessibilityRole="button"
-                      >
-                        <View style={styles.chargeOptionsRowIcon}>{item.renderIcon()}</View>
-                        <View style={styles.chargeOptionsRowBody}>
-                          <Text
-                            style={[
-                              styles.chargeOptionsRowTitle,
-                              item.destructive && { color: '#F87171' },
-                            ]}
-                          >
-                            {item.title}
-                          </Text>
-                          <Text style={styles.chargeOptionsRowSub}>{item.subtitle}</Text>
-                        </View>
-                      </TouchableOpacity>
-                      {idx < arr.length - 1 && <View style={styles.chargeOptionsDivider} />}
-                    </React.Fragment>
-                  ))}
-                </Animated.View>
-              </View>
-            </Modal>
+              title="Charging data"
+              disabled={isD1Syncing}
+              onClose={() => setShowChargeOptionsMenu(false)}
+              options={[
+                {
+                  key: 'sync',
+                  title: 'Sync to cloud',
+                  subtitle: 'Upload your charging sessions to Cloudflare D1',
+                  icon: 'cloud_upload',
+                  onPress: handleSyncChargesToD1,
+                },
+                {
+                  key: 'refresh',
+                  title: 'Refresh from cloud',
+                  subtitle: 'Download the latest charging sessions',
+                  icon: 'refresh',
+                  onPress: handleRefreshD1Charges,
+                },
+                {
+                  key: 'clean',
+                  title: 'Clean & remove duplicates',
+                  subtitle: 'Tidy up repeated sessions',
+                  icon: 'sparkles',
+                  onPress: handleCleanAndDeduplicateCharges,
+                },
+                {
+                  key: 'clear',
+                  title: 'Clear all cloud sessions',
+                  subtitle: 'Deletes every charging session stored in D1',
+                  icon: 'trash',
+                  destructive: true,
+                  onPress: handleClearAllD1Charges,
+                },
+              ]}
+            />
 
             {/* Charge Slide-Up Date Picker Bottom Sheet */}
             <DatePickerBottomSheet
