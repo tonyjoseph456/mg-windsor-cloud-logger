@@ -87,6 +87,7 @@ import {
   deregisterCarSession,
   AppNotificationRecord,
   fetchD1Notifications,
+  fetchD1NotificationsWithTotal,
   clearD1Notifications,
   verifyAccessCode,
   consumeAccessCode,
@@ -2764,6 +2765,7 @@ export default function App() {
             const ok = await clearD1Notifications();
             if (ok) {
               setD1Notifications([]);
+              setD1NotificationsTotal(0);
               setExpandedNotifIds({});
               showBanner('ok', 'Cleared notification history from Cloudflare D1');
             } else {
@@ -3601,6 +3603,7 @@ export default function App() {
 
   // Cloudflare D1 Stored Notifications State
   const [d1Notifications, setD1Notifications] = useState<AppNotificationRecord[]>([]);
+  const [d1NotificationsTotal, setD1NotificationsTotal] = useState<number | null>(null);
   const [isNotifsLoading, setIsNotifsLoading] = useState<boolean>(false);
 
   // Cloudflare D1 Charging Sessions State
@@ -3624,13 +3627,25 @@ export default function App() {
     setIsNotifsLoading(true);
     try {
       const limitToUse = customLimit ?? notifsFetchLimit;
-      const list = await fetchD1Notifications(limitToUse);
-      setD1Notifications(list);
-    } catch (_) {}
+      const res = await fetchD1NotificationsWithTotal(limitToUse);
+      if (res.ok) {
+        setD1Notifications(res.notifications);
+        setD1NotificationsTotal(res.totalCount);
+      } else {
+        setD1NotificationsTotal((prev) => (prev === null ? d1Notifications.length : prev));
+      }
+    } catch (_) {
+      setD1NotificationsTotal((prev) => (prev === null ? d1Notifications.length : prev));
+    }
     finally {
       setIsNotifsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!isAuthenticated || !(apiToken || licenseToken)) return;
+    refreshD1Notifications();
+  }, [isAuthenticated, apiToken, licenseToken, vin, snapshot?.vehicle?.vin]);
 
   useEffect(() => {
     if (!(apiToken || licenseToken)) return;
@@ -5046,6 +5061,7 @@ export default function App() {
             chargeLogsRef.current = [];
             setD1ChargingSessions([]);
             setD1Notifications([]);
+            setD1NotificationsTotal(null);
             setIsAuthenticated(false);
           },
         },
@@ -5101,6 +5117,7 @@ export default function App() {
             chargeLogsRef.current = [];
             setD1ChargingSessions([]);
             setD1Notifications([]);
+            setD1NotificationsTotal(null);
             setIsAuthenticated(false);
             showBanner('ok', 'Cloud session and vehicle telemetry wiped successfully.');
           },
@@ -8268,7 +8285,9 @@ export default function App() {
                     </View>
                     <Text style={styles.profileRowTitle}>Notification history</Text>
                     <Text style={styles.profileRowVal}>
-                      {d1Notifications.length > 0 ? `${d1Notifications.length} stored` : '60 stored'}
+                      {d1NotificationsTotal === null && isNotifsLoading && d1Notifications.length === 0
+                        ? 'Checking...'
+                        : `${d1NotificationsTotal ?? d1Notifications.length} stored`}
                     </Text>
                     <Text style={styles.profileRowChevron}>›</Text>
                   </TouchableOpacity>
@@ -12504,9 +12523,12 @@ export default function App() {
         });
 
         const visibleNotifs = filteredNotifs.slice(0, notifsVisibleCount);
+        const storedNotifsCount = d1NotificationsTotal ?? d1Notifications.length;
         const hasMoreNotifs =
           visibleNotifs.length < filteredNotifs.length ||
-          (d1Notifications.length >= notifsFetchLimit && notifsFetchLimit < 100);
+          (d1NotificationsTotal !== null
+            ? d1Notifications.length < d1NotificationsTotal && d1Notifications.length < 100
+            : d1Notifications.length >= notifsFetchLimit && notifsFetchLimit < 100);
 
         const sectionsMap = new Map<string, AppNotificationRecord[]>();
         for (const item of visibleNotifs) {
@@ -12571,7 +12593,7 @@ export default function App() {
                     <View style={styles.nhTitleBlock}>
                       <Text style={styles.nhHeaderTitle}>Notifications</Text>
                       <Text style={styles.nhHeaderSubtitle}>
-                        {d1Notifications.length} stored · synced across devices
+                        {storedNotifsCount} stored · synced across devices
                       </Text>
                     </View>
                   </View>

@@ -2283,6 +2283,28 @@ async function d1GetNotifications(env: Env, limit = 50, vin?: string | null) {
   return [];
 }
 
+/** Count total notifications stored in D1 (or KV fallback) for a single VIN. */
+async function d1GetNotificationCount(env: Env, vin?: string | null): Promise<number> {
+  const v = requireScopedVin(vin);
+  if (!v) return 0;
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const row: any = await env.DB.prepare('SELECT COUNT(*) as total FROM notifications WHERE vin = ?').bind(v).first();
+      if (row && typeof row.total !== 'undefined') {
+        return Number(row.total) || 0;
+      }
+    } catch (_) {}
+  }
+  if (env.TRIP_KV) {
+    try {
+      const list = ((await env.TRIP_KV.get('d1_fallback:notifications', 'json')) || []).filter((n: any) => normVin(n.vin) === v);
+      return list.length;
+    } catch (_) {}
+  }
+  return 0;
+}
+
 async function d1ClearNotifications(env: Env, vin?: string | null) {
   const v = requireScopedVin(vin);
   if (!v) return;
@@ -4096,8 +4118,11 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const auth = await requireAppVin(env, request, url, body);
     if (auth instanceof Response) return auth;
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
-    const notifs = await d1GetNotifications(env, limit, auth.vin);
-    return json({ success: true, notifications: notifs });
+    const [notifs, totalCount] = await Promise.all([
+      d1GetNotifications(env, limit, auth.vin),
+      d1GetNotificationCount(env, auth.vin),
+    ]);
+    return json({ success: true, notifications: notifs, totalCount });
   }
 
   // Test Notification insert to verify D1 Studio saving

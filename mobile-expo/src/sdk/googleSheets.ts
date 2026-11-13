@@ -1466,21 +1466,35 @@ export interface AppNotificationRecord {
   created_at?: string;
 }
 
-export async function fetchD1Notifications(limit = 50, vinOverride?: string): Promise<AppNotificationRecord[]> {
+/** Fetch D1 notifications along with the exact total count stored on the server. */
+export async function fetchD1NotificationsWithTotal(
+  limit = 50,
+  vinOverride?: string
+): Promise<{ ok: boolean; notifications: AppNotificationRecord[]; totalCount: number }> {
   try {
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/notifications?limit=${limit}${vin ? `&vin=${encodeURIComponent(vin)}` : ''}`, {
       headers: getD1AuthHeaders(),
     });
-    if (!res.ok) return [];
+    if (!res.ok) return { ok: false, notifications: [], totalCount: 0 };
     const data = await res.json();
     if (data.success && Array.isArray(data.notifications)) {
-      return data.notifications;
+      const notifications: AppNotificationRecord[] = data.notifications;
+      const totalCount =
+        typeof data.totalCount === 'number' && Number.isFinite(data.totalCount)
+          ? Math.max(0, data.totalCount)
+          : notifications.length;
+      return { ok: true, notifications, totalCount };
     }
   } catch (err) {
     console.warn('fetchD1Notifications error:', err);
   }
-  return [];
+  return { ok: false, notifications: [], totalCount: 0 };
+}
+
+export async function fetchD1Notifications(limit = 50, vinOverride?: string): Promise<AppNotificationRecord[]> {
+  const { notifications } = await fetchD1NotificationsWithTotal(limit, vinOverride);
+  return notifications;
 }
 
 export async function clearD1Notifications(vinOverride?: string): Promise<boolean> {
