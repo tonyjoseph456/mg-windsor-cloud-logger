@@ -2831,6 +2831,89 @@ export default function App() {
     showBanner('ok', `Copied ${label} link to clipboard!`);
   };
 
+  // Shared slide tween & external link helpers for Profile fullscreen subscreens
+  const tweenProfileSubscreen = (
+    anim: Animated.Value,
+    toValue: 0 | 1,
+    onDone?: (finished: boolean) => void
+  ) => {
+    anim.stopAnimation();
+    if (toValue === 1) {
+      anim.setValue(0);
+    }
+    Animated.timing(anim, {
+      toValue,
+      duration: toValue === 1 ? 320 : 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      onDone?.(finished);
+    });
+  };
+
+  const handleOpenExternalUrl = (url: string) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.open(url, '_blank');
+      return;
+    }
+    Linking.openURL(url).catch(() => {
+      Alert.alert('Could Not Open Browser', `Please visit:\n${url}`);
+    });
+  };
+
+  // Dedicated Admin Console Screen State & Animation (Horizontal tween from right to centre)
+  const adminSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isAdminScreenVisible, setIsAdminScreenVisible] = useState<boolean>(false);
+  const [isAdminUrlCopied, setIsAdminUrlCopied] = useState<boolean>(false);
+
+  const handleOpenAdminScreen = () => {
+    setIsAdminUrlCopied(false);
+    setIsAdminScreenVisible(true);
+    tweenProfileSubscreen(adminSlideAnim, 1);
+  };
+
+  const handleCloseAdminScreen = () => {
+    tweenProfileSubscreen(adminSlideAnim, 0, (finished) => {
+      if (finished) {
+        setIsAdminScreenVisible(false);
+        setIsAdminUrlCopied(false);
+      }
+    });
+  };
+
+  const handleCopyAdminUrl = async () => {
+    const adminUrl = `${BACKEND_URL}/admin`;
+    try {
+      await Clipboard.setStringAsync(adminUrl);
+    } catch {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(adminUrl).catch(() => {});
+      }
+    }
+    setIsAdminUrlCopied(true);
+    setTimeout(() => {
+      setIsAdminUrlCopied(false);
+    }, 2200);
+    showBanner('ok', 'Copied Admin Website URL to clipboard!');
+  };
+
+  // Dedicated Open-Source Credits Screen State & Animation (Horizontal tween from right to centre)
+  const creditsSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isCreditsScreenVisible, setIsCreditsScreenVisible] = useState<boolean>(false);
+
+  const handleOpenCreditsScreen = () => {
+    setIsCreditsScreenVisible(true);
+    tweenProfileSubscreen(creditsSlideAnim, 1);
+  };
+
+  const handleCloseCreditsScreen = () => {
+    tweenProfileSubscreen(creditsSlideAnim, 0, (finished) => {
+      if (finished) {
+        setIsCreditsScreenVisible(false);
+      }
+    });
+  };
+
   // Trips & Charge Data Options Bottom Sheet States
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
   const [showChargeOptionsMenu, setShowChargeOptionsMenu] = useState<boolean>(false);
@@ -2839,8 +2922,6 @@ export default function App() {
   const [activeProfileModal, setActiveProfileModal] = useState<
     | 'vehicle'
     | 'analytics'
-    | 'admin'
-    | 'credits'
     | null
   >(null);
 
@@ -5806,7 +5887,10 @@ export default function App() {
       Animated.add(textSizeSlideAnim, mapsKeySlideAnim),
       Animated.add(
         Animated.add(pushScreenSlideAnim, notifsScreenSlideAnim),
-        automationSlideAnim
+        Animated.add(
+          automationSlideAnim,
+          Animated.add(adminSlideAnim, creditsSlideAnim)
+        )
       )
     )
   );
@@ -5846,6 +5930,14 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
   const automationTranslateX = automationSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+  const adminTranslateX = adminSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+  const creditsTranslateX = creditsSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -7594,7 +7686,7 @@ export default function App() {
                   {/* Admin console */}
                   <TouchableOpacity
                     style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('admin')}
+                    onPress={handleOpenAdminScreen}
                     activeOpacity={0.7}
                   >
                     <View style={styles.profileRowIconWrap}>
@@ -7612,7 +7704,7 @@ export default function App() {
                   {/* Open-source credits */}
                   <TouchableOpacity
                     style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('credits')}
+                    onPress={handleOpenCreditsScreen}
                     activeOpacity={0.7}
                   >
                     <View style={styles.profileRowIconWrap}>
@@ -7647,8 +7739,6 @@ export default function App() {
                       <Text style={styles.profileModalTitle}>
                         {activeProfileModal === 'vehicle' && 'Connected Vehicle'}
                         {activeProfileModal === 'analytics' && 'Monthly Analytics'}
-                        {activeProfileModal === 'admin' && 'Backend Admin Console'}
-                        {activeProfileModal === 'credits' && 'Open-Source Credits'}
                       </Text>
                       <TouchableOpacity
                         style={styles.profileModalCloseBtn}
@@ -7720,70 +7810,6 @@ export default function App() {
               )}
             </AccountSectionCard>
           )}
-
-          {/* CARD: Backend Admin Console & Access Control - ONLY VISIBLE TO MASTER ADMIN */}
-          {activeProfileModal === 'admin' && (
-            <AccountSectionCard
-              defaultExpanded={true}
-                title="Backend Admin Console & Access Control"
-                icon="🛡️"
-                badge="Admin Only"
-                badgeBg="#064E3B"
-                badgeColor="#34D399"
-                preview={`Admin URL: ${BACKEND_URL}/admin • Generate one-time user access codes & manage authorized devices`}
-              >
-                <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 18, marginBottom: 14 }}>
-                  Manage private access to this PWA. Generate single-use invitation codes for friends, view active devices, or revoke access remotely from the dedicated admin dashboard.
-                </Text>
-
-                <View style={{ gap: 8, marginBottom: 16 }}>
-                  <InfoRow label="Admin Portal" value={`${BACKEND_URL}/admin`} />
-                  <InfoRow label="Access Status" value={isAuthorizedUser ? '✓ Device Authorized' : 'Pending Verification'} />
-                  {accessCode ? <InfoRow label="Active Code" value={accessCode} /> : null}
-                </View>
-
-                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
-                  <TouchableOpacity
-                    style={[
-                      styles.logoutBtn,
-                      {
-                        flex: 1,
-                        backgroundColor: '#00E5FF20',
-                        borderColor: '#00E5FF80',
-                        marginTop: 0,
-                      },
-                    ]}
-                    onPress={() => {
-                      const url = `${BACKEND_URL}/admin`;
-                      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                        window.open(url, '_blank');
-                      } else {
-                        Linking.openURL(url).catch(() => {
-                          Alert.alert('Could Not Open Browser', `Please visit:\n${url}`);
-                        });
-                      }
-                    }}
-                  >
-                    <Text style={[styles.logoutBtnText, { color: '#00E5FF' }]}>🌐 Open Admin Website ↗</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.logoutBtn,
-                      {
-                        flex: 1,
-                        backgroundColor: '#1E293B',
-                        borderColor: '#475569',
-                        marginTop: 0,
-                      },
-                    ]}
-                    onPress={() => copyToClipboard(`${BACKEND_URL}/admin`, 'Admin Website URL')}
-                  >
-                    <Text style={[styles.logoutBtnText, { color: '#E2E8F0' }]}>📋 Copy Admin URL</Text>
-                  </TouchableOpacity>
-                </View>
-              </AccountSectionCard>
-            )}
 
           {/* CARD 2: MONTHLY DRIVING & CHARGING ANALYTICS */}
           {activeProfileModal === 'analytics' && (() => {
@@ -8513,85 +8539,6 @@ export default function App() {
               </AccountSectionCard>
             )}
 
-          {/* CARD 6: Open-Source Credits & Acknowledgements */}
-          {activeProfileModal === 'credits' && (
-            <AccountSectionCard
-              defaultExpanded={true}
-              title="Open-Source Credits & Acknowledgements"
-              icon="🙏"
-              badge="Apache 2.0 / MIT"
-              badgeBg="#1E293B"
-              badgeColor="#38BDF8"
-              preview="Irshad Melethil (Volta Android) & John Lazarus (mg-ismart-india-client)"
-              subtitle="Built upon open-source research and EV engineering from the Indian MG EV community."
-            >
-              <View style={{ gap: 10 }}>
-                <View
-                  style={{
-                    backgroundColor: '#0A0E17',
-                    padding: 12,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: '#1E293B',
-                  }}
-                >
-                  <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
-                    🗺️ EV Trip Planner &amp; Terrain Physics Engine
-                  </Text>
-                  <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 4, lineHeight: 16 }}>
-                    Ported from <Text style={{ color: '#34D399', fontWeight: '700' }}>Volta (irshadm/volta-android)</Text> by{' '}
-                    <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Irshad Melethil</Text> (Apache License 2.0) — including the terrain-aware physics EnergyModel (flat speed efficiency + potential energy climb &amp; regen), 20m hysteresis elevation filter, Dijkstra time-optimal DC stop planner, charger confidence scoring, and 25 km backup charger selection.
-                  </Text>
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-                    <TouchableOpacity
-                      style={[styles.copyPillBtn, { backgroundColor: '#0284C725', borderColor: '#38BDF8' }]}
-                      onPress={() => Linking.openURL('https://github.com/irshadm/volta-android')}
-                    >
-                      <Text style={[styles.copyPillBtnText, { color: '#38BDF8' }]}>
-                        🔗 GitHub: irshadm/volta-android
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.copyPillBtn, { backgroundColor: '#064E3B40', borderColor: '#34D399' }]}
-                      onPress={() => Linking.openURL('https://irshadm.dev/volta/')}
-                    >
-                      <Text style={[styles.copyPillBtnText, { color: '#34D399' }]}>
-                        🌐 irshadm.dev/volta
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View
-                  style={{
-                    backgroundColor: '#0A0E17',
-                    padding: 12,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: '#1E293B',
-                  }}
-                >
-                  <Text style={{ color: '#F8FAFC', fontSize: 13, fontWeight: '800' }}>
-                    📡 MG i-SMART India ASN.1 UPER Protocol
-                  </Text>
-                  <Text style={{ color: '#94A3B8', fontSize: 11, marginTop: 4, lineHeight: 16 }}>
-                    Ported from <Text style={{ color: '#38BDF8', fontWeight: '700' }}>john-lazarus/mg-ismart-india-client</Text> by{' '}
-                    <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>John Lazarus</Text>, who reverse-engineered the MG India i-SMART ASN.1 UPER binary frames and TAP gateway signatures.
-                  </Text>
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-                    <TouchableOpacity
-                      style={[styles.copyPillBtn, { backgroundColor: '#0284C725', borderColor: '#38BDF8' }]}
-                      onPress={() => Linking.openURL('https://github.com/john-lazarus/mg-ismart-india-client')}
-                    >
-                      <Text style={[styles.copyPillBtnText, { color: '#38BDF8' }]}>
-                        🔗 GitHub: john-lazarus/mg-ismart-india-client
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            </AccountSectionCard>
-          )}
         </ScrollView>
       </View>
     </View>
@@ -12540,6 +12487,297 @@ export default function App() {
         );
       })()}
 
+      {/* Admin Console Fullscreen Tween Screen */}
+      {isAdminScreenVisible && (() => {
+        const adminPortalUrl = `${BACKEND_URL}/admin`;
+        return (
+          <Animated.View
+            style={[
+              styles.accountScreenLayer,
+              {
+                transform: [{ translateX: adminTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.accountScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* 1. Header Row */}
+                <View style={styles.accountHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 }}>
+                    <TouchableOpacity
+                      style={styles.accountBackBtn}
+                      onPress={handleCloseAdminScreen}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Back to Profile"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    </TouchableOpacity>
+                    <Text style={[styles.accountHeaderTitle, { flexShrink: 1 }]} numberOfLines={1} adjustsFontSizeToFit>
+                      Admin console
+                    </Text>
+                  </View>
+                  <View style={styles.accountConnectedBadge}>
+                    <Text style={styles.accountConnectedBadgeText}>Admin only</Text>
+                  </View>
+                </View>
+
+                {/* 2. Description */}
+                <Text style={styles.gmkDescription}>
+                  Manage private access to this app: create single-use invite codes for friends, see active devices, or revoke access from the admin dashboard.
+                </Text>
+
+                {/* 3. Admin Portal & Access Card */}
+                <View style={styles.admCard}>
+                  <Text style={styles.admFieldLabel}>Admin portal</Text>
+                  <TouchableOpacity
+                    style={styles.admPortalRow}
+                    onPress={handleCopyAdminUrl}
+                    activeOpacity={0.75}
+                    accessibilityLabel="Copy admin portal URL"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.admPortalUrl}>{adminPortalUrl}</Text>
+                    <View style={styles.admCopyIconWrap}>
+                      {isAdminUrlCopied ? (
+                        <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.4}>
+                          <Path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                        </Svg>
+                      ) : (
+                        <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
+                          <Rect x="9" y="9" width="13" height="13" rx="2" />
+                          <Path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" strokeLinecap="round" strokeLinejoin="round" />
+                        </Svg>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+
+                  <View style={styles.admDivider} />
+
+                  <View style={styles.admAccessRow}>
+                    <Text style={styles.admAccessLabel}>Access</Text>
+                    <Text
+                      style={[
+                        styles.admAccessValue,
+                        !isAuthorizedUser && { color: '#FBBF24' },
+                      ]}
+                    >
+                      {isAuthorizedUser ? 'Device authorized' : 'Pending verification'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* 4. Action Buttons */}
+                <TouchableOpacity
+                  style={styles.admPrimaryBtn}
+                  onPress={() => handleOpenExternalUrl(adminPortalUrl)}
+                  activeOpacity={0.82}
+                  accessibilityLabel="Open admin website"
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.admPrimaryBtnText}>Open admin website ↗</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.admSecondaryBtn}
+                  onPress={handleCopyAdminUrl}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Copy admin URL"
+                  accessibilityRole="button"
+                >
+                  <Text
+                    style={[
+                      styles.admSecondaryBtnText,
+                      isAdminUrlCopied && { color: '#34D399' },
+                    ]}
+                  >
+                    {isAdminUrlCopied ? 'Admin URL copied ✓' : 'Copy admin URL'}
+                  </Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
+      {/* Open-Source Credits Fullscreen Tween Screen */}
+      {isCreditsScreenVisible && (() => {
+        const creditProjects = [
+          {
+            key: 'volta',
+            title: 'EV trip planner & terrain physics',
+            authorLine: 'Irshad Melethil · Apache 2.0',
+            description:
+              'Route and charging-stop planning is ported from the Volta project (irshadm/volta-android).',
+            tags: [
+              'Terrain energy model',
+              'Elevation filter',
+              'Dijkstra stop planner',
+              'Charger scoring',
+              '25 km backup chargers',
+            ],
+            links: [
+              {
+                label: 'GitHub ↗',
+                url: 'https://github.com/irshadm/volta-android',
+                primary: true,
+              },
+              {
+                label: 'irshadm.dev/volta ↗',
+                url: 'https://irshadm.dev/volta/',
+                primary: false,
+              },
+            ],
+            icon: (
+              <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34E096" strokeWidth={2}>
+                <Circle cx="6" cy="18.5" r="2.2" />
+                <Circle cx="18" cy="5.5" r="2.2" />
+                <Path
+                  d="M8.2 18.5H15a3.2 3.2 0 0 0 0-6.4H9a3.2 3.2 0 0 1 0-6.4h6.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </Svg>
+            ),
+          },
+          {
+            key: 'ismart',
+            title: 'MG iSMART India protocol',
+            authorLine: 'John Lazarus',
+            description:
+              'Ported from john-lazarus/mg-ismart-india-client. John reverse-engineered the MG India iSMART binary frames and gateway signatures that this app talks to the car with.',
+            tags: ['ASN.1 UPER frames', 'TAP gateway signatures'],
+            links: [
+              {
+                label: 'GitHub ↗',
+                url: 'https://github.com/john-lazarus/mg-ismart-india-client',
+                primary: true,
+              },
+            ],
+            icon: (
+              <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34E096" strokeWidth={2}>
+                <Path d="M4.5 11.5a11 11 0 0 1 15 0" strokeLinecap="round" />
+                <Path d="M8.2 15a6 6 0 0 1 7.6 0" strokeLinecap="round" />
+                <Circle cx="12" cy="18.5" r="1.3" fill="#34E096" stroke="none" />
+              </Svg>
+            ),
+          },
+        ];
+
+        return (
+          <Animated.View
+            style={[
+              styles.accountScreenLayer,
+              {
+                transform: [{ translateX: creditsTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.accountScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* 1. Header Row */}
+                <View style={styles.accountHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 }}>
+                    <TouchableOpacity
+                      style={styles.accountBackBtn}
+                      onPress={handleCloseCreditsScreen}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Back to Profile"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    </TouchableOpacity>
+                    <Text style={[styles.accountHeaderTitle, { flexShrink: 1 }]} numberOfLines={1} adjustsFontSizeToFit>
+                      Credits
+                    </Text>
+                  </View>
+                  <View style={styles.accountConnectedBadge}>
+                    <Text style={styles.accountConnectedBadgeText}>Apache 2.0 / MIT</Text>
+                  </View>
+                </View>
+
+                {/* 2. Intro Subtitle */}
+                <Text style={[styles.gmkDescription, { marginBottom: 18 }]}>
+                  This app is built on open-source research and EV engineering from the Indian MG EV community.
+                </Text>
+
+                {/* 3. Project Credit Cards */}
+                {creditProjects.map((project) => (
+                  <View key={project.key} style={styles.crdCard}>
+                    <View style={styles.crdCardHeader}>
+                      <View style={styles.crdIconTile}>{project.icon}</View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.crdCardTitle}>{project.title}</Text>
+                        <Text style={styles.crdCardAuthor}>{project.authorLine}</Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.crdCardDesc}>{project.description}</Text>
+
+                    <View style={styles.crdTagsRow}>
+                      {project.tags.map((tag) => (
+                        <View key={tag} style={styles.crdTagChip}>
+                          <Text style={styles.crdTagText}>{tag}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    <View style={styles.crdActionsRow}>
+                      {project.links.map((linkItem) => (
+                        <TouchableOpacity
+                          key={linkItem.label}
+                          style={linkItem.primary ? styles.crdPrimaryBtn : styles.crdSecondaryBtn}
+                          onPress={() => handleOpenExternalUrl(linkItem.url)}
+                          activeOpacity={0.78}
+                          accessibilityLabel={linkItem.label}
+                          accessibilityRole="link"
+                        >
+                          <Text
+                            style={
+                              linkItem.primary ? styles.crdPrimaryBtnText : styles.crdSecondaryBtnText
+                            }
+                            numberOfLines={1}
+                            adjustsFontSizeToFit
+                          >
+                            {linkItem.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                ))}
+
+                {/* 4. Thank You Footer */}
+                <View style={styles.crdFooterRow}>
+                  <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34E096" strokeWidth={2}>
+                    <Path
+                      d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </Svg>
+                  <Text style={styles.crdFooterText}>
+                    Thank you to everyone who shares their work.
+                  </Text>
+                </View>
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -12686,6 +12924,14 @@ export default function App() {
                 if (isAutomationScreenVisible) {
                   setIsAutomationScreenVisible(false);
                   automationSlideAnim.setValue(0);
+                }
+                if (isAdminScreenVisible) {
+                  setIsAdminScreenVisible(false);
+                  adminSlideAnim.setValue(0);
+                }
+                if (isCreditsScreenVisible) {
+                  setIsCreditsScreenVisible(false);
+                  creditsSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -20449,5 +20695,201 @@ const styles = StyleSheet.create({
   autoStepRedHighlight: {
     color: '#F87171',
     fontWeight: '700',
+  },
+
+  // Dedicated Admin Console Screen Styles
+  admCard: {
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    marginBottom: 16,
+  },
+  admFieldLabel: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 6,
+  },
+  admPortalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  admPortalUrl: {
+    flex: 1,
+    marginRight: 16,
+    color: '#38BDF8',
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: Platform.select({
+      web: 'monospace',
+      android: 'monospace',
+      ios: 'Menlo',
+    }),
+  },
+  admCopyIconWrap: {
+    padding: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  admDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginVertical: 14,
+  },
+  admAccessRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  admAccessLabel: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  admAccessValue: {
+    color: '#34D399',
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
+  admPrimaryBtn: {
+    height: 54,
+    borderRadius: 16,
+    backgroundColor: '#34E096',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  admPrimaryBtnText: {
+    color: '#04120B',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+  admSecondaryBtn: {
+    height: 54,
+    borderRadius: 16,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  admSecondaryBtnText: {
+    color: '#F8FAFC',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+
+  // Dedicated Open-Source Credits Screen Styles
+  crdCard: {
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 18,
+    marginBottom: 16,
+  },
+  crdCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  crdIconTile: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: 'rgba(6, 78, 59, 0.45)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  crdCardTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+    lineHeight: 21,
+  },
+  crdCardAuthor: {
+    color: '#94A3B8',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  crdCardDesc: {
+    color: '#CBD5E1',
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 14,
+    marginBottom: 14,
+  },
+  crdTagsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  crdTagChip: {
+    backgroundColor: '#0D131F',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+  },
+  crdTagText: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    fontWeight: '500',
+  },
+  crdActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  crdPrimaryBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(6, 78, 59, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  crdPrimaryBtnText: {
+    color: '#34D399',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  crdSecondaryBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#0D131F',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  crdSecondaryBtnText: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  crdFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  crdFooterText: {
+    color: '#94A3B8',
+    fontSize: 13,
   },
 });
