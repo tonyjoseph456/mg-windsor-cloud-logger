@@ -656,6 +656,314 @@ function formatDayMonthNumeric(dateKey: string): string {
   return dateKey;
 }
 
+type NotifFilterCategory = 'trips' | 'charging' | 'other';
+
+interface NotifMetricCell {
+  label: string;
+  value: string;
+}
+
+interface NotifDisplayData {
+  kind: 'trip_stop' | 'trip_start' | 'charge' | 'idle' | 'other';
+  title: string;
+  summary: string;
+  timeText: string;
+  metrics: NotifMetricCell[];
+  fromLocation?: string;
+  toLocation?: string;
+  fallbackText?: string;
+}
+
+function getNotifCategory(notifType?: string): NotifFilterCategory {
+  const t = (notifType || '').toLowerCase();
+  if (t === 'trip_start' || t === 'trip_stop') return 'trips';
+  if (t.startsWith('charge_')) return 'charging';
+  return 'other';
+}
+
+function getNotifDateKeyFromRecord(notif: AppNotificationRecord): string {
+  if (notif.date && /^\d{4}-\d{2}-\d{2}$/.test(notif.date.trim())) {
+    return notif.date.trim();
+  }
+  if (notif.timestamp) {
+    const d = new Date((Number(notif.timestamp) + 19800) * 1000);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return getTodayDateKey();
+}
+
+function getYesterdayDateKey(): string {
+  const d = new Date(Date.now() - 86400 * 1000);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatNotifSectionHeader(dateKey: string): string {
+  const todayKey = getTodayDateKey();
+  const yesterdayKey = getYesterdayDateKey();
+  const shortLabel = formatDayMonthNumeric(dateKey).toUpperCase();
+  if (dateKey === todayKey) return `TODAY · ${shortLabel}`;
+  if (dateKey === yesterdayKey) return `YESTERDAY · ${shortLabel}`;
+  const yearPart = dateKey.slice(0, 4);
+  const todayYear = todayKey.slice(0, 4);
+  return yearPart && yearPart !== todayYear ? `${shortLabel} ${yearPart}` : shortLabel;
+}
+
+function formatNotifClockTime(tsSec?: number): string {
+  if (!tsSec) return '';
+  const d = new Date((Number(tsSec) + 19800) * 1000);
+  let h = d.getUTCHours();
+  const m = String(d.getUTCMinutes()).padStart(2, '0');
+  const suffix = h >= 12 ? 'pm' : 'am';
+  h = h % 12 || 12;
+  return `${h}:${m} ${suffix}`;
+}
+
+function formatNotifDurationFull(sec: number): string {
+  const safe = Math.max(0, Math.round(sec));
+  const totalMin = Math.floor(safe / 60);
+  const remSec = safe % 60;
+  if (totalMin >= 60) {
+    const h = Math.floor(totalMin / 60);
+    const remM = totalMin % 60;
+    return remM > 0 ? `${h} hr ${remM} min` : `${h} hr`;
+  }
+  return `${totalMin} min ${remSec} sec`;
+}
+
+function shortPlaceName(place?: string): string {
+  if (!place || place === 'Unknown Location') return '';
+  const parts = place.split(',').map((s) => s.trim()).filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 1] : parts[0];
+}
+
+function parseNotifMetadata(raw?: string | null): Record<string, any> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildNotifDisplayData(notif: AppNotificationRecord): NotifDisplayData {
+  const rawType = (notif.type || '').toLowerCase();
+  const msg = notif.message || '';
+  const meta = parseNotifMetadata(notif.metadata);
+  const timeText = formatNotifClockTime(notif.timestamp);
+
+  const matchVal = (re: RegExp): string => {
+    const m = msg.match(re);
+    return m && m[1] ? m[1].trim() : '';
+  };
+
+  if (rawType === 'trip_stop') {
+    const distVal =
+      meta?.distance_km != null
+        ? `${Number(meta.distance_km).toFixed(1)} km`
+        : matchVal(/Distance Travelled:\s*([^\n]+)/);
+    const rawTimeTaken = matchVal(/Time Taken:\s*([^\n]+)/);
+    const cleanDuration =
+      rawTimeTaken.replace(/\s*\([^)]*\)\s*$/, '').trim() ||
+      (meta?.duration_seconds != null ? formatNotifDurationFull(Number(meta.duration_seconds)) : '');
+    const durMinsOnly =
+      meta?.duration_seconds != null && Number(meta.duration_seconds) >= 60
+        ? (Number(meta.duration_seconds) >= 3600
+            ? `${Math.floor(Number(meta.duration_seconds) / 3600)} hr ${Math.floor((Number(meta.duration_seconds) % 3600) / 60)} min`
+            : `${Math.floor(Number(meta.duration_seconds) / 60)} min`)
+        : '';
+    const battMsg = matchVal(/Battery:\s*([\d.]+%\s*→\s*[\d.]+%)/);
+    const battText =
+      battMsg ||
+      (meta?.start_soc != null && meta?.end_soc != null ? `${meta.start_soc}% → ${meta.end_soc}%` : '');
+    const energyVal =
+      meta?.energy_used_kwh != null
+        ? `${Number(meta.energy_used_kwh)} kWh`
+        : matchVal(/Energy Used:\s*([^\n]+)/);
+    const effVal =
+      meta?.efficiency_km_per_kwh != null && Number(meta.efficiency_km_per_kwh) > 0
+        ? `${Number(meta.efficiency_km_per_kwh)} km/kWh`
+        : matchVal(/Efficiency:\s*([^\n]+)/);
+    const odoVal =
+      meta?.end_odometer_km != null
+        ? `${Number(meta.end_odometer_km).toLocaleString()} km`
+        : matchVal(/Final Odometer:\s*([^\n]+)/);
+
+    const routeLine = matchVal(/Route:\s*([^\n]+)/);
+    let fromLoc = meta?.start_location || '';
+    let toLoc = meta?.end_location || matchVal(/Destination:\s*([^\n]+)/);
+    if (routeLine.includes('→')) {
+      const [lhs, rhs] = routeLine.split('→').map((s) => s.trim());
+      if (!fromLoc && lhs) fromLoc = lhs;
+      if (!toLoc && rhs) toLoc = rhs;
+    }
+
+    const summaryParts = [distVal, durMinsOnly, battText].filter(Boolean);
+    const metrics: NotifMetricCell[] = [
+      distVal ? { label: 'Distance', value: distVal } : null,
+      cleanDuration ? { label: 'Time', value: cleanDuration } : null,
+      battText ? { label: 'Battery', value: battText } : null,
+      energyVal ? { label: 'Energy', value: energyVal } : null,
+      effVal && effVal !== 'N/A' ? { label: 'Efficiency', value: effVal } : null,
+      odoVal ? { label: 'Odometer', value: odoVal } : null,
+    ].filter((x): x is NotifMetricCell => Boolean(x));
+
+    return {
+      kind: 'trip_stop',
+      title: 'Trip completed',
+      summary: summaryParts.join(' · ') || 'Trip completed',
+      timeText,
+      metrics,
+      fromLocation: fromLoc && fromLoc !== 'Unknown Location' ? fromLoc : undefined,
+      toLocation: toLoc && toLoc !== 'Unknown Location' ? toLoc : undefined,
+    };
+  }
+
+  if (rawType === 'trip_start') {
+    const startSoc =
+      meta?.start_soc != null ? `${meta.start_soc}%` : matchVal(/Battery:\s*([\d.]+%)/);
+    const startOdo =
+      meta?.start_odometer_km != null
+        ? `${Number(meta.start_odometer_km).toLocaleString()} km`
+        : matchVal(/Start Odometer:\s*([^\n]+)/);
+    const startLoc = meta?.start_location || matchVal(/Start:\s*([^\n]+)/);
+    const startedAt = matchVal(/Started:\s*([^\n]+)/);
+    const shortLoc = shortPlaceName(startLoc);
+    const summaryParts = [shortLoc, startSoc ? `${startSoc} battery` : ''].filter(Boolean);
+    const metrics: NotifMetricCell[] = [
+      startedAt ? { label: 'Started', value: startedAt } : null,
+      startSoc ? { label: 'Battery', value: `${startSoc} SOC` } : null,
+      startOdo ? { label: 'Odometer', value: startOdo } : null,
+    ].filter((x): x is NotifMetricCell => Boolean(x));
+
+    return {
+      kind: 'trip_start',
+      title: 'Trip started',
+      summary: summaryParts.join(' · ') || 'Trip recording started',
+      timeText,
+      metrics,
+      fromLocation: startLoc && startLoc !== 'Unknown Location' ? startLoc : undefined,
+    };
+  }
+
+  if (rawType.startsWith('charge_')) {
+    const isCompleted = rawType === 'charge_end' || rawType === 'charge_stop';
+    const isPaused = rawType === 'charge_paused';
+    const isResumed = rawType === 'charge_resumed';
+    let title = 'Charging started';
+    if (isCompleted) {
+      title = /complete\s*\(/i.test(notif.title || '') || Number(meta?.end_soc) >= 99
+        ? 'Charging complete'
+        : 'Charging completed';
+    } else if (isPaused) {
+      title = 'Charging paused';
+    } else if (isResumed) {
+      title = 'Charging resumed';
+    }
+
+    if (isCompleted) {
+      const endSoc = meta?.end_soc ?? matchVal(/(\d+)%/);
+      const addedKwh = meta?.kwh_added ?? matchVal(/\+(\d+(?:\.\d+)?)\s*kWh/);
+      const usedKwh = meta?.energy_used_kwh ?? matchVal(/Used\s*(\d+(?:\.\d+)?)\s*kWh/i);
+      const summaryParts = [
+        endSoc != null && endSoc !== '' ? `${endSoc}%` : '',
+        addedKwh != null && addedKwh !== '' ? `+${addedKwh} kWh added` : '',
+        usedKwh != null && usedKwh !== '' ? `${usedKwh} kWh used` : '',
+      ].filter(Boolean);
+      const durMin =
+        meta?.active_duration_seconds != null
+          ? `${Math.round(Number(meta.active_duration_seconds) / 60)} min`
+          : matchVal(/(\d+m)/);
+      const socRange =
+        meta?.start_soc != null && meta?.end_soc != null
+          ? `${meta.start_soc}% → ${meta.end_soc}%`
+          : (endSoc != null && endSoc !== '' ? `${endSoc}%` : '');
+      const metrics: NotifMetricCell[] = [
+        socRange ? { label: 'Battery', value: socRange } : null,
+        addedKwh != null && addedKwh !== '' ? { label: 'Added', value: `+${addedKwh} kWh` } : null,
+        usedKwh != null && usedKwh !== '' ? { label: 'Wall energy', value: `${usedKwh} kWh` } : null,
+        durMin ? { label: 'Duration', value: durMin } : null,
+      ].filter((x): x is NotifMetricCell => Boolean(x));
+
+      return {
+        kind: 'charge',
+        title,
+        summary: summaryParts.join(' · ') || msg,
+        timeText,
+        metrics,
+      };
+    }
+
+    const curSoc = meta?.end_soc ?? meta?.start_soc ?? matchVal(/at\s*(\d+)%/);
+    const rangeKm = meta?.start_range_km ?? matchVal(/\((\d+)\s*km\)/);
+    const powerKw = meta?.last_power_kw ?? meta?.peak_power_kw ?? matchVal(/Drawing\s*(\d+(?:\.\d+)?)\s*kW/i);
+    const summaryParts = isPaused || isResumed
+      ? [msg]
+      : [
+          curSoc != null && curSoc !== ''
+            ? (rangeKm != null && rangeKm !== '' ? `${curSoc}% (${rangeKm} km)` : `${curSoc}%`)
+            : '',
+          powerKw != null && powerKw !== '' ? `${powerKw} kW` : '',
+        ].filter(Boolean);
+    const metrics: NotifMetricCell[] = [
+      curSoc != null && curSoc !== '' ? { label: 'Battery', value: `${curSoc}%` } : null,
+      rangeKm != null && rangeKm !== '' ? { label: 'Range', value: `${rangeKm} km` } : null,
+      powerKw != null && powerKw !== '' ? { label: 'Power', value: `${powerKw} kW` } : null,
+      meta?.charge_type ? { label: 'Charger', value: String(meta.charge_type) } : null,
+    ].filter((x): x is NotifMetricCell => Boolean(x));
+
+    return {
+      kind: 'charge',
+      title,
+      summary: summaryParts.join(' · ') || msg,
+      timeText,
+      metrics,
+      fallbackText: isPaused || isResumed ? msg : undefined,
+    };
+  }
+
+  if (rawType === 'trip_idle') {
+    const durMin =
+      meta?.durationSec != null
+        ? `${Math.max(1, Math.round(Number(meta.durationSec) / 60))} min`
+        : matchVal(/Time in car:\s*([^\n(]+)/);
+    const battRange =
+      meta?.startSoc != null && meta?.endSoc != null
+        ? `${meta.startSoc}% → ${meta.endSoc}%`
+        : matchVal(/Battery:\s*([^\n]+)/);
+    const metrics: NotifMetricCell[] = [
+      durMin ? { label: 'Duration', value: durMin.trim() } : null,
+      battRange ? { label: 'Battery', value: battRange } : null,
+    ].filter((x): x is NotifMetricCell => Boolean(x));
+    return {
+      kind: 'idle',
+      title: 'Stationary',
+      summary: 'No trip logged',
+      timeText,
+      metrics,
+      fallbackText: metrics.length === 0 ? msg : undefined,
+    };
+  }
+
+  const cleanTitle = (notif.title || 'Notification')
+    .replace(/^[^\w\s]*\s*(?:MG Windsor EV\s*•\s*)?/u, '')
+    .trim() || 'Notification';
+  return {
+    kind: 'other',
+    title: cleanTitle,
+    summary: msg.split('\n')[0] || cleanTitle,
+    timeText,
+    metrics: [],
+    fallbackText: msg,
+  };
+}
+
 /** Format a minute count cleanly, using "X Hour(s) Y minute(s)" above 60 minutes. */
 function formatChargeMinutes(totalMinutes: number): string {
   const safeMins = Math.max(0, Math.round(totalMinutes));
@@ -2304,6 +2612,80 @@ export default function App() {
     });
   };
 
+  // Dedicated Push Notifications Screen State & Animation (Horizontal tween from right to centre)
+  const pushScreenSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isPushScreenVisible, setIsPushScreenVisible] = useState<boolean>(false);
+
+  const handleOpenPushScreen = () => {
+    setIsPushScreenVisible(true);
+    pushScreenSlideAnim.stopAnimation();
+    pushScreenSlideAnim.setValue(0);
+    Animated.timing(pushScreenSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleClosePushScreen = () => {
+    pushScreenSlideAnim.stopAnimation();
+    Animated.timing(pushScreenSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsPushScreenVisible(false);
+      }
+    });
+  };
+
+  // Dedicated Notification History Screen State & Animation (Horizontal tween from right to centre)
+  const notifsScreenSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isNotifsScreenVisible, setIsNotifsScreenVisible] = useState<boolean>(false);
+  const [notifFilter, setNotifFilter] = useState<'all' | 'trips' | 'charging' | 'other'>('all');
+  const [expandedNotifIds, setExpandedNotifIds] = useState<Record<string, boolean>>({});
+  const [notifsVisibleCount, setNotifsVisibleCount] = useState<number>(20);
+  const [notifsFetchLimit, setNotifsFetchLimit] = useState<number>(60);
+  const [showNotifsOptionsMenu, setShowNotifsOptionsMenu] = useState<boolean>(false);
+
+  const handleOpenNotifsScreen = () => {
+    setNotifFilter('all');
+    setNotifsVisibleCount(20);
+    if (d1Notifications.length > 0) {
+      setExpandedNotifIds({ [d1Notifications[0].id]: true });
+    } else {
+      setExpandedNotifIds({});
+    }
+    setIsNotifsScreenVisible(true);
+    notifsScreenSlideAnim.stopAnimation();
+    notifsScreenSlideAnim.setValue(0);
+    Animated.timing(notifsScreenSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+    refreshD1Notifications();
+  };
+
+  const handleCloseNotifsScreen = () => {
+    setShowNotifsOptionsMenu(false);
+    notifsScreenSlideAnim.stopAnimation();
+    Animated.timing(notifsScreenSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsNotifsScreenVisible(false);
+      }
+    });
+  };
+
   // Trips & Charge Data Options Bottom Sheet States
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
   const [showChargeOptionsMenu, setShowChargeOptionsMenu] = useState<boolean>(false);
@@ -2312,8 +2694,6 @@ export default function App() {
   const [activeProfileModal, setActiveProfileModal] = useState<
     | 'vehicle'
     | 'analytics'
-    | 'push'
-    | 'notifs_log'
     | 'carplay'
     | 'lockscreen'
     | 'admin'
@@ -2898,10 +3278,11 @@ export default function App() {
     }
   };
 
-  const refreshD1Notifications = async () => {
+  const refreshD1Notifications = async (customLimit?: number) => {
     setIsNotifsLoading(true);
     try {
-      const list = await fetchD1Notifications(60);
+      const limitToUse = customLimit ?? notifsFetchLimit;
+      const list = await fetchD1Notifications(limitToUse);
       setD1Notifications(list);
     } catch (_) {}
     finally {
@@ -5241,7 +5622,10 @@ export default function App() {
 
   const profileSubscreenAnim = Animated.add(
     Animated.add(accountScreenSlideAnim, analyticsSlideAnim),
-    Animated.add(textSizeSlideAnim, mapsKeySlideAnim)
+    Animated.add(
+      Animated.add(textSizeSlideAnim, mapsKeySlideAnim),
+      Animated.add(pushScreenSlideAnim, notifsScreenSlideAnim)
+    )
   );
   const profileTranslateX = profileSubscreenAnim.interpolate({
     inputRange: [0, 1],
@@ -5265,6 +5649,16 @@ export default function App() {
   });
 
   const mapsKeyTranslateX = mapsKeySlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const pushScreenTranslateX = pushScreenSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const notifsScreenTranslateX = notifsScreenSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -6926,7 +7320,7 @@ export default function App() {
                   {/* Push notifications */}
                   <TouchableOpacity
                     style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('push')}
+                    onPress={handleOpenPushScreen}
                     activeOpacity={0.7}
                   >
                     <View style={styles.profileRowIconWrap}>
@@ -6947,7 +7341,7 @@ export default function App() {
                   {/* Notification history */}
                   <TouchableOpacity
                     style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('notifs_log')}
+                    onPress={handleOpenNotifsScreen}
                     activeOpacity={0.7}
                   >
                     <View style={styles.profileRowIconWrap}>
@@ -7067,8 +7461,6 @@ export default function App() {
                       <Text style={styles.profileModalTitle}>
                         {activeProfileModal === 'vehicle' && 'Connected Vehicle'}
                         {activeProfileModal === 'analytics' && 'Monthly Analytics'}
-                        {activeProfileModal === 'push' && 'Push Notifications'}
-                        {activeProfileModal === 'notifs_log' && 'Notification History'}
                         {activeProfileModal === 'carplay' && 'Apple CarPlay Automations'}
                         {activeProfileModal === 'lockscreen' && 'Lock Screen & Siri Webhooks'}
                         {activeProfileModal === 'admin' && 'Backend Admin Console'}
@@ -8038,224 +8430,6 @@ export default function App() {
                   </Text>
                 </View>
               </View>
-            </AccountSectionCard>
-          )}
-
-          {/* CARD: Native iOS (APNs) & Android (FCM) Web Push Notifications */}
-          {activeProfileModal === 'push' && (
-            <AccountSectionCard
-              defaultExpanded={true}
-              title="Push Notifications (iOS APNs & Android FCM)"
-              icon="📲"
-              badge={isPushSubscribed ? '● Active' : pushPermission === 'denied' ? '● Blocked' : '● Tap to Enable'}
-              badgeBg={isPushSubscribed ? '#064E3B' : pushPermission === 'denied' ? '#7F1D1D' : '#1E293B'}
-              badgeColor={isPushSubscribed ? '#34D399' : pushPermission === 'denied' ? '#FCA5A5' : '#38BDF8'}
-              preview={isPushSubscribed ? 'Native Lock Screen alerts active for Trips & Charging' : 'Enable native iOS / Android Lock Screen alerts'}
-              subtitle="Receives native W3C Web Push notifications via Apple Push Notification service (web.push.apple.com) on iOS and Firebase Cloud Messaging (FCM) on Android whenever a Trip starts, a Trip completes, or a Charging session starts, pauses, or finishes."
-            >
-              <View style={{ gap: 8 }}>
-                <InfoRow
-                  label="Device Push Status"
-                  value={
-                    isPushSubscribed
-                      ? 'Active on this device'
-                      : pushPermission === 'denied'
-                      ? 'Blocked in browser / iOS settings'
-                      : 'Not enabled yet'
-                  }
-                />
-                <InfoRow
-                  label="Push Gateway"
-                  value="Apple APNs (iOS) / Google FCM (Android)"
-                />
-                <InfoRow
-                  label="Linked Vehicle VIN"
-                  value={displayVin || 'Active Session'}
-                />
-
-                {Platform.OS === 'web' &&
-                typeof window !== 'undefined' &&
-                /iPhone|iPad|iPod/.test(navigator.userAgent) &&
-                !(window.navigator as any).standalone ? (
-                  <View
-                    style={{
-                      backgroundColor: '#1E293B',
-                      padding: 12,
-                      borderRadius: 10,
-                      borderWidth: 1,
-                      borderColor: '#334155',
-                      marginVertical: 4,
-                    }}
-                  >
-                    <Text style={{ color: '#F59E0B', fontWeight: '700', fontSize: 12, marginBottom: 4 }}>
-                      📱 Open from iPhone Home Screen
-                    </Text>
-                    <Text style={{ color: '#CBD5E1', fontSize: 11, lineHeight: 16 }}>
-                      On iOS, Apple requires PWAs to be opened from the Home Screen to receive push notifications. Tap Safari Share{' '}
-                      <Text style={{ color: '#38BDF8', fontWeight: '700' }}>⎋ ➔ Add to Home Screen</Text>, then open MG iSMART from your Home Screen and tap Enable below.
-                    </Text>
-                  </View>
-                ) : null}
-
-                {!isPushSubscribed ? (
-                  <TouchableOpacity
-                    style={[styles.loginBtn, { backgroundColor: '#10B981', paddingVertical: 14, marginTop: 4 }]}
-                    onPress={handleEnablePush}
-                    disabled={isPushBusy}
-                  >
-                    {isPushBusy ? (
-                      <ActivityIndicator size="small" color="#FFF" />
-                    ) : (
-                      <Text style={[styles.loginBtnText, { fontSize: 13, fontWeight: '800' }]}>
-                        🔔 Enable Push Notifications on This Device
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                ) : (
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                    <TouchableOpacity
-                      style={[styles.shareImageBtn, { backgroundColor: '#0284C7', flex: 1, marginTop: 0 }]}
-                      onPress={handleSendTestPush}
-                      disabled={isPushBusy}
-                    >
-                      {isPushBusy ? (
-                        <ActivityIndicator size="small" color="#FFF" />
-                      ) : (
-                        <Text style={styles.shareImageBtnText}>🧪 Send Test Push</Text>
-                      )}
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.shareImageBtn, { backgroundColor: '#1E293B', flex: 1, marginTop: 0 }]}
-                      onPress={handleDisablePush}
-                      disabled={isPushBusy}
-                    >
-                      <Text style={[styles.shareImageBtnText, { color: '#EF4444' }]}>🔕 Disable Alerts</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </View>
-            </AccountSectionCard>
-          )}
-
-          {/* CARD: Notification History & Activity Log (Cloudflare D1) */}
-          {activeProfileModal === 'notifs_log' && (
-            <AccountSectionCard
-              defaultExpanded={true}
-              title="Notification History & Activity Log"
-              icon="🔔"
-              badge={`${d1Notifications.length} Stored`}
-              badgeBg="#1E293B"
-              badgeColor="#38BDF8"
-              preview="Cloud-synced log of all vehicle trip alerts in Cloudflare D1"
-              subtitle="All trip start, completed trip, and stationary event notifications are saved in your Cloudflare D1 database and synchronized across all your devices."
-            >
-              {/* Action Toolbar */}
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <TouchableOpacity
-                  style={[styles.recordBtn, { backgroundColor: '#0284C720', borderColor: '#0284C7', paddingHorizontal: 12, paddingVertical: 6 }]}
-                  onPress={refreshD1Notifications}
-                  disabled={isNotifsLoading}
-                >
-                  <Text style={[styles.recordBtnText, { color: '#38BDF8', fontSize: 12 }]}>
-                    {isNotifsLoading ? 'Refreshing...' : '🔄 Refresh Log'}
-                  </Text>
-                </TouchableOpacity>
-
-                {d1Notifications.length > 0 && (
-                  <TouchableOpacity
-                    style={[styles.recordBtn, { backgroundColor: '#DC262620', borderColor: '#DC2626', paddingHorizontal: 12, paddingVertical: 6 }]}
-                    onPress={() => {
-                      Alert.alert(
-                        'Clear Notification History',
-                        'Are you sure you want to delete all saved notifications from Cloudflare D1?',
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          {
-                            text: 'Clear All',
-                            style: 'destructive',
-                            onPress: async () => {
-                              const ok = await clearD1Notifications();
-                              if (ok) {
-                                setD1Notifications([]);
-                                showBanner('ok', 'Cleared notification history from Cloudflare D1');
-                              } else {
-                                showBanner('err', 'Failed to clear notifications');
-                              }
-                            },
-                          },
-                        ]
-                      );
-                    }}
-                  >
-                    <Text style={[styles.recordBtnText, { color: '#EF4444', fontSize: 12 }]}>
-                      🗑️ Clear Log
-                    </Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* Notification List */}
-              {d1Notifications.length === 0 ? (
-                <View style={{ backgroundColor: '#0B132B', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#1E293B', alignItems: 'center' }}>
-                  <Text style={{ fontSize: 24, marginBottom: 6 }}>📭</Text>
-                  <Text style={{ color: '#F8FAFC', fontWeight: '700', fontSize: 13, marginBottom: 4 }}>
-                    No Notifications Saved Yet
-                  </Text>
-                  <Text style={{ color: '#64748B', fontSize: 11, textAlign: 'center', lineHeight: 16 }}>
-                    When your Apple CarPlay shortcuts run, notifications with full metrics (distance, duration, battery %, energy, efficiency) will be permanently archived here in Cloudflare D1.
-                  </Text>
-                </View>
-              ) : (
-                <View style={{ gap: 10 }}>
-                  {d1Notifications.map((notif) => {
-                    const isStart = notif.type === 'trip_start';
-                    const isStop = notif.type === 'trip_stop';
-                    const isIdle = notif.type === 'trip_idle';
-                    const borderColor = isStop ? '#05966940' : (isStart ? '#0284C740' : '#EAB30840');
-                    const headerBg = isStop ? '#064E3B20' : (isStart ? '#0369A120' : '#713F1220');
-                    const badgeText = isStop ? 'Trip Completed' : (isStart ? 'Trip Started' : (isIdle ? 'Stationary' : 'Alert'));
-                    const badgeColor = isStop ? '#34D399' : (isStart ? '#38BDF8' : '#FBBF24');
-                    const timeStr = notif.timestamp ? new Date(notif.timestamp * 1000).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
-                    const dateStr = notif.date || (notif.timestamp ? new Date(notif.timestamp * 1000).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' }) : '');
-
-                    return (
-                      <View
-                        key={notif.id}
-                        style={{
-                          backgroundColor: '#0F172A',
-                          borderRadius: 12,
-                          borderWidth: 1,
-                          borderColor,
-                          overflow: 'hidden',
-                        }}
-                      >
-                        {/* Header */}
-                        <View style={{ backgroundColor: headerBg, paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, marginRight: 8 }}>
-                            <Text style={{ fontSize: 14 }}>{isStop ? '🏁' : (isStart ? '🟢' : (isIdle ? 'ℹ️' : '⚡'))}</Text>
-                            <Text style={{ color: '#F8FAFC', fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
-                              {notif.title}
-                            </Text>
-                          </View>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <View style={{ backgroundColor: '#1E293B', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                              <Text style={{ color: badgeColor, fontSize: 10, fontWeight: '700' }}>{badgeText}</Text>
-                            </View>
-                            <Text style={{ color: '#64748B', fontSize: 10 }}>{timeStr ? `${timeStr} • ${dateStr}` : dateStr}</Text>
-                          </View>
-                        </View>
-
-                        {/* Body Message */}
-                        <View style={{ padding: 12 }}>
-                          <Text style={{ color: '#CBD5E1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 17 }}>
-                            {notif.message}
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
             </AccountSectionCard>
           )}
 
@@ -11583,6 +11757,587 @@ export default function App() {
         );
       })()}
 
+      {/* Push Notifications Fullscreen Tween Screen */}
+      {isPushScreenVisible && (() => {
+        const rawVin = (displayVin || vin || '').trim();
+        const shortVin =
+          rawVin.length > 8 ? `...${rawVin.slice(-8)}` : rawVin || 'Active Session';
+        const isDenied = !isPushSubscribed && pushPermission === 'denied';
+        const statusTitle = isPushSubscribed
+          ? 'Alerts are on'
+          : isDenied
+          ? 'Alerts are blocked'
+          : 'Alerts are off';
+        const statusSub = isPushSubscribed
+          ? 'Active on this device'
+          : isDenied
+          ? 'Blocked in browser or iOS settings'
+          : 'Not enabled on this device';
+        const alertTriggers = [
+          'A trip starts',
+          'A trip finishes',
+          'Charging starts',
+          'Charging pauses',
+          'Charging finishes',
+        ];
+
+        return (
+          <Animated.View
+            style={[
+              styles.accountScreenLayer,
+              {
+                transform: [{ translateX: pushScreenTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.tsScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* 1. Header Row */}
+                <View style={styles.accountHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                    <TouchableOpacity
+                      style={styles.accountBackBtn}
+                      onPress={handleClosePushScreen}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Back to Profile"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    </TouchableOpacity>
+                    <Text style={styles.accountHeaderTitle}>Push notifications</Text>
+                  </View>
+                </View>
+
+                {/* 2. Alerts Status Card */}
+                <View style={styles.pnStatusCard}>
+                  <View
+                    style={[
+                      styles.pnBellCircle,
+                      isPushSubscribed
+                        ? styles.pnBellCircleActive
+                        : isDenied
+                        ? styles.pnBellCircleDenied
+                        : styles.pnBellCircleIdle,
+                    ]}
+                  >
+                    <Svg
+                      width={24}
+                      height={24}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke={isPushSubscribed ? '#34E096' : isDenied ? '#F87171' : '#94A3B8'}
+                      strokeWidth={2}
+                    >
+                      <Path
+                        d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <Path
+                        d="M13.73 21a2 2 0 0 1-3.46 0"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </Svg>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pnStatusTitle}>{statusTitle}</Text>
+                    <Text style={styles.pnStatusSubtitle}>{statusSub}</Text>
+                  </View>
+                </View>
+
+                {/* 3. Gateway & Vehicle VIN Card */}
+                <View style={styles.pnInfoCard}>
+                  <View style={styles.pnInfoRow}>
+                    <Text style={styles.pnInfoLabel}>Gateway</Text>
+                    <Text style={styles.pnInfoValue}>Apple APNs / Google FCM</Text>
+                  </View>
+                  <View style={styles.pnInfoDivider} />
+                  <View style={styles.pnInfoRow}>
+                    <Text style={styles.pnInfoLabel}>Vehicle VIN</Text>
+                    <Text style={styles.pnInfoValue}>{shortVin}</Text>
+                  </View>
+                </View>
+
+                {/* 4. Alert Checklist Card */}
+                <View style={styles.pnChecklistCard}>
+                  <Text style={styles.pnChecklistTitle}>You get an alert when</Text>
+                  {alertTriggers.map((item, idx) => (
+                    <View
+                      key={item}
+                      style={[
+                        styles.pnCheckRow,
+                        idx === alertTriggers.length - 1 && { marginBottom: 0 },
+                      ]}
+                    >
+                      <Svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="#34E096" strokeWidth={2.5}>
+                        <Path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                      <Text style={styles.pnCheckText}>{item}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                {/* 5. iPhone Home Screen Note Card */}
+                <View style={styles.pnIphoneCard}>
+                  <Text style={styles.pnIphoneTitle}>On iPhone, open from the Home Screen</Text>
+
+                  <View style={styles.pnIphoneStepRow}>
+                    <View style={styles.pnIphoneStepBadge}>
+                      <Text style={styles.pnIphoneStepBadgeText}>1</Text>
+                    </View>
+                    <Text style={styles.pnIphoneStepText}>
+                      In Safari, tap <Text style={styles.pnIphoneStepBold}>Share › Add to Home Screen.</Text>
+                    </Text>
+                  </View>
+
+                  <View style={styles.pnIphoneStepRow}>
+                    <View style={styles.pnIphoneStepBadge}>
+                      <Text style={styles.pnIphoneStepBadgeText}>2</Text>
+                    </View>
+                    <Text style={styles.pnIphoneStepText}>
+                      Open MG iSMART from your Home Screen.
+                    </Text>
+                  </View>
+
+                  <View style={[styles.pnIphoneStepRow, { marginBottom: 0 }]}>
+                    <View style={styles.pnIphoneStepBadge}>
+                      <Text style={styles.pnIphoneStepBadgeText}>3</Text>
+                    </View>
+                    <Text style={styles.pnIphoneStepText}>
+                      Tap <Text style={styles.pnIphoneStepBold}>Enable</Text> to turn on alerts.
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={{ flex: 1, minHeight: 16 }} />
+
+                {/* 6. Bottom Action Buttons */}
+                {isPushSubscribed ? (
+                  <View>
+                    <TouchableOpacity
+                      style={styles.pnPrimaryBtn}
+                      onPress={handleSendTestPush}
+                      disabled={isPushBusy}
+                      activeOpacity={0.8}
+                      accessibilityLabel="Send test push"
+                      accessibilityRole="button"
+                    >
+                      {isPushBusy ? (
+                        <ActivityIndicator size="small" color="#04120B" />
+                      ) : (
+                        <Text style={styles.pnPrimaryBtnText}>Send test push</Text>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.pnDisableBtn}
+                      onPress={handleDisablePush}
+                      disabled={isPushBusy}
+                      activeOpacity={0.8}
+                      accessibilityLabel="Disable alerts"
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.pnDisableBtnText}>Disable alerts</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.pnPrimaryBtn}
+                    onPress={handleEnablePush}
+                    disabled={isPushBusy}
+                    activeOpacity={0.8}
+                    accessibilityLabel="Enable"
+                    accessibilityRole="button"
+                  >
+                    {isPushBusy ? (
+                      <ActivityIndicator size="small" color="#04120B" />
+                    ) : (
+                      <Text style={styles.pnPrimaryBtnText}>Enable</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
+      {/* Notifications History Fullscreen Tween Screen */}
+      {isNotifsScreenVisible && (() => {
+        const filterChips: { id: 'all' | 'trips' | 'charging' | 'other'; label: string }[] = [
+          { id: 'all', label: 'All' },
+          { id: 'trips', label: 'Trips' },
+          { id: 'charging', label: 'Charging' },
+          { id: 'other', label: 'Other' },
+        ];
+
+        const filteredNotifs = d1Notifications.filter((n) => {
+          if (notifFilter === 'all') return true;
+          return getNotifCategory(n.type) === notifFilter;
+        });
+
+        const visibleNotifs = filteredNotifs.slice(0, notifsVisibleCount);
+        const hasMoreNotifs =
+          visibleNotifs.length < filteredNotifs.length ||
+          (d1Notifications.length >= notifsFetchLimit && notifsFetchLimit < 100);
+
+        const sectionsMap = new Map<string, AppNotificationRecord[]>();
+        for (const item of visibleNotifs) {
+          const dKey = getNotifDateKeyFromRecord(item);
+          const bucket = sectionsMap.get(dKey);
+          if (bucket) {
+            bucket.push(item);
+          } else {
+            sectionsMap.set(dKey, [item]);
+          }
+        }
+        const dateSections = Array.from(sectionsMap.entries()).map(([dateKey, items]) => ({
+          dateKey,
+          headerLabel: formatNotifSectionHeader(dateKey),
+          items,
+        }));
+
+        const toggleExpand = (id: string) => {
+          setExpandedNotifIds((prev) => ({ ...prev, [id]: !prev[id] }));
+        };
+
+        const handleLoadMoreNotifs = () => {
+          const nextCount = notifsVisibleCount + 20;
+          setNotifsVisibleCount(nextCount);
+          if (nextCount > d1Notifications.length && notifsFetchLimit < 100) {
+            setNotifsFetchLimit(100);
+            refreshD1Notifications(100);
+          }
+        };
+
+        return (
+          <Animated.View
+            style={[
+              styles.accountScreenLayer,
+              {
+                transform: [{ translateX: notifsScreenTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.nhScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* 1. Header Row */}
+                <View style={styles.nhHeaderRow}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 }}>
+                    <TouchableOpacity
+                      style={styles.accountBackBtn}
+                      onPress={handleCloseNotifsScreen}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Back to Profile"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    </TouchableOpacity>
+                    <View style={styles.nhTitleBlock}>
+                      <Text style={styles.nhHeaderTitle}>Notifications</Text>
+                      <Text style={styles.nhHeaderSubtitle}>
+                        {d1Notifications.length} stored · synced across devices
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.nhHeaderActions}>
+                    <TouchableOpacity
+                      style={styles.nhCircleIconBtn}
+                      onPress={() => refreshD1Notifications()}
+                      disabled={isNotifsLoading}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Refresh notifications"
+                      accessibilityRole="button"
+                    >
+                      {isNotifsLoading ? (
+                        <ActivityIndicator size="small" color="#F8FAFC" />
+                      ) : (
+                        <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2}>
+                          <Path d="M21 12a9 9 0 1 1-2.64-6.36" strokeLinecap="round" />
+                          <Path d="M21 3v6h-6" strokeLinecap="round" strokeLinejoin="round" />
+                        </Svg>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.nhCircleIconBtn}
+                      onPress={() => setShowNotifsOptionsMenu(true)}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Notifications options"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="#F8FAFC">
+                        <Circle cx="6" cy="12" r="1.7" />
+                        <Circle cx="12" cy="12" r="1.7" />
+                        <Circle cx="18" cy="12" r="1.7" />
+                      </Svg>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* 2. Filter Chips Row */}
+                <View style={styles.nhFiltersRow}>
+                  {filterChips.map((chip) => {
+                    const active = notifFilter === chip.id;
+                    return (
+                      <TouchableOpacity
+                        key={chip.id}
+                        style={[styles.nhFilterPill, active && styles.nhFilterPillActive]}
+                        onPress={() => {
+                          setNotifFilter(chip.id);
+                          setNotifsVisibleCount(20);
+                        }}
+                        activeOpacity={0.75}
+                        accessibilityLabel={chip.label}
+                        accessibilityRole="button"
+                      >
+                        <Text
+                          style={[
+                            styles.nhFilterPillText,
+                            active && styles.nhFilterPillTextActive,
+                          ]}
+                        >
+                          {chip.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* 3. Date-Grouped Notification Cards */}
+                {dateSections.length === 0 ? (
+                  <View style={styles.nhEmptyCard}>
+                    <Text style={styles.nhEmptyTitle}>No notifications yet</Text>
+                    <Text style={styles.nhEmptySub}>
+                      {notifFilter === 'all'
+                        ? 'Trip and charging alerts will appear here once recorded in Cloudflare D1.'
+                        : `No ${notifFilter} notifications found in the current history.`}
+                    </Text>
+                  </View>
+                ) : (
+                  dateSections.map((section) => (
+                    <View key={section.dateKey} style={styles.nhSectionWrap}>
+                      <Text style={styles.nhSectionHeader}>{section.headerLabel}</Text>
+                      <View style={styles.nhSectionCard}>
+                        {section.items.map((notif, idx) => {
+                          const info = buildNotifDisplayData(notif);
+                          const isExpanded = Boolean(expandedNotifIds[notif.id]);
+                          const metricRows: NotifMetricCell[][] = [];
+                          for (let i = 0; i < info.metrics.length; i += 2) {
+                            metricRows.push(info.metrics.slice(i, i + 2));
+                          }
+
+                          return (
+                            <View key={notif.id}>
+                              {idx > 0 && <View style={styles.nhRowDivider} />}
+                              <View style={styles.nhItemWrap}>
+                                <TouchableOpacity
+                                  style={styles.nhItemHeaderRow}
+                                  onPress={() => toggleExpand(notif.id)}
+                                  activeOpacity={0.75}
+                                >
+                                  <View
+                                    style={[
+                                      styles.nhItemIconCircle,
+                                      info.kind === 'trip_stop' && styles.nhIconTripStop,
+                                      info.kind === 'trip_start' && styles.nhIconTripStart,
+                                      info.kind === 'charge' && styles.nhIconCharge,
+                                      (info.kind === 'idle' || info.kind === 'other') && styles.nhIconIdle,
+                                    ]}
+                                  >
+                                    {info.kind === 'trip_stop' && (
+                                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.5}>
+                                        <Path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                                      </Svg>
+                                    )}
+                                    {info.kind === 'trip_start' && (
+                                      <Svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="#38BDF8" strokeWidth={2.2}>
+                                        <Path d="M8 5v14l11-7z" strokeLinecap="round" strokeLinejoin="round" />
+                                      </Svg>
+                                    )}
+                                    {info.kind === 'charge' && (
+                                      <Svg width={17} height={17} viewBox="0 0 24 24" fill="#F59E0B" stroke="#F59E0B" strokeWidth={1.2}>
+                                        <Path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" strokeLinecap="round" strokeLinejoin="round" />
+                                      </Svg>
+                                    )}
+                                    {(info.kind === 'idle' || info.kind === 'other') && (
+                                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
+                                        <Circle cx="12" cy="12" r="9" />
+                                        <Line x1="12" y1="11" x2="12" y2="16" strokeLinecap="round" />
+                                        <Circle cx="12" cy="8" r="0.8" fill="#94A3B8" />
+                                      </Svg>
+                                    )}
+                                  </View>
+
+                                  <View style={styles.nhItemMiddleCol}>
+                                    <Text style={styles.nhItemTitle} numberOfLines={1}>
+                                      {info.title}
+                                    </Text>
+                                    <Text style={styles.nhItemSummary} numberOfLines={1}>
+                                      {info.summary}
+                                    </Text>
+                                  </View>
+
+                                  <View style={styles.nhItemRightCol}>
+                                    <Text style={styles.nhItemTime}>{info.timeText}</Text>
+                                    <Svg
+                                      width={14}
+                                      height={14}
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="#64748B"
+                                      strokeWidth={2.3}
+                                      style={{ marginTop: 3 }}
+                                    >
+                                      {isExpanded ? (
+                                        <Path d="M6 15l6-6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+                                      ) : (
+                                        <Path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                                      )}
+                                    </Svg>
+                                  </View>
+                                </TouchableOpacity>
+
+                                {isExpanded && (
+                                  <View style={styles.nhExpandedArea}>
+                                    {metricRows.length > 0 && (
+                                      <View style={styles.nhMetricsBox}>
+                                        {metricRows.map((row, rIdx) => (
+                                          <View
+                                            key={rIdx}
+                                            style={[
+                                              styles.nhMetricsRow,
+                                              rIdx === metricRows.length - 1 && { marginBottom: 0 },
+                                            ]}
+                                          >
+                                            {row.map((cell) => (
+                                              <View key={cell.label} style={styles.nhMetricCell}>
+                                                <Text style={styles.nhMetricLabel}>{cell.label}</Text>
+                                                <Text style={styles.nhMetricValue}>{cell.value}</Text>
+                                              </View>
+                                            ))}
+                                            {row.length === 1 && <View style={styles.nhMetricCell} />}
+                                          </View>
+                                        ))}
+                                      </View>
+                                    )}
+
+                                    {(info.fromLocation || info.toLocation) && (
+                                      <View style={styles.nhRouteBlock}>
+                                        {info.fromLocation && (
+                                          <Text style={styles.nhRouteLine}>
+                                            <Text style={styles.nhRoutePrefix}>From </Text>
+                                            <Text style={styles.nhRoutePlace}>{info.fromLocation}</Text>
+                                          </Text>
+                                        )}
+                                        {info.toLocation && (
+                                          <Text style={styles.nhRouteLine}>
+                                            <Text style={styles.nhRoutePrefix}>To </Text>
+                                            <Text style={styles.nhRoutePlace}>{info.toLocation}</Text>
+                                          </Text>
+                                        )}
+                                      </View>
+                                    )}
+
+                                    {metricRows.length === 0 && info.fallbackText ? (
+                                      <View style={styles.nhMetricsBox}>
+                                        <Text style={styles.nhFallbackText}>{info.fallbackText}</Text>
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                )}
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ))
+                )}
+
+                {/* 4. Load More Action */}
+                {hasMoreNotifs && (
+                  <TouchableOpacity
+                    style={styles.nhLoadMoreBtn}
+                    onPress={handleLoadMoreNotifs}
+                    activeOpacity={0.75}
+                    accessibilityLabel="Load more notifications"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.nhLoadMoreText}>Load more</Text>
+                  </TouchableOpacity>
+                )}
+              </ScrollView>
+
+              {/* Notifications Options Slide-Up Bottom Sheet */}
+              <DataOptionsBottomSheet
+                visible={showNotifsOptionsMenu}
+                title="Notifications data"
+                disabled={isNotifsLoading}
+                onClose={() => setShowNotifsOptionsMenu(false)}
+                options={[
+                  {
+                    key: 'refresh',
+                    title: 'Refresh from cloud',
+                    subtitle: 'Download the latest notifications from D1',
+                    icon: 'refresh',
+                    onPress: () => {
+                      setShowNotifsOptionsMenu(false);
+                      refreshD1Notifications();
+                    },
+                  },
+                  {
+                    key: 'clear',
+                    title: 'Clear all notifications',
+                    subtitle: 'Deletes every stored notification in D1',
+                    icon: 'trash',
+                    destructive: true,
+                    onPress: () => {
+                      setShowNotifsOptionsMenu(false);
+                      Alert.alert(
+                        'Clear Notification History',
+                        'Are you sure you want to delete all saved notifications from Cloudflare D1?',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Clear All',
+                            style: 'destructive',
+                            onPress: async () => {
+                              const ok = await clearD1Notifications();
+                              if (ok) {
+                                setD1Notifications([]);
+                                setExpandedNotifIds({});
+                                showBanner('ok', 'Cleared notification history from Cloudflare D1');
+                              } else {
+                                showBanner('err', 'Failed to clear notifications');
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    },
+                  },
+                ]}
+              />
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -11717,6 +12472,14 @@ export default function App() {
                 if (isMapsKeyScreenVisible) {
                   setIsMapsKeyScreenVisible(false);
                   mapsKeySlideAnim.setValue(0);
+                }
+                if (isPushScreenVisible) {
+                  setIsPushScreenVisible(false);
+                  pushScreenSlideAnim.setValue(0);
+                }
+                if (isNotifsScreenVisible) {
+                  setIsNotifsScreenVisible(false);
+                  notifsScreenSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -18920,6 +19683,396 @@ const styles = StyleSheet.create({
   },
   gmkStepGreenHighlight: {
     color: '#34D399',
+    fontWeight: '700',
+  },
+
+  // Dedicated Push Notifications Screen Styles
+  pnStatusCard: {
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  pnBellCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+  },
+  pnBellCircleActive: {
+    backgroundColor: 'rgba(6, 78, 59, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 224, 150, 0.25)',
+  },
+  pnBellCircleDenied: {
+    backgroundColor: 'rgba(127, 29, 29, 0.35)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.28)',
+  },
+  pnBellCircleIdle: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  pnStatusTitle: {
+    color: '#F8FAFC',
+    fontSize: 17.5,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  pnStatusSubtitle: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+  },
+  pnInfoCard: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingHorizontal: 18,
+    paddingVertical: 2,
+    marginBottom: 14,
+  },
+  pnInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+  },
+  pnInfoDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+  },
+  pnInfoLabel: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  pnInfoValue: {
+    color: '#F8FAFC',
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
+  pnChecklistCard: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 18,
+    marginBottom: 14,
+  },
+  pnChecklistTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 14,
+  },
+  pnCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  pnCheckText: {
+    color: '#E2E8F0',
+    fontSize: 14.5,
+    marginLeft: 12,
+  },
+  pnIphoneCard: {
+    backgroundColor: '#1B1609',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(217, 165, 32, 0.35)',
+    padding: 18,
+    marginBottom: 20,
+  },
+  pnIphoneTitle: {
+    color: '#D4A72C',
+    fontSize: 14.5,
+    fontWeight: '800',
+    marginBottom: 14,
+  },
+  pnIphoneStepRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  pnIphoneStepBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(217, 165, 32, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    marginTop: 1,
+  },
+  pnIphoneStepBadgeText: {
+    color: '#D4A72C',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  pnIphoneStepText: {
+    flex: 1,
+    color: '#CBD5E1',
+    fontSize: 13.5,
+    lineHeight: 20,
+  },
+  pnIphoneStepBold: {
+    color: '#F8FAFC',
+    fontWeight: '700',
+  },
+  pnPrimaryBtn: {
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#34E096',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  pnPrimaryBtnText: {
+    color: '#04120B',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+  pnDisableBtn: {
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: '#120C0F',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.28)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pnDisableBtnText: {
+    color: '#F87171',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+
+  // Dedicated Notification History Screen Styles
+  nhScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: 36,
+  },
+  nhHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingTop: 8,
+  },
+  nhTitleBlock: {
+    marginLeft: 14,
+    flexShrink: 1,
+  },
+  nhHeaderTitle: {
+    color: '#F8FAFC',
+    fontSize: 23,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  nhHeaderSubtitle: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    marginTop: 1,
+  },
+  nhHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  nhCircleIconBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nhFiltersRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 18,
+  },
+  nhFilterPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  nhFilterPillActive: {
+    backgroundColor: 'rgba(6, 78, 59, 0.5)',
+    borderColor: '#34E096',
+  },
+  nhFilterPillText: {
+    color: '#F8FAFC',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  nhFilterPillTextActive: {
+    color: '#34E096',
+    fontWeight: '700',
+  },
+  nhSectionWrap: {
+    marginBottom: 16,
+  },
+  nhSectionHeader: {
+    color: '#64748B',
+    fontSize: 11.5,
+    fontWeight: '700',
+    letterSpacing: 0.7,
+    marginBottom: 8,
+    paddingLeft: 2,
+  },
+  nhSectionCard: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingHorizontal: 16,
+  },
+  nhRowDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+  },
+  nhItemWrap: {},
+  nhItemHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  nhItemIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  nhIconTripStop: {
+    backgroundColor: 'rgba(6, 78, 59, 0.55)',
+  },
+  nhIconTripStart: {
+    backgroundColor: 'rgba(14, 116, 144, 0.25)',
+  },
+  nhIconCharge: {
+    backgroundColor: 'rgba(180, 83, 9, 0.28)',
+  },
+  nhIconIdle: {
+    backgroundColor: 'rgba(148, 163, 184, 0.14)',
+  },
+  nhItemMiddleCol: {
+    flex: 1,
+    marginRight: 10,
+  },
+  nhItemTitle: {
+    color: '#F8FAFC',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+  nhItemSummary: {
+    color: '#94A3B8',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  nhItemRightCol: {
+    alignItems: 'flex-end',
+  },
+  nhItemTime: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+  },
+  nhExpandedArea: {
+    paddingLeft: 50,
+    paddingBottom: 16,
+  },
+  nhMetricsBox: {
+    backgroundColor: '#0A0E17',
+    borderRadius: 14,
+    padding: 14,
+  },
+  nhMetricsRow: {
+    flexDirection: 'row',
+    marginBottom: 12,
+  },
+  nhMetricCell: {
+    flex: 1,
+    paddingRight: 8,
+  },
+  nhMetricLabel: {
+    color: '#64748B',
+    fontSize: 11.5,
+    marginBottom: 2,
+  },
+  nhMetricValue: {
+    color: '#F8FAFC',
+    fontSize: 14.5,
+    fontWeight: '800',
+  },
+  nhRouteBlock: {
+    marginTop: 12,
+    gap: 5,
+  },
+  nhRouteLine: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  nhRoutePrefix: {
+    color: '#64748B',
+  },
+  nhRoutePlace: {
+    color: '#E2E8F0',
+    fontWeight: '600',
+  },
+  nhFallbackText: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  nhEmptyCard: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 24,
+    alignItems: 'center',
+  },
+  nhEmptyTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  nhEmptySub: {
+    color: '#94A3B8',
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  nhLoadMoreBtn: {
+    alignSelf: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  nhLoadMoreText: {
+    color: '#34E096',
+    fontSize: 15,
     fontWeight: '700',
   },
 });
