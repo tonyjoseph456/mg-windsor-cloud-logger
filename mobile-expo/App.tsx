@@ -2185,6 +2185,8 @@ export default function App() {
   const handleOpenAccountScreen = () => {
     setAccountPinInput(pin || '');
     setIsAccountScreenVisible(true);
+    accountScreenSlideAnim.stopAnimation();
+    accountScreenSlideAnim.setValue(0);
     Animated.timing(accountScreenSlideAnim, {
       toValue: 1,
       duration: 320,
@@ -2194,13 +2196,16 @@ export default function App() {
   };
 
   const handleCloseAccountScreen = () => {
+    accountScreenSlideAnim.stopAnimation();
     Animated.timing(accountScreenSlideAnim, {
       toValue: 0,
       duration: 280,
       easing: Easing.bezier(0.25, 0.1, 0.25, 1),
       useNativeDriver: Platform.OS !== 'web',
-    }).start(() => {
-      setIsAccountScreenVisible(false);
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsAccountScreenVisible(false);
+      }
     });
   };
 
@@ -2210,6 +2215,8 @@ export default function App() {
 
   const handleOpenAnalyticsScreen = () => {
     setIsAnalyticsScreenVisible(true);
+    analyticsSlideAnim.stopAnimation();
+    analyticsSlideAnim.setValue(0);
     Animated.timing(analyticsSlideAnim, {
       toValue: 1,
       duration: 320,
@@ -2219,13 +2226,16 @@ export default function App() {
   };
 
   const handleCloseAnalyticsScreen = () => {
+    analyticsSlideAnim.stopAnimation();
     Animated.timing(analyticsSlideAnim, {
       toValue: 0,
       duration: 280,
       easing: Easing.bezier(0.25, 0.1, 0.25, 1),
       useNativeDriver: Platform.OS !== 'web',
-    }).start(() => {
-      setIsAnalyticsScreenVisible(false);
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsAnalyticsScreenVisible(false);
+      }
     });
   };
 
@@ -5166,6 +5176,13 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
+  const profileSubscreenAnim = Animated.add(accountScreenSlideAnim, analyticsSlideAnim);
+  const profileTranslateX = profileSubscreenAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -screenWidth],
+    extrapolate: 'clamp',
+  });
+
   const accountScreenTranslateX = accountScreenSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
@@ -6686,7 +6703,14 @@ export default function App() {
           const vinLast8 = displayVin ? displayVin.slice(-8) : '8H014788';
 
           return (
-            <View style={styles.profileMainContainer}>
+            <Animated.View
+              style={[
+                styles.profileMainContainer,
+                {
+                  transform: [{ translateX: profileTranslateX }],
+                },
+              ]}
+            >
               {/* 1. Top Vehicle Header: Title "Windsor EV", Color Dot + Subline, Circular Refresh ↻ */}
               <View style={styles.mockupHeader}>
                 <View style={{ flex: 1, paddingRight: 8 }}>
@@ -8763,7 +8787,7 @@ export default function App() {
       </View>
     </View>
   </Modal>
-</View>
+</Animated.View>
 ); })()}
       </ScrollView>
     )}
