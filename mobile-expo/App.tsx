@@ -2783,6 +2783,54 @@ export default function App() {
     });
   };
 
+  // Dedicated Siri, widgets & CarPlay Automation Screen State & Animation (Horizontal tween from right to centre)
+  const automationSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isAutomationScreenVisible, setIsAutomationScreenVisible] = useState<boolean>(false);
+  const [copiedAutomationKey, setCopiedAutomationKey] = useState<string | null>(null);
+
+  const handleOpenAutomationScreen = () => {
+    setCopiedAutomationKey(null);
+    setIsAutomationScreenVisible(true);
+    automationSlideAnim.stopAnimation();
+    automationSlideAnim.setValue(0);
+    Animated.timing(automationSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseAutomationScreen = () => {
+    automationSlideAnim.stopAnimation();
+    Animated.timing(automationSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsAutomationScreenVisible(false);
+        setCopiedAutomationKey(null);
+      }
+    });
+  };
+
+  const handleCopyAutomationLink = async (key: string, url: string, label: string) => {
+    try {
+      await Clipboard.setStringAsync(url);
+    } catch {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url).catch(() => {});
+      }
+    }
+    setCopiedAutomationKey(key);
+    setTimeout(() => {
+      setCopiedAutomationKey((prev) => (prev === key ? null : prev));
+    }, 2200);
+    showBanner('ok', `Copied ${label} link to clipboard!`);
+  };
+
   // Trips & Charge Data Options Bottom Sheet States
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
   const [showChargeOptionsMenu, setShowChargeOptionsMenu] = useState<boolean>(false);
@@ -2791,8 +2839,6 @@ export default function App() {
   const [activeProfileModal, setActiveProfileModal] = useState<
     | 'vehicle'
     | 'analytics'
-    | 'carplay'
-    | 'lockscreen'
     | 'admin'
     | 'credits'
     | null
@@ -5758,7 +5804,10 @@ export default function App() {
     Animated.add(accountScreenSlideAnim, analyticsSlideAnim),
     Animated.add(
       Animated.add(textSizeSlideAnim, mapsKeySlideAnim),
-      Animated.add(pushScreenSlideAnim, notifsScreenSlideAnim)
+      Animated.add(
+        Animated.add(pushScreenSlideAnim, notifsScreenSlideAnim),
+        automationSlideAnim
+      )
     )
   );
   const profileTranslateX = profileSubscreenAnim.interpolate({
@@ -5793,6 +5842,10 @@ export default function App() {
   });
 
   const notifsScreenTranslateX = notifsScreenSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+  const automationTranslateX = automationSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -7514,10 +7567,10 @@ export default function App() {
               <View style={styles.profileSectionWrap}>
                 <Text style={styles.profileSectionHeader}>AUTOMATION</Text>
                 <View style={styles.profileGroupCard}>
-                  {/* CarPlay trip recording */}
+                  {/* Siri, widgets & CarPlay */}
                   <TouchableOpacity
                     style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('carplay')}
+                    onPress={handleOpenAutomationScreen}
                     activeOpacity={0.7}
                   >
                     <View style={styles.profileRowIconWrap}>
@@ -7527,26 +7580,8 @@ export default function App() {
                         <Line x1="17" y1="15" x2="17.01" y2="15" strokeLinecap="round" strokeWidth={3} />
                       </Svg>
                     </View>
-                    <Text style={styles.profileRowTitle}>CarPlay trip recording</Text>
-                    <Text style={[styles.profileRowVal, styles.profileRowValGreen]}>On</Text>
-                    <Text style={styles.profileRowChevron}>›</Text>
-                  </TouchableOpacity>
-
-                  <View style={styles.profileRowDivider} />
-
-                  {/* Lock screen widget & Siri */}
-                  <TouchableOpacity
-                    style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('lockscreen')}
-                    activeOpacity={0.7}
-                  >
-                    <View style={styles.profileRowIconWrap}>
-                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
-                        <Polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-                      </Svg>
-                    </View>
-                    <Text style={styles.profileRowTitle}>Lock screen widget &amp; Siri</Text>
-                    <Text style={styles.profileRowVal}>6 webhooks</Text>
+                    <Text style={styles.profileRowTitle}>Siri, widgets &amp; CarPlay</Text>
+                    <Text style={styles.profileRowVal}>6 links</Text>
                     <Text style={styles.profileRowChevron}>›</Text>
                   </TouchableOpacity>
                 </View>
@@ -7592,7 +7627,7 @@ export default function App() {
               </View>
 
               {/* 6. Footer */}
-              <View style={{ alignItems: 'center', marginTop: 10, marginBottom: Platform.OS === 'web' ? 120 : 130 }}>
+              <View style={{ alignItems: 'center', marginTop: 10, marginBottom: Platform.OS === 'web' ? 140 : 145 }}>
                 <Text style={styles.profileFooterVersion}>MG Windsor EV Dashboard · v2.6.0</Text>
                 <TouchableOpacity
                   activeOpacity={0.8}
@@ -7612,8 +7647,6 @@ export default function App() {
                       <Text style={styles.profileModalTitle}>
                         {activeProfileModal === 'vehicle' && 'Connected Vehicle'}
                         {activeProfileModal === 'analytics' && 'Monthly Analytics'}
-                        {activeProfileModal === 'carplay' && 'Apple CarPlay Automations'}
-                        {activeProfileModal === 'lockscreen' && 'Lock Screen & Siri Webhooks'}
                         {activeProfileModal === 'admin' && 'Backend Admin Console'}
                         {activeProfileModal === 'credits' && 'Open-Source Credits'}
                       </Text>
@@ -8479,348 +8512,6 @@ export default function App() {
                 </View>
               </AccountSectionCard>
             )}
-
-        {/* CARD 4: Apple CarPlay Automations (Cloudflare D1) */}
-        {activeProfileModal === 'carplay' && (
-          <AccountSectionCard
-            defaultExpanded={true}
-              title="Apple CarPlay Automations (Cloudflare D1)"
-              icon="🚘"
-              badge="Zero 12V Drain"
-              badgeBg="#064E3B"
-              badgeColor="#34D399"
-              preview="Automatic trip recording upon CarPlay Connect & Disconnect"
-              subtitle="Automatically records odometer, SOC, energy usage, duration, and efficiency to Cloudflare D1 SQL database whenever your iPhone connects or disconnects from CarPlay. Zero background polling keeps your 12V battery completely safe."
-            >
-              <View style={{ backgroundColor: '#0B132B', padding: 14, borderRadius: 14, borderWidth: 1, borderColor: '#1E293B', marginBottom: 14 }}>
-                <Text style={{ color: '#38BDF8', fontWeight: '800', fontSize: 13, marginBottom: 6 }}>
-                  ⚡ Step-by-Step iOS Shortcuts Setup (Takes 30 Seconds)
-                </Text>
-                <Text style={{ color: '#94A3B8', fontSize: 11, marginBottom: 12, lineHeight: 18 }}>
-                  1. Open the Apple <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Shortcuts</Text> app on your iPhone.{'\n'}
-                  2. Tap the <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Automation</Text> tab at the bottom, then tap <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>+</Text> (top right).{'\n'}
-                  3. Select <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>CarPlay</Text> → Choose <Text style={{ color: '#34D399', fontWeight: '700' }}>Connects</Text>.{'\n'}
-                  4. Select <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>Run Immediately</Text> (turn Notify When Run OFF) → Next.{'\n'}
-                  5. Tap <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>New Blank Automation</Text> → Add Action → Search <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Get Contents of URL&quot;</Text> → Paste the <Text style={{ color: '#34D399', fontWeight: '700' }}>Start Trip Webhook URL</Text> below.{'\n'}
-                  6. <Text style={{ color: '#38BDF8', fontWeight: '700' }}>To Show Notification:</Text> Add Action directly below it → Search <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Show Notification&quot;</Text> → Set Text to <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>&quot;Contents of URL&quot;</Text>!{'\n'}
-                  7. Repeat for <Text style={{ color: '#F87171', fontWeight: '700' }}>Disconnects</Text> using the <Text style={{ color: '#F87171', fontWeight: '700' }}>Stop Trip Webhook URL</Text>.{'\n'}
-                  8. When your trip ends, iOS will display the complete summary: distance, time taken, battery start &amp; end %, energy used, and efficiency!
-                </Text>
-
-                {/* 1. Start Trip Webhook */}
-                <View style={styles.copyWebhookCard}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>🟢 CarPlay Connects (Start Trip)</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                          'CarPlay Start Trip URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                        'CarPlay Start Trip URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL (with notification text)</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* 2. Stop Trip Webhook */}
-                <View style={[styles.copyWebhookCard, { marginTop: 10 }]}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>🔴 CarPlay Disconnects (Stop Trip)</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                          'CarPlay Stop Trip URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                        'CarPlay Stop Trip URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL (with complete trip metrics)</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={{ marginTop: 12, padding: 10, backgroundColor: '#064E3B18', borderRadius: 8, borderWidth: 1, borderColor: '#064E3B40' }}>
-                  <Text style={{ color: '#34D399', fontSize: 11, lineHeight: 16 }}>
-                    🛡️ <Text style={{ fontWeight: '700' }}>12V Battery Guarantee:</Text> Webhooks query vehicle telemetry only at the exact moments CarPlay connects (car is driving) and disconnects (car is parking). No background polling loops run while the car is asleep.
-                  </Text>
-                </View>
-              </View>
-            </AccountSectionCard>
-          )}
-
-          {/* CARD 5: 1-Tap Lock Screen Widget & Siri Setup */}
-          {activeProfileModal === 'lockscreen' && (
-            <AccountSectionCard
-              defaultExpanded={true}
-              title="1-Tap Lock Screen Widget & Siri Setup"
-              icon="⚡"
-              badge="6 Webhooks"
-              badgeBg="#064E3B"
-              badgeColor="#34D399"
-              preview="Silent Unlock, Lock, AC On/Off & CarPlay Start/Stop"
-              subtitle="Trigger locking, unlocking, AC or CarPlay trip logging silently from your iOS Lock Screen Widget, Siri, or Automations with zero app popups!"
-            >
-              {/* Silent Webhook URLs for currently logged-in car */}
-              <View style={{ backgroundColor: '#0B132B', padding: 14, borderRadius: 14, borderWidth: 1, borderColor: '#1E293B', marginBottom: 14 }}>
-                <Text style={{ color: '#10B981', fontWeight: '800', fontSize: 13, marginBottom: 4 }}>
-                  ⚡ Option A: 100% Silent Background Trigger (Recommended)
-                </Text>
-                <Text style={{ color: '#94A3B8', fontSize: 11, marginBottom: 12, lineHeight: 16 }}>
-                  Automatically personalized for your car &amp; PIN. Tap any &quot;Copy Link&quot; button below:
-                </Text>
-
-                {/* 1. Unlock Link */}
-                <View style={styles.copyWebhookCard}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>🔓 Silent Unlock Webhook</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                          'Silent Unlock URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                        'Silent Unlock URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* 2. Lock Link */}
-                <View style={styles.copyWebhookCard}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>🔒 Silent Lock Webhook</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                          'Silent Lock URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                        'Silent Lock URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* 3. Climate AC Link */}
-                <View style={styles.copyWebhookCard}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>❄️ Silent Climate AC On</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                          'Silent Climate AC URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                        'Silent Climate AC On URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* 4. Climate AC Off Link */}
-                <View style={styles.copyWebhookCard}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>❄️ Silent Climate AC Off</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                          'Silent Climate AC Off URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`,
-                        'Silent Climate AC Off URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy to clipboard</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* 5. Start Trip Link */}
-                <View style={styles.copyWebhookCard}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>🟢 CarPlay Connects (Start Trip)</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                          'CarPlay Start Trip URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                        'CarPlay Start Trip URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/start?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Start Trip Webhook URL (with notification text)</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* 6. Stop Trip Link */}
-                <View style={styles.copyWebhookCard}>
-                  <View style={styles.copyWebhookHeader}>
-                    <Text style={styles.copyWebhookTitle}>🔴 CarPlay Disconnects (Stop Trip)</Text>
-                    <TouchableOpacity
-                      style={styles.copyPillBtn}
-                      activeOpacity={0.7}
-                      onPress={() =>
-                        copyToClipboard(
-                          `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                          'CarPlay Stop Trip URL'
-                        )
-                      }
-                    >
-                      <Text style={styles.copyPillBtnText}>📋 Copy Link</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.copyUrlTapArea}
-                    activeOpacity={0.7}
-                    onPress={() =>
-                      copyToClipboard(
-                        `${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`,
-                        'CarPlay Stop Trip URL'
-                      )
-                    }
-                  >
-                    <Text style={styles.copyUrlMonoText} numberOfLines={2}>
-                      {`${BACKEND_URL}/api/trip/stop?${(displayVin && displayVin !== 'Discovering...') ? `vin=${encodeURIComponent(displayVin)}&` : ''}format=text`}
-                    </Text>
-                    <Text style={styles.copyUrlTapHint}>Tap to copy Stop Trip Webhook URL (with complete trip metrics)</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <Text style={{ color: '#F59E0B', fontSize: 11, fontWeight: '700', marginTop: 8, marginBottom: 2 }}>
-                  📱 How to set up in Apple Shortcuts (Takes 30 seconds):
-                </Text>
-                <Text style={{ color: '#94A3B8', fontSize: 11, lineHeight: 17 }}>
-                  1. Tap &quot;Copy Link&quot; above (Unlock, Lock, AC On/Off, or CarPlay Start/Stop).{'\n'}
-                  2. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For Siri / Widgets:</Text> Shortcuts app → &quot;+&quot; → Add Action &quot;Get contents of URL&quot; → Paste link → Rename shortcut (e.g. &quot;Unlock Windsor&quot;).{'\n'}
-                  3. <Text style={{ color: '#F8FAFC', fontWeight: '700' }}>For CarPlay Trip Notifications:</Text> Shortcuts app → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Automation</Text> tab → &quot;+&quot; → <Text style={{ color: '#38BDF8', fontWeight: '700' }}>CarPlay</Text> → Connects (or Disconnects) → Run Immediately (Notify When Run OFF) → Add Action &quot;Get Contents of URL&quot; → Paste Start (or Stop) URL → Add Action <Text style={{ color: '#38BDF8', fontWeight: '700' }}>&quot;Show Notification&quot;</Text> (Text: Contents of URL) → Done!{'\n'}
-                  4. First run: Tap &quot;Allow&quot; on the one-time privacy popup. It executes silently with zero 12V battery drain!
-                </Text>
-              </View>
-            </AccountSectionCard>
-          )}
 
           {/* CARD 6: Open-Source Credits & Acknowledgements */}
           {activeProfileModal === 'credits' && (
@@ -12601,6 +12292,254 @@ export default function App() {
         );
       })()}
 
+      {/* Siri, widgets & CarPlay Fullscreen Tween Screen */}
+      {isAutomationScreenVisible && (() => {
+        const vinParam =
+          displayVin && displayVin !== 'Discovering...'
+            ? `vin=${encodeURIComponent(displayVin)}&`
+            : '';
+        const credsQuery = `phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`;
+
+        const renderSnowflakeIcon = (color: string) => (
+          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.2}>
+            <Line x1="12" y1="3" x2="12" y2="21" strokeLinecap="round" />
+            <Line x1="4.21" y1="7.5" x2="19.79" y2="16.5" strokeLinecap="round" />
+            <Line x1="4.21" y1="16.5" x2="19.79" y2="7.5" strokeLinecap="round" />
+          </Svg>
+        );
+
+        const carCommandLinks = [
+          {
+            key: 'unlock',
+            title: 'Unlock',
+            subtitle: 'Silent, no app popup',
+            label: 'Silent Unlock',
+            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&${credsQuery}`,
+            icon: (
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                <Rect x="3" y="11" width="18" height="11" rx="2" />
+                <Path d="M7 11V7a5 5 0 0 1 9.9-1" strokeLinecap="round" strokeLinejoin="round" />
+              </Svg>
+            ),
+          },
+          {
+            key: 'lock',
+            title: 'Lock',
+            subtitle: 'Silent, no app popup',
+            label: 'Silent Lock',
+            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&${credsQuery}`,
+            icon: (
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                <Rect x="3" y="11" width="18" height="11" rx="2" />
+                <Path d="M7 11V7a5 5 0 0 1 10 0v4" strokeLinecap="round" strokeLinejoin="round" />
+              </Svg>
+            ),
+          },
+          {
+            key: 'climate-on',
+            title: 'Climate on',
+            subtitle: 'Start the AC',
+            label: 'Climate On',
+            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&${credsQuery}`,
+            icon: renderSnowflakeIcon('#34D399'),
+          },
+          {
+            key: 'climate-off',
+            title: 'Climate off',
+            subtitle: 'Stop the AC',
+            label: 'Climate Off',
+            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&${credsQuery}`,
+            icon: renderSnowflakeIcon('#94A3B8'),
+          },
+        ];
+
+        const carplayTripLinks = [
+          {
+            key: 'carplay-start',
+            title: 'Car connects',
+            subtitle: 'Starts a trip',
+            label: 'CarPlay Start Trip',
+            url: `${BACKEND_URL}/api/trip/start?${vinParam}format=text`,
+            icon: <View style={[styles.autoDot, { backgroundColor: '#34E096' }]} />,
+          },
+          {
+            key: 'carplay-stop',
+            title: 'Car disconnects',
+            subtitle: 'Ends the trip and saves it',
+            label: 'CarPlay Stop Trip',
+            url: `${BACKEND_URL}/api/trip/stop?${vinParam}format=text`,
+            icon: <View style={[styles.autoDot, { backgroundColor: '#F87171' }]} />,
+          },
+        ];
+
+        const renderLinkRows = (
+          items: {
+            key: string;
+            title: string;
+            subtitle: string;
+            label: string;
+            url: string;
+            icon: React.ReactNode;
+          }[]
+        ) =>
+          items.map((item, idx) => {
+            const isCopied = copiedAutomationKey === item.key;
+            return (
+              <React.Fragment key={item.key}>
+                {idx > 0 && <View style={styles.autoDivider} />}
+                <View style={styles.autoRow}>
+                  <View style={styles.autoRowIconWrap}>{item.icon}</View>
+                  <View style={styles.autoRowTextWrap}>
+                    <Text style={styles.autoRowTitle}>{item.title}</Text>
+                    <Text style={styles.autoRowSub}>{item.subtitle}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[styles.autoCopyBtn, isCopied && styles.autoCopyBtnCopied]}
+                    onPress={() => handleCopyAutomationLink(item.key, item.url, item.label)}
+                    activeOpacity={0.75}
+                    accessibilityLabel={`Copy ${item.title} link`}
+                    accessibilityRole="button"
+                  >
+                    <Text style={[styles.autoCopyBtnText, isCopied && styles.autoCopyBtnTextCopied]}>
+                      {isCopied ? 'Copied ✓' : 'Copy link'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </React.Fragment>
+            );
+          });
+
+        const siriSteps: React.ReactNode[] = [
+          <>
+            Tap <Text style={styles.gmkStepBoldWhite}>Copy link</Text> on a command above.
+          </>,
+          <>
+            In <Text style={styles.gmkStepBoldWhite}>Shortcuts</Text> tap{' '}
+            <Text style={styles.gmkStepBoldWhite}>+</Text>, add{' '}
+            <Text style={styles.gmkStepBoldWhite}>Get Contents of URL</Text> and paste the link.
+          </>,
+          <>Name it (for example &ldquo;Unlock Windsor&rdquo;), then add it to Siri or your Lock Screen.</>,
+          <>
+            First run: tap <Text style={styles.gmkStepBoldWhite}>Allow</Text> on the one-time privacy popup.
+          </>,
+        ];
+
+        const carplaySteps: React.ReactNode[] = [
+          <>
+            <Text style={styles.gmkStepBoldWhite}>Automation › + › CarPlay ›</Text>{' '}
+            <Text style={styles.gmkStepGreenHighlight}>Connects</Text> (or{' '}
+            <Text style={styles.autoStepRedHighlight}>Disconnects</Text>).
+          </>,
+          <>
+            Choose <Text style={styles.gmkStepBoldWhite}>Run Immediately</Text> and turn{' '}
+            <Text style={styles.gmkStepBoldWhite}>Notify When Run</Text> off.
+          </>,
+          <>
+            Add <Text style={styles.gmkStepBoldWhite}>Get Contents of URL</Text> and paste the start (or stop) link.
+          </>,
+          <>
+            Add <Text style={styles.gmkStepBoldWhite}>Show Notification</Text> with &ldquo;Contents of URL&rdquo; to see the trip summary.
+          </>,
+        ];
+
+        const renderStepList = (steps: React.ReactNode[]) =>
+          steps.map((stepContent, idx) => (
+            <View
+              key={idx}
+              style={[
+                styles.gmkStepRow,
+                idx === steps.length - 1 && { marginBottom: 4 },
+              ]}
+            >
+              <View style={styles.gmkStepBadge}>
+                <Text style={styles.gmkStepBadgeText}>{idx + 1}</Text>
+              </View>
+              <Text style={styles.gmkStepText}>{stepContent}</Text>
+            </View>
+          ));
+
+        return (
+          <Animated.View
+            style={[
+              styles.accountScreenLayer,
+              {
+                transform: [{ translateX: automationTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.accountScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* 1. Header Row */}
+                <View style={[styles.accountHeader, { alignItems: 'flex-start' }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', flex: 1, marginRight: 10 }}>
+                    <TouchableOpacity
+                      style={styles.accountBackBtn}
+                      onPress={handleCloseAutomationScreen}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Back to Profile"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    </TouchableOpacity>
+                    <Text style={[styles.accountHeaderTitle, { flex: 1, lineHeight: 28, paddingTop: 6 }]}>
+                      Siri, widgets &amp; CarPlay
+                    </Text>
+                  </View>
+                  <View style={[styles.accountConnectedBadge, { marginTop: 8 }]}>
+                    <Text style={styles.accountConnectedBadgeText}>6 links</Text>
+                  </View>
+                </View>
+
+                {/* 2. Intro Subtitle */}
+                <Text style={[styles.gmkDescription, { marginBottom: 16 }]}>
+                  Run car commands from your Lock Screen widget, Siri or Shortcuts with no app popup. CarPlay saves your trips automatically.
+                </Text>
+
+                {/* 3. Battery Safety Callout Banner */}
+                <View style={styles.autoSafetyBanner}>
+                  <View style={styles.autoSafetyIconWrap}>
+                    <Svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                      <Circle cx="12" cy="12" r="9" />
+                      <Line x1="12" y1="16" x2="12" y2="12" strokeLinecap="round" />
+                      <Line x1="12" y1="8" x2="12.01" y2="8" strokeLinecap="round" strokeWidth={2.4} />
+                    </Svg>
+                  </View>
+                  <Text style={styles.autoSafetyText}>
+                    <Text style={styles.autoSafetyBold}>Safe for your 12V battery. </Text>
+                    Each link only runs when you tap it, or when CarPlay connects or disconnects. Nothing runs in the background.
+                  </Text>
+                </View>
+
+                {/* 4. CAR COMMANDS */}
+                <Text style={styles.autoSectionHeader}>CAR COMMANDS</Text>
+                <View style={styles.autoCard}>{renderLinkRows(carCommandLinks)}</View>
+
+                {/* 5. CARPLAY TRIPS */}
+                <Text style={styles.autoSectionHeader}>CARPLAY TRIPS</Text>
+                <View style={styles.autoCard}>{renderLinkRows(carplayTripLinks)}</View>
+
+                {/* 6. Set up in Shortcuts · 30 seconds */}
+                <View style={styles.gmkHelpCard}>
+                  <Text style={styles.gmkHelpTitle}>Set up in Shortcuts · 30 seconds</Text>
+
+                  <Text style={styles.autoSetupSubheader}>SIRI AND WIDGETS</Text>
+                  {renderStepList(siriSteps)}
+
+                  <Text style={[styles.autoSetupSubheader, { marginTop: 14 }]}>CARPLAY TRIPS</Text>
+                  {renderStepList(carplaySteps)}
+                </View>
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -12743,6 +12682,10 @@ export default function App() {
                 if (isNotifsScreenVisible) {
                   setIsNotifsScreenVisible(false);
                   notifsScreenSlideAnim.setValue(0);
+                }
+                if (isAutomationScreenVisible) {
+                  setIsAutomationScreenVisible(false);
+                  automationSlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -20391,6 +20334,120 @@ const styles = StyleSheet.create({
   nhLoadMoreText: {
     color: '#34E096',
     fontSize: 15,
+    fontWeight: '700',
+  },
+
+  // Dedicated Siri, widgets & CarPlay Automation Screen Styles
+  autoSafetyBanner: {
+    backgroundColor: 'rgba(6, 78, 59, 0.35)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 22,
+  },
+  autoSafetyIconWrap: {
+    marginRight: 10,
+    marginTop: 2,
+  },
+  autoSafetyText: {
+    flex: 1,
+    color: '#CBD5E1',
+    fontSize: 13.5,
+    lineHeight: 20,
+  },
+  autoSafetyBold: {
+    color: '#34D399',
+    fontWeight: '700',
+  },
+  autoSectionHeader: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    marginBottom: 10,
+    marginLeft: 4,
+  },
+  autoCard: {
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    marginBottom: 22,
+    overflow: 'hidden',
+  },
+  autoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  autoRowIconWrap: {
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  autoDot: {
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
+  },
+  autoRowTextWrap: {
+    flex: 1,
+    marginRight: 10,
+  },
+  autoRowTitle: {
+    color: '#F8FAFC',
+    fontSize: 15.5,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  autoRowSub: {
+    color: '#94A3B8',
+    fontSize: 13,
+  },
+  autoCopyBtn: {
+    backgroundColor: 'rgba(6, 78, 59, 0.35)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.45)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    minWidth: 94,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  autoCopyBtnCopied: {
+    backgroundColor: 'rgba(16, 185, 129, 0.25)',
+    borderColor: '#34E096',
+  },
+  autoCopyBtnText: {
+    color: '#34D399',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  autoCopyBtnTextCopied: {
+    color: '#6EE7B7',
+  },
+  autoDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginLeft: 16,
+    marginRight: 16,
+  },
+  autoSetupSubheader: {
+    color: '#94A3B8',
+    fontSize: 11.5,
+    fontWeight: '700',
+    letterSpacing: 0.7,
+    marginBottom: 12,
+  },
+  autoStepRedHighlight: {
+    color: '#F87171',
     fontWeight: '700',
   },
 });
