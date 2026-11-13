@@ -1285,6 +1285,7 @@ function PlanSliderRow({
         onLayout={(e) => {
           trackWidthRef.current = e.nativeEvent.layout.width || 320;
         }}
+        {...(Platform.OS === 'web' ? ({ 'data-no-swipe-back': 'true' } as any) : {})}
         {...responderProps}
       >
         <View style={styles.planSliderTrackBg} pointerEvents="none">
@@ -5578,6 +5579,310 @@ export default function App() {
       setIsSearchChargersVisible(false);
     });
   };
+
+  // Global PWA Interactive Back-Button Swipe Gesture & System History Integration
+  const isModalOverlayOpen =
+    Boolean(pinPrompt?.visible) ||
+    showColorPicker ||
+    showTripCalendar ||
+    showChargeCalendar ||
+    showTripsOptionsMenu ||
+    showChargeOptionsMenu ||
+    activeProfileModal !== null;
+
+  const activeBackScreen: {
+    key: string;
+    anim: Animated.Value;
+    close: () => void;
+  } | null = isRouteResultVisible
+    ? { key: 'routeResult', anim: routeResultSlideAnim, close: handleCloseRouteResult }
+    : isPlanScreenVisible
+    ? { key: 'plan', anim: planSlideAnim, close: handleClosePlanScreen }
+    : isTripDetailVisible
+    ? { key: 'tripDetail', anim: tripDetailSlideAnim, close: handleCloseTripDetail }
+    : isSearchChargersVisible
+    ? { key: 'searchChargers', anim: searchChargersSlideAnim, close: handleCloseSearchChargers }
+    : isChargeDetailVisible
+    ? { key: 'chargeDetail', anim: chargeDetailSlideAnim, close: handleCloseChargeDetail }
+    : isTyresScreenVisible
+    ? { key: 'tyres', anim: tyreSlideAnim, close: handleCloseTyresScreen }
+    : isLocationScreenVisible
+    ? { key: 'location', anim: locationSlideAnim, close: handleCloseLocationScreen }
+    : isRemoteScreenVisible
+    ? { key: 'remote', anim: remoteSlideAnim, close: handleCloseRemoteScreen }
+    : isAccountScreenVisible
+    ? { key: 'account', anim: accountScreenSlideAnim, close: handleCloseAccountScreen }
+    : isAnalyticsScreenVisible
+    ? { key: 'analytics', anim: analyticsSlideAnim, close: handleCloseAnalyticsScreen }
+    : isTextSizeScreenVisible
+    ? { key: 'textSize', anim: textSizeSlideAnim, close: handleCloseTextSizeScreen }
+    : isMapsKeyScreenVisible
+    ? { key: 'mapsKey', anim: mapsKeySlideAnim, close: handleCloseMapsKeyScreen }
+    : isPushScreenVisible
+    ? { key: 'push', anim: pushScreenSlideAnim, close: handleClosePushScreen }
+    : isNotifsScreenVisible
+    ? { key: 'notifs', anim: notifsScreenSlideAnim, close: handleCloseNotifsScreen }
+    : isAutomationScreenVisible
+    ? { key: 'automation', anim: automationSlideAnim, close: handleCloseAutomationScreen }
+    : isAdminScreenVisible
+    ? { key: 'admin', anim: adminSlideAnim, close: handleCloseAdminScreen }
+    : isCreditsScreenVisible
+    ? { key: 'credits', anim: creditsSlideAnim, close: handleCloseCreditsScreen }
+    : null;
+
+  const activeBackScreenRef = useRef(activeBackScreen);
+  activeBackScreenRef.current = activeBackScreen;
+
+  const isBackGestureBlockedRef = useRef<boolean>(false);
+  isBackGestureBlockedRef.current = booting || !isAuthenticated || isModalOverlayOpen;
+
+  const swipeScreenWidthRef = useRef<number>(500);
+  swipeScreenWidthRef.current = Math.max(Dimensions.get('window').width || 420, 500);
+
+  const dismissingBackKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    dismissingBackKeyRef.current = null;
+  }, [activeBackScreen?.key]);
+
+  const closeTopmostBackTargetRef = useRef<() => void>(() => {});
+  closeTopmostBackTargetRef.current = () => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
+    if (pinPrompt?.visible) {
+      setPinPrompt(null);
+      return;
+    }
+    if (showColorPicker) {
+      handleCloseColorPicker();
+      return;
+    }
+    if (showTripCalendar) {
+      setShowTripCalendar(false);
+      return;
+    }
+    if (showChargeCalendar) {
+      setShowChargeCalendar(false);
+      return;
+    }
+    if (showTripsOptionsMenu) {
+      setShowTripsOptionsMenu(false);
+      return;
+    }
+    if (showChargeOptionsMenu) {
+      setShowChargeOptionsMenu(false);
+      return;
+    }
+    if (activeProfileModal !== null) {
+      setActiveProfileModal(null);
+      return;
+    }
+    activeBackScreenRef.current?.close();
+  };
+
+  // Interactive left-to-right swipe-back gesture on PWA (follows finger in real time)
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+
+    const gesture = {
+      active: false,
+      locked: null as 'swipe-back' | 'scroll' | 'other' | null,
+      screen: null as { key: string; anim: Animated.Value; close: () => void } | null,
+      startX: 0,
+      startY: 0,
+      lockOffsetX: 0,
+      lastX: 0,
+      lastTime: 0,
+      prevX: 0,
+      prevTime: 0,
+    };
+
+    const resetGesture = () => {
+      gesture.active = false;
+      gesture.locked = null;
+      gesture.screen = null;
+    };
+
+    const isInteractiveElement = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el || typeof el.closest !== 'function') return false;
+      return Boolean(el.closest('input, textarea, select, option, [data-no-swipe-back="true"]')) || el.isContentEditable;
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) {
+        resetGesture();
+        return;
+      }
+      if (isBackGestureBlockedRef.current) return;
+      const screen = activeBackScreenRef.current;
+      if (!screen || dismissingBackKeyRef.current === screen.key) return;
+      if (isInteractiveElement(e.target)) return;
+
+      const t = e.touches[0];
+      const now = Date.now();
+      gesture.active = true;
+      gesture.locked = null;
+      gesture.screen = screen;
+      gesture.startX = t.clientX;
+      gesture.startY = t.clientY;
+      gesture.lockOffsetX = 0;
+      gesture.lastX = t.clientX;
+      gesture.lastTime = now;
+      gesture.prevX = t.clientX;
+      gesture.prevTime = now;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!gesture.active || !gesture.screen || e.touches.length !== 1) return;
+      if (isBackGestureBlockedRef.current) {
+        resetGesture();
+        return;
+      }
+
+      const t = e.touches[0];
+      const dx = t.clientX - gesture.startX;
+      const dy = t.clientY - gesture.startY;
+      const now = Date.now();
+
+      if (now - gesture.lastTime > 12) {
+        gesture.prevX = gesture.lastX;
+        gesture.prevTime = gesture.lastTime;
+        gesture.lastX = t.clientX;
+        gesture.lastTime = now;
+      }
+
+      if (gesture.locked === null) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx) * 0.9) {
+          gesture.locked = 'scroll';
+          return;
+        }
+        if (dx < -10) {
+          gesture.locked = 'other';
+          return;
+        }
+        const isLeftEdge = gesture.startX <= 36;
+        const canLock =
+          (isLeftEdge && dx > 8 && dx > Math.abs(dy) * 1.2) ||
+          (!isLeftEdge && dx > 16 && dx > Math.abs(dy) * 1.45);
+        if (!canLock) return;
+
+        gesture.locked = 'swipe-back';
+        gesture.lockOffsetX = dx;
+        gesture.screen.anim.stopAnimation();
+      }
+
+      if (gesture.locked !== 'swipe-back') return;
+      if (e.cancelable) {
+        e.preventDefault();
+      }
+
+      const effectiveDx = Math.max(0, dx - gesture.lockOffsetX);
+      const slideRange = Math.max(320, swipeScreenWidthRef.current);
+      const progress = Math.max(0, Math.min(1, 1 - effectiveDx / slideRange));
+      gesture.screen.anim.setValue(progress);
+    };
+
+    const finishGesture = (cancelled: boolean) => {
+      if (!gesture.active || !gesture.screen) {
+        resetGesture();
+        return;
+      }
+      const screen = gesture.screen;
+      const wasSwipeBack = gesture.locked === 'swipe-back';
+      const effectiveDx = Math.max(0, gesture.lastX - gesture.startX - gesture.lockOffsetX);
+      const dt = Math.max(1, Date.now() - gesture.prevTime);
+      const vx = (gesture.lastX - gesture.prevX) / dt;
+      resetGesture();
+
+      if (!wasSwipeBack) return;
+
+      const viewportW = Math.min(swipeScreenWidthRef.current, window.innerWidth || 390);
+      const dismissThreshold = Math.min(115, viewportW * 0.28);
+      const shouldDismiss =
+        !cancelled && (effectiveDx >= dismissThreshold || (vx >= 0.42 && effectiveDx >= 30));
+
+      if (shouldDismiss) {
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        dismissingBackKeyRef.current = screen.key;
+        screen.close();
+        setTimeout(() => {
+          if (dismissingBackKeyRef.current === screen.key) {
+            dismissingBackKeyRef.current = null;
+          }
+        }, 400);
+      } else {
+        Animated.timing(screen.anim, {
+          toValue: 1,
+          duration: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: false,
+        }).start();
+      }
+    };
+
+    const onTouchEnd = () => finishGesture(false);
+    const onTouchCancel = () => finishGesture(true);
+
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', onTouchCancel, { passive: true });
+
+    return () => {
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchCancel);
+    };
+  }, []);
+
+  // Browser / Android system back gesture synchronization
+  const desiredBackDepth =
+    !booting && isAuthenticated
+      ? (isRouteResultVisible ? 2 : activeBackScreen ? 1 : 0) + (isModalOverlayOpen ? 1 : 0)
+      : 0;
+  const pushedHistoryDepthRef = useRef<number>(0);
+  const ignorePopCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.history?.pushState) {
+      return;
+    }
+    const onPopState = () => {
+      if (ignorePopCountRef.current > 0) {
+        ignorePopCountRef.current -= 1;
+        return;
+      }
+      pushedHistoryDepthRef.current = Math.max(0, pushedHistoryDepthRef.current - 1);
+      closeTopmostBackTargetRef.current();
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.history?.pushState) {
+      return;
+    }
+    if (desiredBackDepth > pushedHistoryDepthRef.current) {
+      while (pushedHistoryDepthRef.current < desiredBackDepth) {
+        pushedHistoryDepthRef.current += 1;
+        window.history.pushState(
+          { mgBackDepth: pushedHistoryDepthRef.current },
+          '',
+          window.location.href
+        );
+      }
+    } else if (desiredBackDepth < pushedHistoryDepthRef.current) {
+      const delta = pushedHistoryDepthRef.current - desiredBackDepth;
+      pushedHistoryDepthRef.current = desiredBackDepth;
+      ignorePopCountRef.current += 1;
+      window.history.go(-delta);
+    }
+  }, [desiredBackDepth]);
 
   // 1. Startup Keychain Check Screen
   if (booting) {
@@ -11352,6 +11657,7 @@ export default function App() {
                       onLayout={(e) => {
                         textSizeTrackWidthRef.current = e.nativeEvent.layout.width;
                       }}
+                      {...(Platform.OS === 'web' ? ({ 'data-no-swipe-back': 'true' } as any) : {})}
                       onStartShouldSetResponder={() => Platform.OS !== 'web'}
                       onMoveShouldSetResponder={() => Platform.OS !== 'web'}
                       onResponderGrant={(e) => handleNativeTrackTouch(e.nativeEvent.locationX)}
@@ -12753,6 +13059,26 @@ export default function App() {
           </Animated.View>
         );
       })()}
+
+      {/* Left-edge map swipe handle so edge swipe works seamlessly beside map iframes */}
+      {Platform.OS === 'web' &&
+        !isModalOverlayOpen &&
+        (isLocationScreenVisible || isTripDetailVisible) && (
+          <View
+            style={
+              {
+                position: 'fixed',
+                left: 0,
+                top: 88,
+                bottom: 0,
+                width: 18,
+                zIndex: 2500,
+                touchAction: 'pan-y',
+                backgroundColor: 'transparent',
+              } as any
+            }
+          />
+        )}
 
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
