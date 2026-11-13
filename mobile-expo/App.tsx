@@ -12184,10 +12184,10 @@ export default function App() {
                                   </View>
 
                                   <View style={styles.nhItemMiddleCol}>
-                                    <Text style={styles.nhItemTitle} numberOfLines={1}>
+                                    <Text style={styles.nhItemTitle}>
                                       {info.title}
                                     </Text>
-                                    <Text style={styles.nhItemSummary} numberOfLines={1}>
+                                    <Text style={styles.nhItemSummary}>
                                       {info.summary}
                                     </Text>
                                   </View>
@@ -19953,7 +19953,7 @@ const styles = StyleSheet.create({
   nhItemWrap: {},
   nhItemHeaderRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 14,
   },
   nhItemIconCircle: {
@@ -19978,6 +19978,7 @@ const styles = StyleSheet.create({
   },
   nhItemMiddleCol: {
     flex: 1,
+    minWidth: 0,
     marginRight: 10,
   },
   nhItemTitle: {
@@ -19988,10 +19989,12 @@ const styles = StyleSheet.create({
   nhItemSummary: {
     color: '#94A3B8',
     fontSize: 13,
+    lineHeight: 18,
     marginTop: 2,
   },
   nhItemRightCol: {
     alignItems: 'flex-end',
+    marginTop: 1,
   },
   nhItemTime: {
     color: '#94A3B8',
