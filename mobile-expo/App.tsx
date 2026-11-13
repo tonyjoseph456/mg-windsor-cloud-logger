@@ -750,12 +750,6 @@ function formatNotifDurationFull(sec: number): string {
   return `${totalMin} min ${remSec} sec`;
 }
 
-function shortPlaceName(place?: string): string {
-  if (!place || place === 'Unknown Location') return '';
-  const parts = place.split(',').map((s) => s.trim()).filter(Boolean);
-  return parts.length > 1 ? parts[parts.length - 1] : parts[0];
-}
-
 function parseNotifMetadata(raw?: string | null): Record<string, any> | null {
   if (!raw) return null;
   try {
@@ -786,12 +780,6 @@ function buildNotifDisplayData(notif: AppNotificationRecord): NotifDisplayData {
     const cleanDuration =
       rawTimeTaken.replace(/\s*\([^)]*\)\s*$/, '').trim() ||
       (meta?.duration_seconds != null ? formatNotifDurationFull(Number(meta.duration_seconds)) : '');
-    const durMinsOnly =
-      meta?.duration_seconds != null && Number(meta.duration_seconds) >= 60
-        ? (Number(meta.duration_seconds) >= 3600
-            ? `${Math.floor(Number(meta.duration_seconds) / 3600)} hr ${Math.floor((Number(meta.duration_seconds) % 3600) / 60)} min`
-            : `${Math.floor(Number(meta.duration_seconds) / 60)} min`)
-        : '';
     const battMsg = matchVal(/Battery:\s*([\d.]+%\s*→\s*[\d.]+%)/);
     const battText =
       battMsg ||
@@ -818,7 +806,6 @@ function buildNotifDisplayData(notif: AppNotificationRecord): NotifDisplayData {
       if (!toLoc && rhs) toLoc = rhs;
     }
 
-    const summaryParts = [distVal, durMinsOnly, battText].filter(Boolean);
     const metrics: NotifMetricCell[] = [
       distVal ? { label: 'Distance', value: distVal } : null,
       cleanDuration ? { label: 'Time', value: cleanDuration } : null,
@@ -831,7 +818,7 @@ function buildNotifDisplayData(notif: AppNotificationRecord): NotifDisplayData {
     return {
       kind: 'trip_stop',
       title: 'Trip completed',
-      summary: summaryParts.join(' · ') || 'Trip completed',
+      summary: '',
       timeText,
       metrics,
       fromLocation: fromLoc && fromLoc !== 'Unknown Location' ? fromLoc : undefined,
@@ -848,8 +835,6 @@ function buildNotifDisplayData(notif: AppNotificationRecord): NotifDisplayData {
         : matchVal(/Start Odometer:\s*([^\n]+)/);
     const startLoc = meta?.start_location || matchVal(/Start:\s*([^\n]+)/);
     const startedAt = matchVal(/Started:\s*([^\n]+)/);
-    const shortLoc = shortPlaceName(startLoc);
-    const summaryParts = [shortLoc, startSoc ? `${startSoc} battery` : ''].filter(Boolean);
     const metrics: NotifMetricCell[] = [
       startedAt ? { label: 'Started', value: startedAt } : null,
       startSoc ? { label: 'Battery', value: `${startSoc} SOC` } : null,
@@ -859,7 +844,7 @@ function buildNotifDisplayData(notif: AppNotificationRecord): NotifDisplayData {
     return {
       kind: 'trip_start',
       title: 'Trip started',
-      summary: summaryParts.join(' · ') || 'Trip recording started',
+      summary: '',
       timeText,
       metrics,
       fromLocation: startLoc && startLoc !== 'Unknown Location' ? startLoc : undefined,
@@ -2746,7 +2731,31 @@ export default function App() {
   const [expandedNotifIds, setExpandedNotifIds] = useState<Record<string, boolean>>({});
   const [notifsVisibleCount, setNotifsVisibleCount] = useState<number>(20);
   const [notifsFetchLimit, setNotifsFetchLimit] = useState<number>(60);
-  const [showNotifsOptionsMenu, setShowNotifsOptionsMenu] = useState<boolean>(false);
+
+  const handleClearNotifsHistory = () => {
+    if (isNotifsLoading || d1Notifications.length === 0) return;
+    Alert.alert(
+      'Clear Notification History',
+      'Are you sure you want to delete all saved notifications from Cloudflare D1?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            const ok = await clearD1Notifications();
+            if (ok) {
+              setD1Notifications([]);
+              setExpandedNotifIds({});
+              showBanner('ok', 'Cleared notification history from Cloudflare D1');
+            } else {
+              showBanner('err', 'Failed to clear notifications');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const handleOpenNotifsScreen = () => {
     setNotifFilter('all');
@@ -2769,7 +2778,6 @@ export default function App() {
   };
 
   const handleCloseNotifsScreen = () => {
-    setShowNotifsOptionsMenu(false);
     notifsScreenSlideAnim.stopAnimation();
     Animated.timing(notifsScreenSlideAnim, {
       toValue: 0,
@@ -11975,16 +11983,30 @@ export default function App() {
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={styles.nhCircleIconBtn}
-                      onPress={() => setShowNotifsOptionsMenu(true)}
+                      style={[
+                        styles.nhCircleIconBtn,
+                        (isNotifsLoading || d1Notifications.length === 0) && { opacity: 0.45 },
+                      ]}
+                      onPress={handleClearNotifsHistory}
+                      disabled={isNotifsLoading || d1Notifications.length === 0}
                       activeOpacity={0.7}
-                      accessibilityLabel="Notifications options"
+                      accessibilityLabel="Delete all notifications"
                       accessibilityRole="button"
                     >
-                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="#F8FAFC">
-                        <Circle cx="6" cy="12" r="1.7" />
-                        <Circle cx="12" cy="12" r="1.7" />
-                        <Circle cx="18" cy="12" r="1.7" />
+                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth={2}>
+                        <Path d="M3 6h18" strokeLinecap="round" strokeLinejoin="round" />
+                        <Path
+                          d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <Path
+                          d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <Line x1="10" y1="11" x2="10" y2="17" strokeLinecap="round" />
+                        <Line x1="14" y1="11" x2="14" y2="17" strokeLinecap="round" />
                       </Svg>
                     </TouchableOpacity>
                   </View>
@@ -12047,7 +12069,10 @@ export default function App() {
                               {idx > 0 && <View style={styles.nhRowDivider} />}
                               <View style={styles.nhItemWrap}>
                                 <TouchableOpacity
-                                  style={styles.nhItemHeaderRow}
+                                  style={[
+                                    styles.nhItemHeaderRow,
+                                    !info.summary && { alignItems: 'center' },
+                                  ]}
                                   onPress={() => toggleExpand(notif.id)}
                                   activeOpacity={0.75}
                                 >
@@ -12088,9 +12113,11 @@ export default function App() {
                                     <Text style={styles.nhItemTitle}>
                                       {info.title}
                                     </Text>
-                                    <Text style={styles.nhItemSummary}>
-                                      {info.summary}
-                                    </Text>
+                                    {info.summary ? (
+                                      <Text style={styles.nhItemSummary}>
+                                        {info.summary}
+                                      </Text>
+                                    ) : null}
                                   </View>
 
                                   <View style={styles.nhItemRightCol}>
@@ -12183,57 +12210,6 @@ export default function App() {
                   </TouchableOpacity>
                 )}
               </ScrollView>
-
-              {/* Notifications Options Slide-Up Bottom Sheet */}
-              <DataOptionsBottomSheet
-                visible={showNotifsOptionsMenu}
-                title="Notifications data"
-                disabled={isNotifsLoading}
-                onClose={() => setShowNotifsOptionsMenu(false)}
-                options={[
-                  {
-                    key: 'refresh',
-                    title: 'Refresh from cloud',
-                    subtitle: 'Download the latest notifications from D1',
-                    icon: 'refresh',
-                    onPress: () => {
-                      setShowNotifsOptionsMenu(false);
-                      refreshD1Notifications();
-                    },
-                  },
-                  {
-                    key: 'clear',
-                    title: 'Clear all notifications',
-                    subtitle: 'Deletes every stored notification in D1',
-                    icon: 'trash',
-                    destructive: true,
-                    onPress: () => {
-                      setShowNotifsOptionsMenu(false);
-                      Alert.alert(
-                        'Clear Notification History',
-                        'Are you sure you want to delete all saved notifications from Cloudflare D1?',
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          {
-                            text: 'Clear All',
-                            style: 'destructive',
-                            onPress: async () => {
-                              const ok = await clearD1Notifications();
-                              if (ok) {
-                                setD1Notifications([]);
-                                setExpandedNotifIds({});
-                                showBanner('ok', 'Cleared notification history from Cloudflare D1');
-                              } else {
-                                showBanner('err', 'Failed to clear notifications');
-                              }
-                            },
-                          },
-                        ]
-                      );
-                    },
-                  },
-                ]}
-              />
             </SafeAreaView>
           </Animated.View>
         );
