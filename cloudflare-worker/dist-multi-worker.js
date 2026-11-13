@@ -10,12 +10,24 @@ var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require
   if (typeof require !== "undefined") return require.apply(this, arguments);
   throw Error('Dynamic require of "' + x + '" is not supported');
 });
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
 var __commonJS = (cb, mod) => function __require2() {
   try {
     return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   } catch (e) {
     throw mod = 0, e;
   }
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -33,6 +45,12 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+
+// (disabled):crypto
+var require_crypto = __commonJS({
+  "(disabled):crypto"() {
+  }
+});
 
 // node_modules/crypto-js/core.js
 var require_core = __commonJS({
@@ -65,7 +83,7 @@ var require_core = __commonJS({
         }
         if (!crypto2 && typeof __require === "function") {
           try {
-            crypto2 = __require("crypto");
+            crypto2 = require_crypto();
           } catch (err) {
           }
         }
@@ -6585,6 +6603,372 @@ var require_crypto_js = __commonJS({
   }
 });
 
+// cloudflare-worker/multi-user-auth.ts
+var multi_user_auth_exports = {};
+__export(multi_user_auth_exports, {
+  createD1AuthDbAdapter: () => createD1AuthDbAdapter,
+  createEnvAuthKvStore: () => createEnvAuthKvStore,
+  ensureWebhookKey: () => ensureWebhookKey,
+  extractBearerOrHeaderToken: () => extractBearerOrHeaderToken,
+  extractWebhookKey: () => extractWebhookKey,
+  generateOpaqueSecret: () => generateOpaqueSecret,
+  isUserAuthorized: () => isUserAuthorized,
+  issueOrAdoptApiToken: () => issueOrAdoptApiToken,
+  normPhoneValue: () => normPhoneValue,
+  normVinValue: () => normVinValue,
+  registerLicenseToken: () => registerLicenseToken,
+  requireScopedVin: () => requireScopedVin,
+  resolveAppAuth: () => resolveAppAuth,
+  resolveWebhookAuth: () => resolveWebhookAuth,
+  revokeTokensForVin: () => revokeTokensForVin,
+  verifyCarRegistrationCaller: () => verifyCarRegistrationCaller
+});
+function normVinValue(raw) {
+  return String(raw || "").trim().toUpperCase();
+}
+function normPhoneValue(raw) {
+  return String(raw || "").replace(/\D/g, "");
+}
+function requireScopedVin(vin) {
+  const clean = normVinValue(vin);
+  return clean.length > 0 ? clean : null;
+}
+function generateOpaqueSecret(prefix, byteLength = 18) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${prefix}_${hex}`;
+}
+function createD1AuthDbAdapter(db) {
+  if (!db) return null;
+  return {
+    async getUserStatus(phone) {
+      const clean = normPhoneValue(phone);
+      if (!clean) return null;
+      const row = await db.prepare("SELECT status FROM authorized_users WHERE phone = ?").bind(clean).first();
+      if (!row) return null;
+      return String(row.status || "active").toLowerCase();
+    }
+  };
+}
+function createEnvAuthKvStore(env, onBeforeWrite) {
+  return {
+    async get(key) {
+      if (env.DB) {
+        try {
+          const row = await env.DB.prepare("SELECT value FROM kv_store WHERE key = ?").bind(key).first();
+          if (row?.value != null) {
+            try {
+              return JSON.parse(row.value);
+            } catch (_) {
+              return row.value;
+            }
+          }
+        } catch (_) {
+        }
+      }
+      if (env.TRIP_KV) {
+        try {
+          return await env.TRIP_KV.get(key, "json");
+        } catch (_) {
+        }
+      }
+      return null;
+    },
+    async put(key, value) {
+      const str = typeof value === "string" ? value : JSON.stringify(value);
+      if (env.DB) {
+        if (onBeforeWrite) await onBeforeWrite(env.DB);
+        try {
+          await env.DB.prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)").bind(key, str).run();
+        } catch (_) {
+        }
+      }
+      if (env.TRIP_KV) {
+        try {
+          await env.TRIP_KV.put(key, str);
+        } catch (_) {
+        }
+      }
+    },
+    async delete(key) {
+      if (env.DB) {
+        try {
+          await env.DB.prepare("DELETE FROM kv_store WHERE key = ?").bind(key).run();
+        } catch (_) {
+        }
+      }
+      if (env.TRIP_KV) {
+        try {
+          await env.TRIP_KV.delete(key);
+        } catch (_) {
+        }
+      }
+    }
+  };
+}
+function extractBearerOrHeaderToken(request, body) {
+  const authHeader = request.headers.get("authorization") || request.headers.get("Authorization") || "";
+  if (/^Bearer\s+/i.test(authHeader)) {
+    const bearer = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (bearer) return bearer;
+  }
+  const headerTok = (request.headers.get("x-d1-token") || "").trim();
+  if (headerTok) return headerTok;
+  const bodyTok = body?.apiToken || body?.d1Token;
+  return typeof bodyTok === "string" ? bodyTok.trim() : "";
+}
+function extractWebhookKey(request, url, body) {
+  const qKey = (url.searchParams.get("key") || "").trim();
+  if (qKey) return qKey;
+  const hKey = (request.headers.get("x-webhook-key") || "").trim();
+  if (hKey) return hKey;
+  const bKey = body?.key;
+  return typeof bKey === "string" ? bKey.trim() : "";
+}
+async function isUserAuthorized(db, phone, isMasterAdminFn) {
+  const cleanPhone = normPhoneValue(phone);
+  if (!cleanPhone) return false;
+  if (isMasterAdminFn(cleanPhone)) return true;
+  if (!db) return true;
+  const status = await db.getUserStatus(cleanPhone);
+  return status === "active";
+}
+async function registerLicenseToken(store, params) {
+  const tok = String(params.token || "").trim();
+  const cleanPhone = normPhoneValue(params.phone);
+  const cleanVin = normVinValue(params.vin);
+  if (!tok || !cleanPhone) return;
+  const nowSec = Math.floor(Date.now() / 1e3);
+  const record = {
+    vin: cleanVin,
+    phone: cleanPhone,
+    createdAt: nowSec,
+    updatedAt: nowSec
+  };
+  await store.put(`api_token:${tok}`, record);
+  if (cleanVin) {
+    await appendVinTokenIndex(store, cleanVin, tok);
+  }
+}
+async function appendVinTokenIndex(store, vin, token) {
+  const cleanVin = normVinValue(vin);
+  if (!cleanVin || !token) return;
+  const indexKey = `api_tokens_vin:${cleanVin}`;
+  const rawList = await store.get(indexKey);
+  const existing = Array.isArray(rawList) ? rawList.filter((t) => typeof t === "string") : [];
+  const next = existing.filter((t) => t !== token);
+  next.push(token);
+  const trimmed = next.slice(-MAX_API_TOKENS_PER_VIN);
+  await store.put(indexKey, trimmed);
+}
+async function ensureWebhookKey(store, vin, phone, forceRotate = false) {
+  const cleanVin = normVinValue(vin);
+  const cleanPhone = normPhoneValue(phone);
+  if (!cleanVin) throw new Error("VIN is required to issue a webhook key");
+  const vinPtrKey = `webhook_key_vin:${cleanVin}`;
+  const existingKeyRaw = await store.get(vinPtrKey);
+  const existingKey = typeof existingKeyRaw === "string" ? existingKeyRaw.trim() : "";
+  if (!forceRotate && existingKey.startsWith("wk_")) {
+    const rec2 = await store.get(`webhook_key:${existingKey}`);
+    if (rec2 && normVinValue(rec2.vin) === cleanVin) {
+      if (cleanPhone && normPhoneValue(rec2.phone) !== cleanPhone) {
+        await store.put(`webhook_key:${existingKey}`, {
+          ...rec2,
+          phone: cleanPhone,
+          updatedAt: Math.floor(Date.now() / 1e3)
+        });
+      }
+      return existingKey;
+    }
+  }
+  if (existingKey) {
+    await store.delete(`webhook_key:${existingKey}`);
+  }
+  const newKey = generateOpaqueSecret("wk", 18);
+  const nowSec = Math.floor(Date.now() / 1e3);
+  const rec = {
+    vin: cleanVin,
+    phone: cleanPhone,
+    createdAt: nowSec,
+    updatedAt: nowSec
+  };
+  await store.put(`webhook_key:${newKey}`, rec);
+  await store.put(vinPtrKey, newKey);
+  return newKey;
+}
+async function issueOrAdoptApiToken(store, params) {
+  const cleanVin = normVinValue(params.vin);
+  const cleanPhone = normPhoneValue(params.phone);
+  const uid = String(params.uid || "").trim();
+  const candidate = String(params.candidateToken || "").trim();
+  if (!cleanVin || !cleanPhone) throw new Error("VIN and phone are required to issue API token");
+  const nowSec = Math.floor(Date.now() / 1e3);
+  if (candidate) {
+    const existing = await store.get(`api_token:${candidate}`);
+    if (existing) {
+      const exPhone = normPhoneValue(existing.phone);
+      const exVin = normVinValue(existing.vin);
+      const sameOwner = (!exPhone || exPhone === cleanPhone) && (!exVin || exVin === cleanVin);
+      if (sameOwner) {
+        await store.put(`api_token:${candidate}`, {
+          vin: cleanVin,
+          phone: cleanPhone,
+          uid: uid || existing.uid || "",
+          createdAt: existing.createdAt || nowSec,
+          updatedAt: nowSec
+        });
+        await appendVinTokenIndex(store, cleanVin, candidate);
+        return candidate;
+      }
+    } else if (candidate.startsWith(`lic_${cleanPhone}_`)) {
+      await store.put(`api_token:${candidate}`, {
+        vin: cleanVin,
+        phone: cleanPhone,
+        uid,
+        createdAt: nowSec,
+        updatedAt: nowSec
+      });
+      await appendVinTokenIndex(store, cleanVin, candidate);
+      return candidate;
+    }
+  }
+  const fresh = generateOpaqueSecret("d1t", 20);
+  await store.put(`api_token:${fresh}`, {
+    vin: cleanVin,
+    phone: cleanPhone,
+    uid,
+    createdAt: nowSec,
+    updatedAt: nowSec
+  });
+  await appendVinTokenIndex(store, cleanVin, fresh);
+  return fresh;
+}
+async function revokeTokensForVin(store, vin) {
+  const cleanVin = normVinValue(vin);
+  if (!cleanVin) return;
+  const indexKey = `api_tokens_vin:${cleanVin}`;
+  const tokensRaw = await store.get(indexKey);
+  if (Array.isArray(tokensRaw)) {
+    for (const tok of tokensRaw) {
+      if (typeof tok === "string" && tok) {
+        await store.delete(`api_token:${tok}`);
+      }
+    }
+  }
+  await store.delete(indexKey);
+  const vinPtrKey = `webhook_key_vin:${cleanVin}`;
+  const wk = await store.get(vinPtrKey);
+  if (typeof wk === "string" && wk) {
+    await store.delete(`webhook_key:${wk}`);
+  }
+  await store.delete(vinPtrKey);
+}
+async function resolveAppAuth(store, db, isMasterAdminFn, request, url, body) {
+  const token = extractBearerOrHeaderToken(request, body);
+  if (!token) {
+    return { ok: false, status: 401, error: "Authentication required" };
+  }
+  const rec = await store.get(`api_token:${token}`);
+  if (!rec) {
+    return { ok: false, status: 401, error: "Invalid or expired session token" };
+  }
+  const tokenVin = normVinValue(rec.vin);
+  const tokenPhone = normPhoneValue(rec.phone);
+  if (!tokenVin || !tokenPhone) {
+    return { ok: false, status: 401, error: "Session token is missing vehicle binding" };
+  }
+  const authorized = await isUserAuthorized(db, tokenPhone, isMasterAdminFn);
+  if (!authorized) {
+    return { ok: false, status: 403, error: "Account access has been revoked or removed" };
+  }
+  const requestedVin = normVinValue(url.searchParams.get("vin") || body?.vin);
+  if (requestedVin && requestedVin !== tokenVin) {
+    return { ok: false, status: 403, error: "VIN does not match authenticated account" };
+  }
+  return {
+    ok: true,
+    vin: tokenVin,
+    phone: tokenPhone,
+    uid: rec.uid,
+    token
+  };
+}
+async function resolveWebhookAuth(store, db, isMasterAdminFn, request, url, body) {
+  const key = extractWebhookKey(request, url, body);
+  if (!key) {
+    return { ok: false, status: 401, error: "Missing private webhook key (?key=...)" };
+  }
+  const rec = await store.get(`webhook_key:${key}`);
+  if (!rec || !normVinValue(rec.vin)) {
+    return { ok: false, status: 401, error: "Invalid or revoked webhook key" };
+  }
+  const recVin = normVinValue(rec.vin);
+  const recPhone = normPhoneValue(rec.phone);
+  if (recPhone) {
+    const authorized = await isUserAuthorized(db, recPhone, isMasterAdminFn);
+    if (!authorized) {
+      return { ok: false, status: 403, error: "Access revoked for this vehicle" };
+    }
+  }
+  const requestedVin = normVinValue(url.searchParams.get("vin") || body?.vin);
+  if (requestedVin && requestedVin !== recVin) {
+    return { ok: false, status: 403, error: "Webhook key does not match requested VIN" };
+  }
+  return {
+    ok: true,
+    vin: recVin,
+    phone: recPhone,
+    key
+  };
+}
+async function verifyCarRegistrationCaller(store, db, isMasterAdminFn, request, body) {
+  const uid = String(body?.uid || "").trim();
+  const mgToken = String(body?.token || "").trim();
+  const cleanVin = normVinValue(body?.vin);
+  const cleanPhone = normPhoneValue(body?.phone);
+  if (!uid || !mgToken || !cleanVin || !cleanPhone) {
+    return { ok: false, status: 400, error: "uid, token, vin, and phone are required" };
+  }
+  const authorized = await isUserAuthorized(db, cleanPhone, isMasterAdminFn);
+  if (!authorized) {
+    return { ok: false, status: 403, error: "Account is not authorized or access has been revoked" };
+  }
+  const candidateToken = extractBearerOrHeaderToken(request, body) || (typeof body?.licenseToken === "string" ? body.licenseToken.trim() : "");
+  const existingTokenRec = candidateToken ? await store.get(`api_token:${candidateToken}`) : null;
+  if (existingTokenRec) {
+    const tokPhone = normPhoneValue(existingTokenRec.phone);
+    const tokVin = normVinValue(existingTokenRec.vin);
+    if (tokPhone && tokPhone !== cleanPhone || tokVin && tokVin !== cleanVin) {
+      return { ok: false, status: 403, error: "Session token belongs to another user or vehicle" };
+    }
+  }
+  const existingSession = await store.get(`mg_session:${cleanVin}`);
+  if (existingSession) {
+    const sessPhone = normPhoneValue(existingSession.phone);
+    const sessUid = String(existingSession.uid || "").trim();
+    if (sessPhone && sessPhone !== cleanPhone) {
+      return { ok: false, status: 403, error: "Vehicle VIN is already registered to another account" };
+    }
+    if (!existingTokenRec && sessUid && sessUid !== uid) {
+      return { ok: false, status: 403, error: "Vehicle session UID mismatch" };
+    }
+  }
+  return {
+    ok: true,
+    vin: cleanVin,
+    phone: cleanPhone,
+    candidateToken
+  };
+}
+var MAX_API_TOKENS_PER_VIN;
+var init_multi_user_auth = __esm({
+  "cloudflare-worker/multi-user-auth.ts"() {
+    "use strict";
+    MAX_API_TOKENS_PER_VIN = 12;
+  }
+});
+
 // src/sdk/bitcodec.ts
 function hexToBytes(hex) {
   const clean = hex.trim();
@@ -8453,7 +8837,7 @@ var silent_webhook_default = {
           window.location.replace(targetUrl);
         }, 100);
       })();
-    </script>
+    <\/script>
   </body>
 </html>`;
       return new Response(html, {
@@ -9024,6 +9408,7 @@ function resolveChargingEndRangeKm(params) {
 }
 
 // cloudflare-worker/admin-portal.ts
+init_multi_user_auth();
 var ADMIN_TABLE_SCHEMAS = [
   `CREATE TABLE IF NOT EXISTS access_codes (
     code TEXT PRIMARY KEY,
@@ -9308,6 +9693,15 @@ async function consumeAccessCode(env, rawCode, rawPhone, vin, carName, deviceInf
     } catch (e) {
       console.warn("consumeAccessCode error:", e);
     }
+  }
+  try {
+    const authKv = createEnvAuthKvStore(env, async (db) => {
+      await db.prepare("CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT)").run().catch(() => {
+      });
+    });
+    await registerLicenseToken(authKv, { token: licenseToken, phone, vin });
+  } catch (e) {
+    console.warn("registerLicenseToken error:", e);
   }
   const isAdmin = Boolean(isMasterAdminPhone(phone, env) || code === MASTER_ACCESS_CODE || check.isAdmin);
   return { success: true, licenseToken, isAdmin };
@@ -10733,7 +11127,7 @@ function renderAdminWebsiteHtml(env, url) {
 
     // Initialize View
     checkAuth();
-  </script>
+  <\/script>
 </body>
 </html>`;
   return new Response(html, {
@@ -10746,6 +11140,7 @@ function renderAdminWebsiteHtml(env, url) {
 }
 
 // cloudflare-worker/multi-worker.ts
+init_multi_user_auth();
 var CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -11426,7 +11821,7 @@ function redirectPage(target, title) {
 .b{background:#1C2541;padding:28px;border-radius:16px;border:1px solid #3A506B;max-width:320px}h2{color:#10B981;margin:0 0 10px}
 a{display:inline-block;padding:12px 24px;background:#10B981;color:#fff;border-radius:10px;text-decoration:none;font-weight:bold}</style></head>
 <body><div class="b"><h2>${title}</h2><p>Returning you to the app...</p><a href="${target}">Open MG Windsor EV App</a></div>
-<script>setTimeout(function(){window.location.replace(${JSON.stringify(target)})},50);</script></body></html>`;
+<script>setTimeout(function(){window.location.replace(${JSON.stringify(target)})},50);<\/script></body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 function finishSignIn(env, url, query, title) {
@@ -11454,7 +11849,7 @@ Allowed list currently: ${allowed.join(", ") || "(none)"}`,
 .b{background:#1C2541;padding:28px;border-radius:16px;border:1px solid #3A506B;max-width:320px}h2{color:#10B981;margin:0 0 10px}
 a{display:inline-block;padding:12px 24px;background:#10B981;color:#fff;border-radius:10px;text-decoration:none;font-weight:bold}</style></head>
 <body><div class="b"><h2>\u2705 Connected to Google!</h2><p>Returning you to the MG Windsor EV app...</p><a href="${targetUrl}">Open MG Windsor EV App</a></div>
-<script>window.location.replace(${JSON.stringify(targetUrl)});</script></body></html>`;
+<script>window.location.replace(${JSON.stringify(targetUrl)});<\/script></body></html>`;
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
   return redirectPage(`mgismart://google-auth?${query}`, title);
@@ -11703,18 +12098,32 @@ async function initD1(db) {
     }
   }
   try {
-    const sessRow = await db.prepare("SELECT value FROM kv_store WHERE key = 'mg_active_session'").first();
-    if (sessRow?.value) {
-      const parsed = JSON.parse(sessRow.value);
-      const primaryVin = normVin(parsed?.vin);
-      if (primaryVin) {
-        for (const tbl of ["trips", "charges", "charging_sessions", "notifications"]) {
-          try {
-            await db.prepare(`UPDATE ${tbl} SET vin = ? WHERE vin IS NULL OR vin = ''`).bind(primaryVin).run();
-          } catch (_) {
+    const doneRow = await db.prepare("SELECT value FROM kv_store WHERE key = 'legacy_vin_backfill_done'").first();
+    if (!doneRow?.value) {
+      const countRow = await db.prepare(`
+        SELECT COUNT(DISTINCT vin) AS c FROM (
+          SELECT vin FROM trips WHERE vin IS NOT NULL AND vin != ''
+          UNION SELECT vin FROM charges WHERE vin IS NOT NULL AND vin != ''
+          UNION SELECT vin FROM charging_sessions WHERE vin IS NOT NULL AND vin != ''
+        )
+      `).first();
+      const distinctVinCount = Number(countRow?.c) || 0;
+      if (distinctVinCount <= 1) {
+        const sessRow = await db.prepare("SELECT value FROM kv_store WHERE key = 'mg_active_session'").first();
+        if (sessRow?.value) {
+          const parsed = JSON.parse(sessRow.value);
+          const primaryVin = normVin(parsed?.vin);
+          if (primaryVin) {
+            for (const tbl of ["trips", "charges", "charging_sessions", "notifications"]) {
+              try {
+                await db.prepare(`UPDATE ${tbl} SET vin = ? WHERE vin IS NULL OR vin = ''`).bind(primaryVin).run();
+              } catch (_) {
+              }
+            }
           }
         }
       }
+      await db.prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES ('legacy_vin_backfill_done', '1')").run();
     }
   } catch (_) {
   }
@@ -11884,16 +12293,11 @@ function formatClockTime(sec) {
   return `${String(h).padStart(2, "0")}:${m} ${ampm}`;
 }
 async function getPushSubscriptionsForVin(env, vin) {
-  const v = normVin(vin || env.MG_VIN);
-  const key = v ? `push_subs:${v}` : "push_subs:default";
+  const v = requireScopedVin(vin);
+  if (!v) return { key: "push_subs:none", subs: [] };
+  const key = `push_subs:${v}`;
   const raw = await d1KvGet(env, key);
   const subs = Array.isArray(raw) ? raw : [];
-  if (subs.length === 0 && v) {
-    const fallback = await d1KvGet(env, "push_subs:default");
-    if (Array.isArray(fallback) && fallback.length > 0) {
-      return { key: "push_subs:default", subs: fallback };
-    }
-  }
   return { key, subs };
 }
 async function dispatchTripNotification(url, title, bodyText, tags = "car", env, vin) {
@@ -11929,7 +12333,8 @@ async function dispatchTripNotification(url, title, bodyText, tags = "car", env,
   return result;
 }
 async function d1InsertTrip(env, trip) {
-  const v = normVin(trip.vin);
+  const v = requireScopedVin(trip.vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
@@ -12004,10 +12409,10 @@ async function d1InsertTrip(env, trip) {
     try {
       const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
       const filtered = trips.filter((t) => t.id !== trip.id);
-      filtered.unshift({ ...trip, vin: v || trip.vin });
+      filtered.unshift({ ...trip, vin: v });
       await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(filtered.slice(0, 300)));
       if (trip.status === "ongoing") {
-        await env.TRIP_KV.put(v ? `d1_fallback:active_trip:${v}` : "d1_fallback:active_trip", JSON.stringify({ ...trip, vin: v || trip.vin }));
+        await env.TRIP_KV.put(`d1_fallback:active_trip:${v}`, JSON.stringify({ ...trip, vin: v }));
       }
     } catch (_) {
     }
@@ -12015,15 +12420,16 @@ async function d1InsertTrip(env, trip) {
 }
 async function d1BatchSyncTrips(env, rawTrips, defaultVin) {
   if (!Array.isArray(rawTrips) || rawTrips.length === 0) return 0;
+  const fallbackVin = requireScopedVin(defaultVin);
+  if (!fallbackVin) return 0;
   let count = 0;
-  const fallbackVin = normVin(defaultVin);
   if (env.DB) {
     await initD1(env.DB);
     for (const trip of rawTrips) {
       try {
         const id = trip.id || "trip_" + (trip.start_timestamp || Math.floor(Date.now() / 1e3)) + "_" + Math.random().toString(36).substring(2, 6);
         const date = trip.date || (trip.start_timestamp ? istDateString(Number(trip.start_timestamp)) : istDateString(Math.floor(Date.now() / 1e3)));
-        const v = normVin(trip.vin) || fallbackVin || null;
+        const v = fallbackVin;
         try {
           await env.DB.prepare(`
             INSERT OR REPLACE INTO trips (
@@ -12120,45 +12526,42 @@ async function d1BatchSyncTrips(env, rawTrips, defaultVin) {
   }
   return count;
 }
-async function d1DeleteTrip(env, tripId) {
+async function d1DeleteTrip(env, tripId, vin) {
+  const v = requireScopedVin(vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare("DELETE FROM trips WHERE id = ?").bind(tripId).run();
+      await env.DB.prepare("DELETE FROM trips WHERE id = ? AND vin = ?").bind(tripId, v).run();
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
       const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-      await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.filter((t) => t.id !== tripId)));
+      await env.TRIP_KV.put(
+        "d1_fallback:trips",
+        JSON.stringify(trips.filter((t) => !(t.id === tripId && normVin(t.vin) === v)))
+      );
     } catch (_) {
     }
   }
 }
 async function d1ClearTrips(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        await env.DB.prepare("DELETE FROM trips WHERE vin = ?").bind(v).run();
-      } else {
-        await env.DB.prepare("DELETE FROM trips").run();
-      }
+      await env.DB.prepare("DELETE FROM trips WHERE vin = ?").bind(v).run();
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      if (v) {
-        const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-        await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.filter((t) => normVin(t.vin) !== v)));
-        await env.TRIP_KV.delete(`d1_fallback:active_trip:${v}`);
-      } else {
-        await env.TRIP_KV.delete("d1_fallback:trips");
-        await env.TRIP_KV.delete("d1_fallback:active_trip");
-      }
+      const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
+      await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.filter((t) => normVin(t.vin) !== v)));
+      await env.TRIP_KV.delete(`d1_fallback:active_trip:${v}`);
     } catch (_) {
     }
   }
@@ -12246,36 +12649,27 @@ async function d1UpdateTrip(env, tripId, updates) {
         await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.slice(0, 200)));
         if (v) await env.TRIP_KV.delete(`d1_fallback:active_trip:${v}`);
       }
-      await env.TRIP_KV.delete("d1_fallback:active_trip");
     } catch (_) {
     }
   }
 }
 async function d1GetActiveTrip(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return null;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY start_timestamp DESC LIMIT 1").bind(v).first();
-        if (row) return row;
-      } else {
-        const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' ORDER BY start_timestamp DESC LIMIT 1").first();
-        if (row) return row;
-      }
+      const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' AND vin = ? ORDER BY start_timestamp DESC LIMIT 1").bind(v).first();
+      if (row) return row;
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      if (v) {
-        const activeV = await env.TRIP_KV.get(`d1_fallback:active_trip:${v}`, "json");
-        if (activeV) return activeV;
-      }
-      const active = await env.TRIP_KV.get("d1_fallback:active_trip", "json");
-      if (active && (!v || !active.vin || normVin(active.vin) === v)) return active;
+      const activeV = await env.TRIP_KV.get(`d1_fallback:active_trip:${v}`, "json");
+      if (activeV && normVin(activeV.vin) === v) return activeV;
       const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-      return trips.find((t) => t.status === "ongoing" && (!v || !t.vin || normVin(t.vin) === v)) || null;
+      return trips.find((t) => t.status === "ongoing" && normVin(t.vin) === v) || null;
     } catch (_) {
     }
   }
@@ -12345,24 +12739,19 @@ function d1DeduplicateTripRows(trips) {
   return { clean, duplicateIds };
 }
 async function d1DeduplicateTrips(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return { removedCount: 0, duplicateIds: [] };
   let allTrips = [];
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const res = await env.DB.prepare("SELECT * FROM trips WHERE vin = ? ORDER BY start_timestamp DESC").bind(v).all();
-        allTrips = res.results || [];
-      } else {
-        const res = await env.DB.prepare("SELECT * FROM trips ORDER BY start_timestamp DESC").all();
-        allTrips = res.results || [];
-      }
+      const res = await env.DB.prepare("SELECT * FROM trips WHERE vin = ? ORDER BY start_timestamp DESC").bind(v).all();
+      allTrips = res.results || [];
     } catch (_) {
     }
   } else if (env.TRIP_KV) {
     try {
-      allTrips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-      if (v) allTrips = allTrips.filter((t) => normVin(t.vin) === v);
+      allTrips = (await env.TRIP_KV.get("d1_fallback:trips", "json") || []).filter((t) => normVin(t.vin) === v);
     } catch (_) {
     }
   }
@@ -12371,7 +12760,7 @@ async function d1DeduplicateTrips(env, vin) {
     if (env.DB) {
       for (const id of duplicateIds) {
         try {
-          await env.DB.prepare("DELETE FROM trips WHERE id = ?").bind(id).run();
+          await env.DB.prepare("DELETE FROM trips WHERE id = ? AND vin = ?").bind(id, v).run();
         } catch (_) {
         }
       }
@@ -12379,7 +12768,7 @@ async function d1DeduplicateTrips(env, vin) {
     if (env.TRIP_KV) {
       try {
         let trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-        trips = trips.filter((t) => !duplicateIds.includes(String(t.id)));
+        trips = trips.filter((t) => !(normVin(t.vin) === v && duplicateIds.includes(String(t.id))));
         await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips));
       } catch (_) {
       }
@@ -12388,31 +12777,23 @@ async function d1DeduplicateTrips(env, vin) {
   return { removedCount: duplicateIds.length, duplicateIds };
 }
 async function d1GetTrips(env, date, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return [];
   if (env.DB) {
     await initD1(env.DB);
     try {
       if (!date || date === "all") {
-        if (v) {
-          const res3 = await env.DB.prepare("SELECT * FROM trips WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
-          return d1DeduplicateTripRows(res3.results || []).clean;
-        }
-        const res2 = await env.DB.prepare("SELECT * FROM trips ORDER BY start_timestamp DESC LIMIT 150").all();
+        const res2 = await env.DB.prepare("SELECT * FROM trips WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
         return d1DeduplicateTripRows(res2.results || []).clean;
       }
-      if (v) {
-        const res2 = await env.DB.prepare("SELECT * FROM trips WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
-        return d1DeduplicateTripRows(res2.results || []).clean;
-      }
-      const res = await env.DB.prepare("SELECT * FROM trips WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
+      const res = await env.DB.prepare("SELECT * FROM trips WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
       return d1DeduplicateTripRows(res.results || []).clean;
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      let trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-      if (v) trips = trips.filter((t) => normVin(t.vin) === v);
+      const trips = (await env.TRIP_KV.get("d1_fallback:trips", "json") || []).filter((t) => normVin(t.vin) === v);
       const filtered = !date || date === "all" ? trips : trips.filter((t) => t.date === date);
       return d1DeduplicateTripRows(filtered).clean;
     } catch (_) {
@@ -12421,23 +12802,19 @@ async function d1GetTrips(env, date, vin) {
   return [];
 }
 async function d1GetTripDates(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return [];
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const res2 = await env.DB.prepare("SELECT DISTINCT date FROM trips WHERE vin = ? ORDER BY date DESC").bind(v).all();
-        return (res2.results || []).map((r) => r.date).filter(Boolean);
-      }
-      const res = await env.DB.prepare("SELECT DISTINCT date FROM trips ORDER BY date DESC").all();
+      const res = await env.DB.prepare("SELECT DISTINCT date FROM trips WHERE vin = ? ORDER BY date DESC").bind(v).all();
       return (res.results || []).map((r) => r.date).filter(Boolean);
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      let trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-      if (v) trips = trips.filter((t) => normVin(t.vin) === v);
+      const trips = (await env.TRIP_KV.get("d1_fallback:trips", "json") || []).filter((t) => normVin(t.vin) === v);
       return Array.from(new Set(trips.map((t) => t.date).filter(Boolean)));
     } catch (_) {
     }
@@ -12445,7 +12822,8 @@ async function d1GetTripDates(env, vin) {
   return [];
 }
 async function d1InsertCharge(env, charge) {
-  const v = normVin(charge.vin);
+  const v = requireScopedVin(charge.vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
@@ -12454,7 +12832,7 @@ async function d1InsertCharge(env, charge) {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         charge.id,
-        v || null,
+        v,
         charge.date,
         charge.start_timestamp,
         charge.end_timestamp || null,
@@ -12475,10 +12853,10 @@ async function d1InsertCharge(env, charge) {
     try {
       const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
       const filtered = charges.filter((c) => c.id !== charge.id);
-      filtered.unshift({ ...charge, vin: v || charge.vin });
+      filtered.unshift({ ...charge, vin: v });
       await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(filtered.slice(0, 300)));
       if (charge.status === "charging") {
-        await env.TRIP_KV.put("d1_fallback:active_charge", JSON.stringify({ ...charge, vin: v || charge.vin }));
+        await env.TRIP_KV.put(`d1_fallback:active_charge:${v}`, JSON.stringify({ ...charge, vin: v }));
       }
     } catch (_) {
     }
@@ -12486,15 +12864,16 @@ async function d1InsertCharge(env, charge) {
 }
 async function d1BatchSyncCharges(env, rawCharges, defaultVin) {
   if (!Array.isArray(rawCharges) || rawCharges.length === 0) return 0;
+  const fallbackVin = requireScopedVin(defaultVin);
+  if (!fallbackVin) return 0;
   let count = 0;
-  const fallbackVin = normVin(defaultVin);
   if (env.DB) {
     await initD1(env.DB);
     for (const charge of rawCharges) {
       try {
         const id = charge.id || "chg_" + (charge.start_timestamp || Math.floor(Date.now() / 1e3)) + "_" + Math.random().toString(36).substring(2, 6);
         const date = charge.date || (charge.start_timestamp ? istDateString(Number(charge.start_timestamp)) : istDateString(Math.floor(Date.now() / 1e3)));
-        const v = normVin(charge.vin) || fallbackVin || null;
+        const v = fallbackVin;
         await env.DB.prepare(`
           INSERT OR REPLACE INTO charges (
             id, vin, date, start_timestamp, end_timestamp, duration_seconds,
@@ -12551,70 +12930,55 @@ async function d1BatchSyncCharges(env, rawCharges, defaultVin) {
   }
   return count;
 }
-async function d1DeleteCharge(env, chargeId) {
+async function d1DeleteCharge(env, chargeId, vin) {
+  const v = requireScopedVin(vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare("DELETE FROM charges WHERE id = ?").bind(chargeId).run();
-      await env.DB.prepare("DELETE FROM charging_sessions WHERE id = ?").bind(chargeId).run();
+      await env.DB.prepare("DELETE FROM charges WHERE id = ? AND vin = ?").bind(chargeId, v).run();
+      await env.DB.prepare("DELETE FROM charging_sessions WHERE id = ? AND vin = ?").bind(chargeId, v).run();
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
       const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-      await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges.filter((c) => c.id !== chargeId)));
+      await env.TRIP_KV.put(
+        "d1_fallback:charges",
+        JSON.stringify(charges.filter((c) => !(c.id === chargeId && normVin(c.vin) === v)))
+      );
     } catch (_) {
     }
   }
 }
 async function d1ClearCharges(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        await env.DB.prepare("DELETE FROM charges WHERE vin = ?").bind(v).run();
-      } else {
-        await env.DB.prepare("DELETE FROM charges").run();
-      }
+      await env.DB.prepare("DELETE FROM charges WHERE vin = ?").bind(v).run();
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      if (v) {
-        const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-        await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges.filter((c) => normVin(c.vin) !== v)));
-      } else {
-        await env.TRIP_KV.delete("d1_fallback:charges");
-        await env.TRIP_KV.delete("d1_fallback:active_charge");
-      }
+      const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
+      await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges.filter((c) => normVin(c.vin) !== v)));
+      await env.TRIP_KV.delete(`d1_fallback:active_charge:${v}`);
     } catch (_) {
     }
   }
 }
-async function d1UpdateCharge(env, chargeId, updates) {
+async function d1UpdateCharge(env, chargeId, updates, vin) {
+  const scopedVin = requireScopedVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare(`
-        UPDATE charges SET
-          end_timestamp = ?,
-          duration_seconds = ?,
-          end_soc = ?,
-          energy_added_kwh = ?,
-          peak_kw = ?,
-          status = 'completed'
-        WHERE id = ?
-      `).bind(
-        updates.end_timestamp,
-        updates.duration_seconds,
-        updates.end_soc,
-        updates.energy_added_kwh,
-        updates.peak_kw,
-        chargeId
-      ).run();
+      const sql = scopedVin ? `UPDATE charges SET end_timestamp = ?, duration_seconds = ?, end_soc = ?, energy_added_kwh = ?, peak_kw = ?, status = 'completed' WHERE id = ? AND vin = ?` : `UPDATE charges SET end_timestamp = ?, duration_seconds = ?, end_soc = ?, energy_added_kwh = ?, peak_kw = ?, status = 'completed' WHERE id = ?`;
+      const args = scopedVin ? [updates.end_timestamp, updates.duration_seconds, updates.end_soc, updates.energy_added_kwh, updates.peak_kw, chargeId, scopedVin] : [updates.end_timestamp, updates.duration_seconds, updates.end_soc, updates.energy_added_kwh, updates.peak_kw, chargeId];
+      await env.DB.prepare(sql).bind(...args).run();
     } catch (err) {
       console.warn("d1UpdateCharge error:", err);
     }
@@ -12622,37 +12986,36 @@ async function d1UpdateCharge(env, chargeId, updates) {
   if (env.TRIP_KV) {
     try {
       const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-      const idx = charges.findIndex((c) => c.id === chargeId);
+      const idx = charges.findIndex((c) => c.id === chargeId && (!scopedVin || normVin(c.vin) === scopedVin));
       if (idx !== -1) {
+        const v = scopedVin || normVin(charges[idx].vin);
         charges[idx] = { ...charges[idx], ...updates, status: "completed" };
         await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges.slice(0, 200)));
+        if (v) await env.TRIP_KV.delete(`d1_fallback:active_charge:${v}`);
+      } else if (scopedVin) {
+        await env.TRIP_KV.delete(`d1_fallback:active_charge:${scopedVin}`);
       }
-      await env.TRIP_KV.delete("d1_fallback:active_charge");
     } catch (_) {
     }
   }
 }
 async function d1GetActiveCharge(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return null;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const row = await env.DB.prepare("SELECT * FROM charges WHERE status = 'charging' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY start_timestamp DESC LIMIT 1").bind(v).first();
-        if (row) return row;
-      } else {
-        const row = await env.DB.prepare("SELECT * FROM charges WHERE status = 'charging' ORDER BY start_timestamp DESC LIMIT 1").first();
-        if (row) return row;
-      }
+      const row = await env.DB.prepare("SELECT * FROM charges WHERE status = 'charging' AND vin = ? ORDER BY start_timestamp DESC LIMIT 1").bind(v).first();
+      if (row) return row;
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      const active = await env.TRIP_KV.get("d1_fallback:active_charge", "json");
-      if (active && (!v || !active.vin || normVin(active.vin) === v)) return active;
+      const active = await env.TRIP_KV.get(`d1_fallback:active_charge:${v}`, "json");
+      if (active && normVin(active.vin) === v) return active;
       const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-      return charges.find((c) => c.status === "charging" && (!v || !c.vin || normVin(c.vin) === v)) || null;
+      return charges.find((c) => c.status === "charging" && normVin(c.vin) === v) || null;
     } catch (_) {
     }
   }
@@ -12716,24 +13079,19 @@ function d1DeduplicateChargeRows(charges) {
   return { clean, duplicateIds };
 }
 async function d1DeduplicateCharges(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return { removedCount: 0, duplicateIds: [] };
   let allCharges = [];
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const res = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC").bind(v).all();
-        allCharges = res.results || [];
-      } else {
-        const res = await env.DB.prepare("SELECT * FROM charges ORDER BY start_timestamp DESC").all();
-        allCharges = res.results || [];
-      }
+      const res = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC").bind(v).all();
+      allCharges = res.results || [];
     } catch (_) {
     }
   } else if (env.TRIP_KV) {
     try {
-      allCharges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-      if (v) allCharges = allCharges.filter((c) => normVin(c.vin) === v);
+      allCharges = (await env.TRIP_KV.get("d1_fallback:charges", "json") || []).filter((c) => normVin(c.vin) === v);
     } catch (_) {
     }
   }
@@ -12742,8 +13100,8 @@ async function d1DeduplicateCharges(env, vin) {
     if (env.DB) {
       for (const id of duplicateIds) {
         try {
-          await env.DB.prepare("DELETE FROM charges WHERE id = ?").bind(id).run();
-          await env.DB.prepare("DELETE FROM charging_sessions WHERE id = ?").bind(id).run();
+          await env.DB.prepare("DELETE FROM charges WHERE id = ? AND vin = ?").bind(id, v).run();
+          await env.DB.prepare("DELETE FROM charging_sessions WHERE id = ? AND vin = ?").bind(id, v).run();
         } catch (_) {
         }
       }
@@ -12751,7 +13109,7 @@ async function d1DeduplicateCharges(env, vin) {
     if (env.TRIP_KV) {
       try {
         let charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-        charges = charges.filter((c) => !duplicateIds.includes(String(c.id)));
+        charges = charges.filter((c) => !(normVin(c.vin) === v && duplicateIds.includes(String(c.id))));
         await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges));
       } catch (_) {
       }
@@ -12770,31 +13128,23 @@ function normalizeChargeSessionRow(r) {
   return r;
 }
 async function d1GetCharges(env, date, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return [];
   if (env.DB) {
     await initD1(env.DB);
     try {
       if (!date || date === "all") {
-        if (v) {
-          const res3 = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
-          return d1DeduplicateChargeRows((res3.results || []).map(normalizeChargeSessionRow)).clean;
-        }
-        const res2 = await env.DB.prepare("SELECT * FROM charges ORDER BY start_timestamp DESC LIMIT 150").all();
+        const res2 = await env.DB.prepare("SELECT * FROM charges WHERE vin = ? ORDER BY start_timestamp DESC LIMIT 150").bind(v).all();
         return d1DeduplicateChargeRows((res2.results || []).map(normalizeChargeSessionRow)).clean;
       }
-      if (v) {
-        const res2 = await env.DB.prepare("SELECT * FROM charges WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
-        return d1DeduplicateChargeRows((res2.results || []).map(normalizeChargeSessionRow)).clean;
-      }
-      const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? ORDER BY start_timestamp DESC").bind(date).all();
+      const res = await env.DB.prepare("SELECT * FROM charges WHERE date = ? AND vin = ? ORDER BY start_timestamp DESC").bind(date, v).all();
       return d1DeduplicateChargeRows((res.results || []).map(normalizeChargeSessionRow)).clean;
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      let charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-      if (v) charges = charges.filter((c) => normVin(c.vin) === v);
+      const charges = (await env.TRIP_KV.get("d1_fallback:charges", "json") || []).filter((c) => normVin(c.vin) === v);
       const filtered = !date || date === "all" ? charges : charges.filter((c) => c.date === date);
       return d1DeduplicateChargeRows(filtered.map(normalizeChargeSessionRow)).clean;
     } catch (_) {
@@ -12803,21 +13153,13 @@ async function d1GetCharges(env, date, vin) {
   return [];
 }
 async function d1GetChargeDates(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return [];
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const resA2 = await env.DB.prepare("SELECT DISTINCT date FROM charging_sessions WHERE vin = ? ORDER BY date DESC").bind(v).all();
-        const resB2 = await env.DB.prepare("SELECT DISTINCT date FROM charges WHERE vin = ? ORDER BY date DESC").bind(v).all();
-        const set2 = new Set([
-          ...(resA2.results || []).map((r) => r.date),
-          ...(resB2.results || []).map((r) => r.date)
-        ].filter(Boolean));
-        return Array.from(set2).sort().reverse();
-      }
-      const resA = await env.DB.prepare("SELECT DISTINCT date FROM charging_sessions ORDER BY date DESC").all();
-      const resB = await env.DB.prepare("SELECT DISTINCT date FROM charges ORDER BY date DESC").all();
+      const resA = await env.DB.prepare("SELECT DISTINCT date FROM charging_sessions WHERE vin = ? ORDER BY date DESC").bind(v).all();
+      const resB = await env.DB.prepare("SELECT DISTINCT date FROM charges WHERE vin = ? ORDER BY date DESC").bind(v).all();
       const set = new Set([
         ...(resA.results || []).map((r) => r.date),
         ...(resB.results || []).map((r) => r.date)
@@ -12828,8 +13170,7 @@ async function d1GetChargeDates(env, vin) {
   }
   if (env.TRIP_KV) {
     try {
-      let charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
-      if (v) charges = charges.filter((c) => normVin(c.vin) === v);
+      const charges = (await env.TRIP_KV.get("d1_fallback:charges", "json") || []).filter((c) => normVin(c.vin) === v);
       return Array.from(new Set(charges.map((c) => c.date).filter(Boolean)));
     } catch (_) {
     }
@@ -12837,7 +13178,8 @@ async function d1GetChargeDates(env, vin) {
   return [];
 }
 async function d1InsertNotification(env, notif) {
-  const v = normVin(notif.vin);
+  const v = requireScopedVin(notif.vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
@@ -12846,7 +13188,7 @@ async function d1InsertNotification(env, notif) {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         notif.id,
-        v || null,
+        v,
         notif.type,
         notif.title,
         notif.message,
@@ -12859,51 +13201,30 @@ async function d1InsertNotification(env, notif) {
     } catch (err) {
       console.warn("d1InsertNotification primary error, trying fallback:", err?.message || err);
     }
-    try {
-      await env.DB.prepare(`
-        INSERT INTO notifications (id, type, title, message, timestamp, date, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).bind(
-        notif.id,
-        notif.type,
-        notif.title,
-        notif.message,
-        notif.timestamp,
-        notif.date,
-        notif.metadata || ""
-      ).run();
-      return;
-    } catch (err2) {
-      console.error("d1InsertNotification fallback error:", err2?.message || err2);
-    }
   }
   if (env.TRIP_KV) {
     try {
       const list = await env.TRIP_KV.get("d1_fallback:notifications", "json") || [];
-      list.unshift({ ...notif, vin: v || notif.vin });
+      list.unshift({ ...notif, vin: v });
       await env.TRIP_KV.put("d1_fallback:notifications", JSON.stringify(list.slice(0, 100)));
     } catch (_) {
     }
   }
 }
 async function d1GetNotifications(env, limit = 50, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return [];
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const res2 = await env.DB.prepare("SELECT * FROM notifications WHERE vin = ? ORDER BY timestamp DESC LIMIT ?").bind(v, limit).all();
-        return res2.results || [];
-      }
-      const res = await env.DB.prepare("SELECT * FROM notifications ORDER BY timestamp DESC LIMIT ?").bind(limit).all();
+      const res = await env.DB.prepare("SELECT * FROM notifications WHERE vin = ? ORDER BY timestamp DESC LIMIT ?").bind(v, limit).all();
       return res.results || [];
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      let list = await env.TRIP_KV.get("d1_fallback:notifications", "json") || [];
-      if (v) list = list.filter((n) => normVin(n.vin) === v);
+      const list = (await env.TRIP_KV.get("d1_fallback:notifications", "json") || []).filter((n) => normVin(n.vin) === v);
       return list.slice(0, limit);
     } catch (_) {
     }
@@ -12911,109 +13232,45 @@ async function d1GetNotifications(env, limit = 50, vin) {
   return [];
 }
 async function d1ClearNotifications(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        await env.DB.prepare("DELETE FROM notifications WHERE vin = ?").bind(v).run();
-      } else {
-        await env.DB.prepare("DELETE FROM notifications").run();
-      }
+      await env.DB.prepare("DELETE FROM notifications WHERE vin = ?").bind(v).run();
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      if (v) {
-        const list = await env.TRIP_KV.get("d1_fallback:notifications", "json") || [];
-        await env.TRIP_KV.put("d1_fallback:notifications", JSON.stringify(list.filter((n) => normVin(n.vin) !== v)));
-      } else {
-        await env.TRIP_KV.delete("d1_fallback:notifications");
-      }
+      const list = await env.TRIP_KV.get("d1_fallback:notifications", "json") || [];
+      await env.TRIP_KV.put("d1_fallback:notifications", JSON.stringify(list.filter((n) => normVin(n.vin) !== v)));
     } catch (_) {
     }
   }
 }
-async function getMgClientForWebhook(env, url) {
-  const token = (url.searchParams.get("token") || url.searchParams.get("key") || "").trim();
-  const userId = (url.searchParams.get("userId") || url.searchParams.get("id") || "").trim();
-  const reqVin = normVin(url.searchParams.get("vin"));
-  const reqPhone = (url.searchParams.get("phone") || "").replace(/\D/g, "");
-  if (reqVin) {
-    try {
-      const vinSession = await d1KvGet(env, `mg_session:${reqVin}`);
-      if (vinSession?.token && vinSession?.uid) {
-        const client = new MgIndiaClient({ phone: vinSession.phone || "9999999999", password: "", vin: vinSession.vin || reqVin });
-        client.uid = vinSession.uid;
-        client.token = vinSession.token;
-        return { client, vin: normVin(vinSession.vin) || reqVin };
-      }
-    } catch (_) {
-    }
-  }
-  if (reqPhone && !url.searchParams.get("password") && !url.searchParams.get("pin")) {
-    try {
-      const phoneSession = await d1KvGet(env, `mg_session_phone:${reqPhone}`);
-      if (phoneSession?.token && phoneSession?.uid) {
-        const client = new MgIndiaClient({ phone: phoneSession.phone || reqPhone, password: "", vin: phoneSession.vin });
-        client.uid = phoneSession.uid;
-        client.token = phoneSession.token;
-        return { client, vin: normVin(phoneSession.vin) || void 0 };
-      }
-    } catch (_) {
-    }
-  }
-  if (env.TRIP_KV) {
-    let targetId = userId;
-    if (!targetId && token) {
-      const mappedId = await env.TRIP_KV.get(`carplay_token:${token}`, "text");
-      if (mappedId) targetId = mappedId;
-    }
-    if (targetId) {
-      const raw = await env.TRIP_KV.get(`u:${targetId}`, "text");
-      if (raw) {
-        const u = JSON.parse(raw);
-        if (u.mg?.token && u.mg?.uid) {
-          const client = new MgIndiaClient({ phone: u.mg.phone || "9999999999", password: "", vin: u.mg.vin });
-          client.uid = u.mg.uid;
-          client.token = u.mg.token;
-          return { client, vin: normVin(u.mg.vin) || void 0 };
-        }
-      }
-    }
-  }
-  const qPhone = url.searchParams.get("phone");
-  const qPass = url.searchParams.get("password");
-  const qVin = url.searchParams.get("vin");
-  const qPin = url.searchParams.get("pin");
-  if (qPhone && (qPass || qPin)) {
-    const client = new MgIndiaClient({
-      phone: qPhone,
-      password: qPass || "",
-      vin: qVin || void 0,
-      pinHash: qPin && /^\d{4}$/.test(qPin) ? hashControlPin(qPin) : void 0
-    });
-    return { client, vin: normVin(qVin) || void 0 };
-  }
+async function getMgClientForVin(env, vin, pin) {
+  const targetVin = requireScopedVin(vin);
+  if (!targetVin) return null;
   try {
-    const lastSession = await d1KvGet(env, "mg_active_session");
-    if (lastSession?.token && lastSession?.uid) {
-      const client = new MgIndiaClient({ phone: lastSession.phone || "9999999999", password: "", vin: lastSession.vin });
-      client.uid = lastSession.uid;
-      client.token = lastSession.token;
-      return { client, vin: normVin(lastSession.vin) || void 0 };
+    const vinSession = await d1KvGet(env, `mg_session:${targetVin}`);
+    if (vinSession?.token && vinSession?.uid) {
+      const cleanPin = typeof pin === "string" && /^\d{4}$/.test(pin.trim()) ? pin.trim() : void 0;
+      const client = new MgIndiaClient({
+        phone: vinSession.phone || "9999999999",
+        password: "",
+        vin: normVin(vinSession.vin) || targetVin,
+        pinHash: cleanPin ? hashControlPin(cleanPin) : void 0
+      });
+      client.uid = vinSession.uid;
+      client.token = vinSession.token;
+      return {
+        client,
+        vin: normVin(vinSession.vin) || targetVin,
+        phone: normPhoneValue(vinSession.phone)
+      };
     }
   } catch (_) {
-  }
-  if (env.MG_PHONE && (env.MG_PASSWORD || env.MG_PIN)) {
-    const client = new MgIndiaClient({
-      phone: env.MG_PHONE,
-      password: env.MG_PASSWORD || "",
-      vin: env.MG_VIN,
-      pinHash: env.MG_PIN && /^\d{4}$/.test(env.MG_PIN) ? hashControlPin(env.MG_PIN) : void 0
-    });
-    return { client, vin: normVin(env.MG_VIN) || void 0 };
   }
   return null;
 }
@@ -13023,77 +13280,93 @@ async function fetchCarTelemetry(client, vin) {
   return parseTelemetryFromStatus(status);
 }
 async function d1GetActiveChargingSession(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return null;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const row = await env.DB.prepare(
-          "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY start_time DESC LIMIT 1"
-        ).bind(v).first();
-        if (row) return row;
-      } else {
-        const row = await env.DB.prepare(
-          "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') ORDER BY start_time DESC LIMIT 1"
-        ).first();
-        if (row) return row;
-      }
+      const row = await env.DB.prepare(
+        "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') AND vin = ? ORDER BY start_time DESC LIMIT 1"
+      ).bind(v).first();
+      if (row) return row;
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      const act = await env.TRIP_KV.get("d1_fallback:active_charging_session", "json");
-      if (act && (!v || !act.vin || normVin(act.vin) === v)) return act;
+      const act = await env.TRIP_KV.get(`d1_fallback:active_charging_session:${v}`, "json");
+      if (act && normVin(act.vin) === v) return act;
     } catch (_) {
     }
   }
   return null;
 }
-async function d1GetLastCompletedChargingSession(env, vin) {
-  const v = normVin(vin);
+async function d1GetAllActiveChargingSessions(env) {
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const row = await env.DB.prepare(
-          "SELECT * FROM charging_sessions WHERE status = 'completed' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY end_time DESC LIMIT 1"
-        ).bind(v).first();
-        if (row) return row;
-      } else {
-        const row = await env.DB.prepare(
-          "SELECT * FROM charging_sessions WHERE status = 'completed' ORDER BY end_time DESC LIMIT 1"
-        ).first();
-        if (row) return row;
-      }
+      const res = await env.DB.prepare(
+        "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') AND vin IS NOT NULL AND vin != '' ORDER BY start_time DESC"
+      ).all();
+      return res.results || [];
+    } catch (_) {
+    }
+  }
+  return [];
+}
+async function d1GetLastCompletedChargingSession(env, vin) {
+  const v = requireScopedVin(vin);
+  if (!v) return null;
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const row = await env.DB.prepare(
+        "SELECT * FROM charging_sessions WHERE status = 'completed' AND vin = ? ORDER BY end_time DESC LIMIT 1"
+      ).bind(v).first();
+      if (row) return row;
     } catch (_) {
     }
   }
   return null;
 }
 async function d1GetLastCompletedTrip(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return null;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const row = await env.DB.prepare(
-          "SELECT * FROM trips WHERE status = 'completed' AND (vin = ? OR vin IS NULL OR vin = '') ORDER BY end_timestamp DESC LIMIT 1"
-        ).bind(v).first();
-        if (row) return row;
-      } else {
-        const row = await env.DB.prepare(
-          "SELECT * FROM trips WHERE status = 'completed' ORDER BY end_timestamp DESC LIMIT 1"
-        ).first();
-        if (row) return row;
-      }
+      const row = await env.DB.prepare(
+        "SELECT * FROM trips WHERE status = 'completed' AND vin = ? ORDER BY end_timestamp DESC LIMIT 1"
+      ).bind(v).first();
+      if (row) return row;
     } catch (_) {
     }
   }
   return null;
 }
+async function d1GetRecentParkedTripsPerVin(env, minEndTimestampSec) {
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const res = await env.DB.prepare(`
+        SELECT t.* FROM trips t
+        INNER JOIN (
+          SELECT vin, MAX(end_timestamp) AS max_end
+          FROM trips
+          WHERE status = 'completed' AND vin IS NOT NULL AND vin != '' AND end_timestamp >= ?
+          GROUP BY vin
+        ) latest ON t.vin = latest.vin AND t.end_timestamp = latest.max_end
+        WHERE t.status = 'completed'
+      `).bind(minEndTimestampSec).all();
+      return res.results || [];
+    } catch (_) {
+    }
+  }
+  return [];
+}
 async function d1CreateChargingSession(env, session) {
-  const v = normVin(session.vin);
+  const v = requireScopedVin(session.vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
@@ -13108,7 +13381,7 @@ async function d1CreateChargingSession(env, session) {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         session.id,
-        v || null,
+        v,
         session.status,
         session.start_time,
         session.end_time || null,
@@ -13139,7 +13412,7 @@ async function d1CreateChargingSession(env, session) {
   }
   if (env.TRIP_KV) {
     try {
-      await env.TRIP_KV.put("d1_fallback:active_charging_session", JSON.stringify({ ...session, vin: v || session.vin }));
+      await env.TRIP_KV.put(`d1_fallback:active_charging_session:${v}`, JSON.stringify({ ...session, vin: v }));
     } catch (_) {
     }
   }
@@ -13205,47 +13478,48 @@ async function d1UpdateChargingSession(env, sessionId, updates) {
       console.warn("d1UpdateChargingSession error:", err);
     }
   }
-  if (env.TRIP_KV) {
+  if (env.TRIP_KV && updates?.vin) {
     try {
+      const kvKey = `d1_fallback:active_charging_session:${normVin(updates.vin)}`;
       if (updates.status === "completed") {
-        await env.TRIP_KV.delete("d1_fallback:active_charging_session");
+        await env.TRIP_KV.delete(kvKey);
       } else {
-        const active = await env.TRIP_KV.get("d1_fallback:active_charging_session", "json") || {};
-        await env.TRIP_KV.put("d1_fallback:active_charging_session", JSON.stringify({ ...active, ...updates }));
+        const active = await env.TRIP_KV.get(kvKey, "json") || {};
+        await env.TRIP_KV.put(kvKey, JSON.stringify({ ...active, ...updates }));
       }
     } catch (_) {
     }
   }
 }
-async function d1DeleteChargingSession(env, sessionId) {
+async function d1DeleteChargingSession(env, sessionId, vin) {
+  const v = requireScopedVin(vin);
   if (env.DB) {
     await initD1(env.DB);
     try {
-      await env.DB.prepare("DELETE FROM charging_sessions WHERE id = ?").bind(sessionId).run();
+      if (v) {
+        await env.DB.prepare("DELETE FROM charging_sessions WHERE id = ? AND vin = ?").bind(sessionId, v).run();
+      } else {
+        await env.DB.prepare("DELETE FROM charging_sessions WHERE id = ?").bind(sessionId).run();
+      }
     } catch (_) {
     }
   }
-  if (env.TRIP_KV) {
+  if (env.TRIP_KV && v) {
     try {
-      await env.TRIP_KV.delete("d1_fallback:active_charging_session");
+      await env.TRIP_KV.delete(`d1_fallback:active_charging_session:${v}`);
     } catch (_) {
     }
   }
 }
 async function d1GetChargingHistory(env, limit = 50, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return [];
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        const res2 = await env.DB.prepare(
-          "SELECT * FROM charging_sessions WHERE vin = ? ORDER BY start_time DESC LIMIT ?"
-        ).bind(v, limit).all();
-        return (res2.results || []).map(normalizeChargeSessionRow);
-      }
       const res = await env.DB.prepare(
-        "SELECT * FROM charging_sessions ORDER BY start_time DESC LIMIT ?"
-      ).bind(limit).all();
+        "SELECT * FROM charging_sessions WHERE vin = ? ORDER BY start_time DESC LIMIT ?"
+      ).bind(v, limit).all();
       return (res.results || []).map(normalizeChargeSessionRow);
     } catch (_) {
     }
@@ -13253,21 +13527,18 @@ async function d1GetChargingHistory(env, limit = 50, vin) {
   return [];
 }
 async function d1ClearChargingHistory(env, vin) {
-  const v = normVin(vin);
+  const v = requireScopedVin(vin);
+  if (!v) return;
   if (env.DB) {
     await initD1(env.DB);
     try {
-      if (v) {
-        await env.DB.prepare("DELETE FROM charging_sessions WHERE vin = ?").bind(v).run();
-      } else {
-        await env.DB.prepare("DELETE FROM charging_sessions").run();
-      }
+      await env.DB.prepare("DELETE FROM charging_sessions WHERE vin = ?").bind(v).run();
     } catch (_) {
     }
   }
   if (env.TRIP_KV) {
     try {
-      await env.TRIP_KV.delete("d1_fallback:active_charging_session");
+      await env.TRIP_KV.delete(`d1_fallback:active_charging_session:${v}`);
     } catch (_) {
     }
   }
@@ -13480,7 +13751,7 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
     );
     const socAdded = Math.max(0, currentSoc - startSoc);
     if (triggerSource !== "test_end" && socAdded <= 0 && activeSec < 180) {
-      await d1DeleteChargingSession(env, activeSession.id);
+      await d1DeleteChargingSession(env, activeSession.id, v);
       return null;
     }
     const kwhAdded = Number((socAdded / 100 * 38).toFixed(2));
@@ -13747,6 +14018,94 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
   }
   return activeSession;
 }
+function workerAuthDeps(env) {
+  return {
+    store: createEnvAuthKvStore(env, initD1),
+    db: createD1AuthDbAdapter(env.DB),
+    isMaster: (phone) => isMasterAdminPhone(phone, env)
+  };
+}
+async function requireAppVin(env, request, url, body) {
+  const { store, db, isMaster } = workerAuthDeps(env);
+  const res = await resolveAppAuth(store, db, isMaster, request, url, body);
+  if (!res.ok) {
+    return json({ success: false, error: res.error }, res.status);
+  }
+  return res;
+}
+async function handleCarCommand(env, request, url, body, action) {
+  const wantsText = url.searchParams.get("format") === "text";
+  const reply = (payload, status = 200) => {
+    if (wantsText) {
+      const msg = payload.success ? `\u2705 ${payload.message}` : `\u274C ${payload.error || "Command failed"}`;
+      return new Response(msg, {
+        status,
+        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+      });
+    }
+    return json(payload, status);
+  };
+  const { store, db, isMaster } = workerAuthDeps(env);
+  const auth = await resolveWebhookAuth(store, db, isMaster, request, url, body);
+  if (!auth.ok) {
+    return reply({ success: false, error: auth.error }, auth.status);
+  }
+  const pin = String(
+    url.searchParams.get("pin") || request.headers.get("x-mg-pin") || body?.pin || ""
+  ).trim();
+  if (!/^\d{4}$/.test(pin)) {
+    return reply(
+      {
+        success: false,
+        code: "PIN_REQUIRED",
+        error: "A 4-digit MG Control PIN (?pin=1234) is required in the shortcut link."
+      },
+      400
+    );
+  }
+  const mg = await getMgClientForVin(env, auth.vin, pin);
+  if (!mg) {
+    return reply(
+      {
+        success: false,
+        code: "NO_VEHICLE_SESSION",
+        error: "No active car session found on server. Open the MG Windsor app once to connect."
+      },
+      401
+    );
+  }
+  try {
+    let message = "";
+    if (action === "unlock") {
+      await mg.client.controlDoorLock(false);
+      message = "Doors unlocked successfully";
+    } else if (action === "lock") {
+      await mg.client.controlDoorLock(true);
+      message = "Doors locked successfully";
+    } else if (action === "climate-on") {
+      await mg.client.controlClimate(true);
+      message = "Climate AC turned on";
+    } else {
+      await mg.client.controlClimate(false);
+      message = "Climate AC turned off";
+    }
+    return reply({ success: true, action, message });
+  } catch (err) {
+    const rawMsg = err?.message || String(err || "Command failed");
+    const isExpired = /password|token|expired|unauthorized|login|session|401|403/i.test(rawMsg);
+    if (isExpired) {
+      return reply(
+        {
+          success: false,
+          code: "MG_SESSION_EXPIRED",
+          error: "MG car session expired. Open the MG Windsor app once to refresh it, then retry."
+        },
+        401
+      );
+    }
+    return reply({ success: false, error: rawMsg }, 500);
+  }
+}
 async function handleApi(env, request, url) {
   const path = url.pathname;
   if (path === "/api/push-vapid-public-key") {
@@ -13798,14 +14157,38 @@ async function handleApi(env, request, url) {
     if (env.DB) await initD1(env.DB);
     return await handleAdminApi(env, request, url, body);
   }
-  const reqVin = normVin(url.searchParams.get("vin") || body?.vin);
+  if (path === "/api/webhook-key") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const { store } = workerAuthDeps(env);
+    const webhookKey = await ensureWebhookKey(store, auth.vin, auth.phone, false);
+    return json({ success: true, vin: auth.vin, webhookKey });
+  }
+  if (path === "/api/webhook-key/regenerate") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const { store } = workerAuthDeps(env);
+    const webhookKey = await ensureWebhookKey(store, auth.vin, auth.phone, true);
+    return json({
+      success: true,
+      vin: auth.vin,
+      webhookKey,
+      message: "Private Shortcut & CarPlay links regenerated. Previous links have been revoked."
+    });
+  }
+  if (path === "/api/command/unlock" || path === "/api/command/lock" || path === "/api/command/climate-on" || path === "/api/command/climate-off") {
+    const cmd = path.replace("/api/command/", "");
+    return await handleCarCommand(env, request, url, body, cmd);
+  }
   if (path === "/api/push-subscribe") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const sub = body?.subscription;
     if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
       return json({ success: false, error: "Invalid PushSubscription object" }, 400);
     }
-    const targetVin = reqVin || normVin(env.MG_VIN) || null;
-    const key = targetVin ? `push_subs:${targetVin}` : "push_subs:default";
+    const targetVin = auth.vin;
+    const key = `push_subs:${targetVin}`;
     const existingRaw = await d1KvGet(env, key);
     const existing = Array.isArray(existingRaw) ? existingRaw : [];
     const newEntry = {
@@ -13820,12 +14203,9 @@ async function handleApi(env, request, url) {
     const filtered = existing.filter((s) => s.endpoint !== newEntry.endpoint);
     filtered.push(newEntry);
     await d1KvPut(env, key, filtered);
-    if (targetVin && (!env.MG_VIN || targetVin === normVin(env.MG_VIN))) {
-      await d1KvPut(env, "push_subs:default", filtered);
-    }
     const welcomeRes = await sendPushToSubscription(newEntry, {
       title: "\u{1F514} MG Windsor EV \u2022 Push Alerts Active",
-      body: `Native push notifications are now active on this device${targetVin ? ` for VIN ${targetVin}` : ""}. You will receive Trip & Charging alerts automatically!`,
+      body: "Native push notifications are now active on this device. You will receive Trip & Charging alerts automatically!",
       tag: "windsor-welcome",
       data: { vin: targetVin, url: "/" }
     });
@@ -13838,9 +14218,10 @@ async function handleApi(env, request, url) {
     });
   }
   if (path === "/api/push-unsubscribe") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const endpoint = String(body?.endpoint || url.searchParams.get("endpoint") || "").trim();
-    const targetVin = reqVin || normVin(env.MG_VIN) || null;
-    const key = targetVin ? `push_subs:${targetVin}` : "push_subs:default";
+    const key = `push_subs:${auth.vin}`;
     const existingRaw = await d1KvGet(env, key);
     const existing = Array.isArray(existingRaw) ? existingRaw : [];
     const remaining = endpoint ? existing.filter((s) => s.endpoint !== endpoint) : [];
@@ -13848,10 +14229,12 @@ async function handleApi(env, request, url) {
     return json({ success: true, devicesCount: remaining.length });
   }
   if (path === "/api/push-test") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const nowSec = Math.floor(Date.now() / 1e3);
     const title = "\u{1F697} MG Windsor EV \u2022 Live Push Test";
     const message = `Native Web Push delivered at ${formatClockTime(nowSec)}! Trip Start, Trip End & Charging alerts are ready.`;
-    const pushResult = await dispatchTripNotification(url, title, message, "windsor-test", env, reqVin);
+    const pushResult = await dispatchTripNotification(url, title, message, "windsor-test", env, auth.vin);
     if (!pushResult.total) {
       return json({
         success: false,
@@ -14096,20 +14479,38 @@ async function handleApi(env, request, url) {
     }
   }
   if (path === "/api/trip/start") {
-    const mg = await getMgClientForWebhook(env, url);
-    if (!mg) {
-      return json({ success: false, error: "MG vehicle session not found. Please log in from the web app first." }, 400);
+    const { store, db, isMaster } = workerAuthDeps(env);
+    const hookAuth = await resolveWebhookAuth(store, db, isMaster, request, url, body);
+    if (!hookAuth.ok) {
+      if (url.searchParams.get("format") === "json") {
+        return json({ success: false, error: hookAuth.error }, hookAuth.status);
+      }
+      return new Response(`\u274C ${hookAuth.error}`, {
+        status: hookAuth.status,
+        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+      });
     }
-    const activeVin = normVin(mg.vin || reqVin);
+    const activeVin = hookAuth.vin;
+    const mg = await getMgClientForVin(env, activeVin);
+    if (!mg) {
+      const msg = "MG vehicle session not found. Please open the MG Windsor app once to connect.";
+      if (url.searchParams.get("format") === "json") {
+        return json({ success: false, error: msg }, 401);
+      }
+      return new Response(`\u274C ${msg}`, {
+        status: 401,
+        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+      });
+    }
     try {
-      const telem = await fetchCarTelemetry(mg.client, activeVin || void 0);
+      const telem = await fetchCarTelemetry(mg.client, activeVin);
       const startLocation = await resolveLocation(telem.lat, telem.lng);
       const nowSec = Math.floor(Date.now() / 1e3);
       const tripId = "trip_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
       const dateStr = istDateString(nowSec);
       const trip = {
         id: tripId,
-        vin: activeVin || null,
+        vin: activeVin,
         date: dateStr,
         start_timestamp: nowSec,
         start_odometer_km: telem.odometer,
@@ -14138,7 +14539,7 @@ async function handleApi(env, request, url) {
       await dispatchTripNotification(url, title, notificationText, "car,electric_plug", env, activeVin);
       await d1InsertNotification(env, {
         id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-        vin: activeVin || null,
+        vin: activeVin,
         type: "trip_start",
         title,
         message: notificationText,
@@ -14169,8 +14570,19 @@ ${notificationText}`, {
     }
   }
   if (path === "/api/trip/stop") {
-    const mg = await getMgClientForWebhook(env, url);
-    const activeVin = normVin(reqVin || mg?.vin);
+    const { store, db, isMaster } = workerAuthDeps(env);
+    const hookAuth = await resolveWebhookAuth(store, db, isMaster, request, url, body);
+    if (!hookAuth.ok) {
+      if (url.searchParams.get("format") === "json") {
+        return json({ success: false, error: hookAuth.error }, hookAuth.status);
+      }
+      return new Response(`\u274C ${hookAuth.error}`, {
+        status: hookAuth.status,
+        headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }
+      });
+    }
+    const activeVin = hookAuth.vin;
+    const mg = await getMgClientForVin(env, activeVin);
     const ongoingTrip = await d1GetActiveTrip(env, activeVin);
     if (!ongoingTrip) {
       const emptyTitle = "\u2139\uFE0F MG Windsor EV \u2022 No Active Trip";
@@ -14182,10 +14594,10 @@ ${notificationText}`, {
 
 ${emptyMsg}`, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS }, status: 200 });
     }
-    const tripVin = normVin(ongoingTrip.vin) || activeVin || null;
+    const tripVin = normVin(ongoingTrip.vin) || activeVin;
     let telem = null;
     if (mg) {
-      telem = await fetchCarTelemetry(mg.client, tripVin || mg.vin).catch(() => null);
+      telem = await fetchCarTelemetry(mg.client, tripVin).catch(() => null);
     }
     const startOdo = Number(ongoingTrip.start_odometer_km) || 0;
     let finalOdo = Number(telem?.odometer) || startOdo;
@@ -14212,17 +14624,15 @@ ${emptyMsg}`, { headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS 
     const socDiff = Math.max(0, startSoc - endSoc);
     if (distanceKm < 0.2) {
       if (env.DB) {
-        await env.DB.prepare("DELETE FROM trips WHERE id = ?").bind(ongoingTrip.id).run().catch(() => {
+        await env.DB.prepare("DELETE FROM trips WHERE id = ? AND vin = ?").bind(ongoingTrip.id, tripVin).run().catch(() => {
         });
       }
       if (env.TRIP_KV) {
         if (tripVin) await env.TRIP_KV.delete(`d1_fallback:active_trip:${tripVin}`).catch(() => {
         });
-        await env.TRIP_KV.delete("d1_fallback:active_trip").catch(() => {
-        });
         try {
           const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
-          await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.filter((t) => t.id !== ongoingTrip.id)));
+          await env.TRIP_KV.put("d1_fallback:trips", JSON.stringify(trips.filter((t) => !(t.id === ongoingTrip.id && normVin(t.vin) === tripVin))));
         } catch (_) {
         }
       }
@@ -14328,17 +14738,23 @@ ${notificationText}`, {
     });
   }
   if (path === "/api/trips") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const date = url.searchParams.get("date");
-    const trips = await d1GetTrips(env, date, reqVin);
+    const trips = await d1GetTrips(env, date, auth.vin);
     return json({ success: true, trips });
   }
   if (path === "/api/trips/sync") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const rawTrips = body?.trips || [];
-    const count = await d1BatchSyncTrips(env, rawTrips, reqVin);
+    const count = await d1BatchSyncTrips(env, rawTrips, auth.vin);
     return json({ success: true, count, message: `Synced ${count} trip(s) to Cloudflare D1` });
   }
   if (path === "/api/trips/dedup" || path === "/api/trips/clean") {
-    const res = await d1DeduplicateTrips(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const res = await d1DeduplicateTrips(env, auth.vin);
     return json({
       success: true,
       removedCount: res.removedCount,
@@ -14347,24 +14763,32 @@ ${notificationText}`, {
     });
   }
   if (path === "/api/trips/delete") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const tripId = body?.id || url.searchParams.get("id");
     if (!tripId) return json({ success: false, error: "trip id required" }, 400);
-    await d1DeleteTrip(env, tripId);
+    await d1DeleteTrip(env, tripId, auth.vin);
     return json({ success: true, message: "Trip deleted from Cloudflare D1" });
   }
   if (path === "/api/trips/clear") {
-    await d1ClearTrips(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    await d1ClearTrips(env, auth.vin);
     return json({ success: true, message: "All trips permanently cleared from Cloudflare D1" });
   }
   if (path === "/api/trip/dates") {
-    const dates = await d1GetTripDates(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const dates = await d1GetTripDates(env, auth.vin);
     return json({ success: true, dates });
   }
   if (path === "/api/charge/start") {
-    const mg = await getMgClientForWebhook(env, url);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const mg = await getMgClientForVin(env, auth.vin);
     let telem = null;
     if (mg) {
-      telem = await fetchCarTelemetry(mg.client, mg.vin).catch(() => null);
+      telem = await fetchCarTelemetry(mg.client, auth.vin).catch(() => null);
     }
     const nowSec = Math.floor(Date.now() / 1e3);
     const bmsElapsed = Math.max(0, Number(telem?.chargeTimeElapsedSec) || 0);
@@ -14373,7 +14797,7 @@ ${notificationText}`, {
     const dateStr = istDateString(actualStartSec);
     const charge = {
       id: chargeId,
-      vin: normVin(mg?.vin || reqVin) || null,
+      vin: auth.vin,
       date: dateStr,
       start_timestamp: actualStartSec,
       start_soc: telem?.soc != null ? Number(telem.soc) : 0,
@@ -14386,14 +14810,16 @@ ${notificationText}`, {
     return json({ success: true, message: "Charging session started", charge });
   }
   if (path === "/api/charge/stop") {
-    const ongoingCharge = await d1GetActiveCharge(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const ongoingCharge = await d1GetActiveCharge(env, auth.vin);
     if (!ongoingCharge) {
       return json({ success: false, message: "No active charging session found to stop" }, 404);
     }
-    const mg = await getMgClientForWebhook(env, url);
+    const mg = await getMgClientForVin(env, auth.vin);
     let telem = null;
     if (mg) {
-      telem = await fetchCarTelemetry(mg.client, mg.vin).catch(() => null);
+      telem = await fetchCarTelemetry(mg.client, auth.vin).catch(() => null);
     }
     const nowSec = Math.floor(Date.now() / 1e3);
     const startTimestamp = Number(ongoingCharge.start_timestamp) || nowSec;
@@ -14407,22 +14833,27 @@ ${notificationText}`, {
       duration_seconds: durationSec,
       end_soc: endSoc,
       energy_added_kwh: energyAddedKwh,
+      peak_kw: Number(ongoingCharge.peak_kw) || 3.3,
       odometer_km: Number(telem?.odometer) || Number(ongoingCharge.odometer_km) || 0,
       status: "completed"
     };
-    await d1UpdateCharge(env, ongoingCharge.id, updates);
+    await d1UpdateCharge(env, ongoingCharge.id, updates, auth.vin);
     return json({ success: true, message: "Charging session completed", charge: { ...ongoingCharge, ...updates } });
   }
   if (path === "/api/notifications") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
-    const notifs = await d1GetNotifications(env, limit, reqVin);
+    const notifs = await d1GetNotifications(env, limit, auth.vin);
     return json({ success: true, notifications: notifs });
   }
   if (path === "/api/notifications/test") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const nowSec = Math.floor(Date.now() / 1e3);
     const notif = {
       id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-      vin: reqVin || null,
+      vin: auth.vin,
       type: "test",
       title: "\u{1F9EA} MG Windsor EV \u2022 Test Notification",
       message: `Verified D1 Studio insertion at ${formatClockTime(nowSec)}. System is fully operational!`,
@@ -14431,45 +14862,55 @@ ${notificationText}`, {
       is_read: 0,
       metadata: JSON.stringify({ test: true, time: (/* @__PURE__ */ new Date()).toISOString() })
     };
-    const pushResult = await dispatchTripNotification(url, notif.title, notif.message, "test_tube,car", env, reqVin);
+    const pushResult = await dispatchTripNotification(url, notif.title, notif.message, "test_tube,car", env, auth.vin);
     await d1InsertNotification(env, notif);
-    const notifs = await d1GetNotifications(env, 10, reqVin);
+    const notifs = await d1GetNotifications(env, 10, auth.vin);
     return json({ success: true, message: "Test notification dispatched to ntfy & written to D1", pushResult, count: notifs.length, notification: notif, recent: notifs });
   }
   if (path === "/api/notifications/clear") {
-    await d1ClearNotifications(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    await d1ClearNotifications(env, auth.vin);
     return json({ success: true, message: "Notification history cleared" });
   }
   if (path === "/api/charging-history") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const isRefresh = url.searchParams.get("refresh") === "true";
     if (isRefresh) {
-      const activeSession = await d1GetActiveChargingSession(env, reqVin);
+      const activeSession = await d1GetActiveChargingSession(env, auth.vin);
       if (activeSession) {
         try {
-          const mg = await getMgClientForWebhook(env, url);
+          const mg = await getMgClientForVin(env, auth.vin);
           if (mg) {
-            const telem = await fetchCarTelemetry(mg.client, mg.vin);
-            await syncChargingSessionState(env, url, telem, "user_refresh", reqVin || mg.vin);
+            const telem = await fetchCarTelemetry(mg.client, auth.vin);
+            await syncChargingSessionState(env, url, telem, "user_refresh", auth.vin);
           }
         } catch (_) {
         }
       }
     }
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
-    const sessions = await d1GetChargingHistory(env, limit, reqVin);
+    const sessions = await d1GetChargingHistory(env, limit, auth.vin);
     return json({ success: true, sessions, charges: sessions });
   }
   if (path === "/api/charging-history/clear") {
-    await d1ClearChargingHistory(env, reqVin);
-    await d1ClearCharges(env, reqVin).catch(() => {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    await d1ClearChargingHistory(env, auth.vin);
+    await d1ClearCharges(env, auth.vin).catch(() => {
     });
     return json({ success: true, message: "All charging sessions permanently cleared from Cloudflare D1" });
   }
   if (path === "/api/charging/active") {
-    const active = await d1GetActiveChargingSession(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const active = await d1GetActiveChargingSession(env, auth.vin);
     return json({ success: true, activeSession: active });
   }
   if (path === "/api/charging/test-start") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const qSoc = Number(url.searchParams.get("soc")) || 80;
     const qKw = Number(url.searchParams.get("power")) || 3.3;
     const dummyTelem = {
@@ -14483,7 +14924,7 @@ ${notificationText}`, {
       chargeType: qKw > 11 ? "DC" : "AC",
       rangeKm: Math.round(qSoc / 100 * BMS_FULL_RANGE_KM)
     };
-    const session = await syncChargingSessionState(env, url, dummyTelem, "test_start", reqVin);
+    const session = await syncChargingSessionState(env, url, dummyTelem, "test_start", auth.vin);
     return json({
       success: true,
       message: "\u26A1 Test charging session started in Cloudflare D1!",
@@ -14492,7 +14933,9 @@ ${notificationText}`, {
     });
   }
   if (path === "/api/charging/test-end") {
-    const active = await d1GetActiveChargingSession(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const active = await d1GetActiveChargingSession(env, auth.vin);
     if (!active) {
       return json({
         success: false,
@@ -14515,7 +14958,7 @@ ${notificationText}`, {
     const fakeDeltaSec = 2700;
     active.active_duration_seconds = (Number(active.active_duration_seconds) || 0) + fakeDeltaSec;
     await d1UpdateChargingSession(env, active.id, { active_duration_seconds: active.active_duration_seconds });
-    const session = await syncChargingSessionState(env, url, dummyTelem, "test_end", reqVin);
+    const session = await syncChargingSessionState(env, url, dummyTelem, "test_end", auth.vin);
     return json({
       success: true,
       message: "\u{1F50B} Test charging session completed and saved to D1!",
@@ -14531,21 +14974,27 @@ ${notificationText}`, {
     });
   }
   if (path === "/api/charges") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const date = url.searchParams.get("date");
-    const sessions = await d1GetChargingHistory(env, 100, reqVin);
+    const sessions = await d1GetChargingHistory(env, 100, auth.vin);
     if (sessions && sessions.length > 0) {
       return json({ success: true, charges: sessions, sessions });
     }
-    const charges = await d1GetCharges(env, date, reqVin);
+    const charges = await d1GetCharges(env, date, auth.vin);
     return json({ success: true, charges, sessions: charges });
   }
   if (path === "/api/charges/sync") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const rawCharges = body?.charges || [];
-    const count = await d1BatchSyncCharges(env, rawCharges, reqVin);
+    const count = await d1BatchSyncCharges(env, rawCharges, auth.vin);
     return json({ success: true, count, message: `Synced ${count} charge(s) to Cloudflare D1` });
   }
   if (path === "/api/charges/dedup" || path === "/api/charges/clean") {
-    const res = await d1DeduplicateCharges(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const res = await d1DeduplicateCharges(env, auth.vin);
     return json({
       success: true,
       removedCount: res.removedCount,
@@ -14554,49 +15003,49 @@ ${notificationText}`, {
     });
   }
   if (path === "/api/charges/delete") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
     const chargeId = body?.id || url.searchParams.get("id");
     if (!chargeId) return json({ success: false, error: "charge id required" }, 400);
-    await d1DeleteCharge(env, chargeId);
+    await d1DeleteCharge(env, chargeId, auth.vin);
     return json({ success: true, message: "Charge deleted from Cloudflare D1" });
   }
   if (path === "/api/charges/clear") {
-    await d1ClearCharges(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    await d1ClearCharges(env, auth.vin);
     return json({ success: true, message: "All charges permanently cleared from Cloudflare D1" });
   }
   if (path === "/api/charge/dates") {
-    const dates = await d1GetChargeDates(env, reqVin);
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const dates = await d1GetChargeDates(env, auth.vin);
     return json({ success: true, dates });
   }
   if (path === "/api/register-car" || path === "/api/update-token") {
-    if (!body?.uid || !body?.token) return json({ error: "uid and token required" }, 400);
-    const cleanVin = normVin(body.vin);
-    const cleanPhone = String(body.phone || "").replace(/\D/g, "");
-    if (env.DB && cleanPhone) {
-      try {
-        const uRow = await env.DB.prepare("SELECT * FROM authorized_users WHERE phone = ?").bind(cleanPhone).first();
-        if (uRow && uRow.status === "blocked") {
-          return json({ success: false, error: "Access revoked by administrator" }, 403);
-        }
-      } catch (_) {
-      }
+    const { store, db, isMaster } = workerAuthDeps(env);
+    const check = await verifyCarRegistrationCaller(store, db, isMaster, request, body);
+    if (!check.ok) {
+      return json({ success: false, error: check.error }, check.status);
     }
+    const cleanVin = check.vin;
+    const cleanPhone = check.phone;
     const sessionObj = {
-      uid: body.uid,
-      token: body.token,
-      vin: cleanVin || body.vin,
-      phone: cleanPhone || body.phone,
+      uid: String(body.uid),
+      token: String(body.token),
+      vin: cleanVin,
+      phone: cleanPhone,
       updatedAt: Math.floor(Date.now() / 1e3)
     };
-    await d1KvPut(env, "mg_active_session", sessionObj);
-    if (cleanVin) {
-      await d1KvPut(env, `mg_session:${cleanVin}`, sessionObj);
-    }
-    if (cleanPhone) {
-      await d1KvPut(env, `mg_session_phone:${cleanPhone}`, sessionObj);
-    }
-    if (body.token) {
-      await d1KvPut(env, "carplay_token:" + body.token, body.uid || "default");
-    }
+    await d1KvPut(env, `mg_session:${cleanVin}`, sessionObj);
+    await d1KvPut(env, `mg_session_phone:${cleanPhone}`, sessionObj);
+    const apiToken = await issueOrAdoptApiToken(store, {
+      vin: cleanVin,
+      phone: cleanPhone,
+      uid: String(body.uid),
+      candidateToken: check.candidateToken
+    });
+    const webhookKey = await ensureWebhookKey(store, cleanVin, cleanPhone, false);
     const u2 = await authUser(env, url, body);
     if (u2) {
       u2.mg = { uid: body.uid, token: body.token, vin: cleanVin || u2.mg?.vin, phone: cleanPhone || u2.mg?.phone };
@@ -14605,44 +15054,44 @@ ${notificationText}`, {
       u2.guardUntilSec = 0;
       await saveUser(env, u2);
     }
-    return json({ success: true, message: "Car registered for CarPlay webhooks & PWA" });
+    return json({
+      success: true,
+      vin: cleanVin,
+      apiToken,
+      webhookKey,
+      message: "Car registered with strict per-user isolation & private webhook key"
+    });
   }
   if (path === "/api/deregister-car" || path === "/api/car/wipe") {
-    const cleanVin = normVin(body?.vin || url.searchParams.get("vin"));
-    const cleanPhone = String(body?.phone || url.searchParams.get("phone") || "").replace(/\D/g, "");
-    const clearHistory = body?.clearHistory === true || url.searchParams.get("clearHistory") === "1" || true;
-    await d1KvDelete(env, "mg_active_session");
-    if (cleanVin) {
-      await d1KvDelete(env, `mg_session:${cleanVin}`);
-      await d1KvDelete(env, `push_subs:${cleanVin}`);
-    }
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const { store } = workerAuthDeps(env);
+    const cleanVin = auth.vin;
+    const cleanPhone = auth.phone;
+    const clearHistory = body?.clearHistory !== false && url.searchParams.get("clearHistory") !== "0";
+    await revokeTokensForVin(store, cleanVin);
+    await d1KvDelete(env, `mg_session:${cleanVin}`);
+    await d1KvDelete(env, `push_subs:${cleanVin}`);
     if (cleanPhone) {
-      await d1KvDelete(env, `mg_session_phone:${cleanPhone}`);
-    }
-    await d1KvDelete(env, "push_subs:default");
-    if (clearHistory && env.DB) {
-      try {
-        if (cleanVin) {
-          await env.DB.prepare("DELETE FROM trips WHERE vin = ?").bind(cleanVin).run();
-          await env.DB.prepare("DELETE FROM charges WHERE vin = ?").bind(cleanVin).run();
-          await env.DB.prepare("DELETE FROM charging_sessions WHERE vin = ?").bind(cleanVin).run();
-          await env.DB.prepare("DELETE FROM notifications WHERE vin = ?").bind(cleanVin).run();
-        } else {
-          await env.DB.prepare("DELETE FROM trips").run();
-          await env.DB.prepare("DELETE FROM charges").run();
-          await env.DB.prepare("DELETE FROM charging_sessions").run();
-          await env.DB.prepare("DELETE FROM notifications").run();
-        }
-      } catch (_) {
+      const phoneSess = await d1KvGet(env, `mg_session_phone:${cleanPhone}`);
+      if (!phoneSess || !phoneSess.vin || normVin(phoneSess.vin) === cleanVin) {
+        await d1KvDelete(env, `mg_session_phone:${cleanPhone}`);
       }
+    }
+    if (clearHistory) {
+      await d1ClearTrips(env, cleanVin);
+      await d1ClearCharges(env, cleanVin);
+      await d1ClearChargingHistory(env, cleanVin);
+      await d1ClearNotifications(env, cleanVin);
     }
     return json({
       success: true,
-      message: "Vehicle session, push tokens, and cloud telemetry successfully wiped from server."
+      message: "Your vehicle session, webhook keys, push tokens, and cloud telemetry were permanently wiped."
     });
   }
   const u = await authUser(env, url, body);
   if (path === "/api/status" || path === "/api/data") {
+    if (!u) return json({ error: "unauthorized" }, 401);
     return json({
       success: true,
       email: u.email,
@@ -14698,6 +15147,7 @@ ${notificationText}`, {
         summary: "MG Windsor EV: Charging at 3.3 kW \u2022 91% SOC (291 km)"
       });
     }
+    if (!u) return json({ error: "unauthorized" }, 401);
     if (u.activeTrip) {
       const t = u.activeTrip;
       const durSec = Math.max(60, nowSec - t.startTimestampSec);
@@ -14922,8 +15372,14 @@ async function runCron(env) {
   const now = /* @__PURE__ */ new Date();
   const min = now.getUTCMinutes();
   const nowSec = Math.floor(Date.now() / 1e3);
-  const activeSession = await d1GetActiveChargingSession(env).catch(() => null);
-  if (activeSession) {
+  const { db, isMaster } = workerAuthDeps(env);
+  const { isUserAuthorized: isUserAuthorized2 } = await Promise.resolve().then(() => (init_multi_user_auth(), multi_user_auth_exports));
+  const activeVins = /* @__PURE__ */ new Set();
+  const activeSessions = await d1GetAllActiveChargingSessions(env).catch(() => []);
+  for (const activeSession of activeSessions) {
+    const sVin = requireScopedVin(activeSession?.vin);
+    if (!sVin) continue;
+    activeVins.add(sVin);
     const isOngoing = activeSession.status === "ongoing";
     const isPaused = activeSession.status === "paused";
     const isDC = activeSession.charge_type === "DC";
@@ -14935,35 +15391,36 @@ async function runCron(env) {
     } else if (isPaused) {
       shouldPoll = min % 10 === 0;
     }
-    if (shouldPoll) {
-      try {
-        const sVin = normVin(activeSession.vin);
-        const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev${sVin ? `?vin=${encodeURIComponent(sVin)}` : ""}`);
-        const mg = await getMgClientForWebhook(env, dummyUrl);
-        if (mg) {
-          const telem = await fetchCarTelemetry(mg.client, sVin || mg.vin);
-          await syncChargingSessionState(env, dummyUrl, telem, "cron", sVin || mg.vin);
-        }
-      } catch (_) {
-      }
+    if (!shouldPoll) continue;
+    try {
+      const mg = await getMgClientForVin(env, sVin);
+      if (!mg) continue;
+      if (mg.phone && !await isUserAuthorized2(db, mg.phone, isMaster)) continue;
+      const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev`);
+      const telem = await fetchCarTelemetry(mg.client, sVin);
+      await syncChargingSessionState(env, dummyUrl, telem, "cron", sVin);
+    } catch (_) {
     }
-    return;
   }
   try {
-    const lastTrip = await d1GetLastCompletedTrip(env);
-    if (lastTrip && lastTrip.end_timestamp) {
+    const recentTrips = await d1GetRecentParkedTripsPerVin(env, nowSec - 14 * 3600);
+    for (const lastTrip of recentTrips) {
+      const tVin = requireScopedVin(lastTrip?.vin);
+      if (!tVin || activeVins.has(tVin) || !lastTrip.end_timestamp) continue;
       const minutesSincePark = (nowSec - Number(lastTrip.end_timestamp)) / 60;
       const hoursSincePark = minutesSincePark / 60;
       const lastSoc = Number(lastTrip.end_soc) || 100;
       const isPostParkFastWindow = minutesSincePark >= 0 && minutesSincePark <= 20 && min % 3 === 0;
       const isHalfHourIdleCheck = min === 0 || min === 30;
       if (hoursSincePark < 14 && lastSoc < 100 && (isPostParkFastWindow || isHalfHourIdleCheck)) {
-        const tVin = normVin(lastTrip.vin);
-        const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev${tVin ? `?vin=${encodeURIComponent(tVin)}` : ""}`);
-        const mg = await getMgClientForWebhook(env, dummyUrl);
-        if (mg) {
-          const telem = await fetchCarTelemetry(mg.client, tVin || mg.vin);
-          await syncChargingSessionState(env, dummyUrl, telem, "cron_idle", tVin || mg.vin);
+        try {
+          const mg = await getMgClientForVin(env, tVin);
+          if (!mg) continue;
+          if (mg.phone && !await isUserAuthorized2(db, mg.phone, isMaster)) continue;
+          const dummyUrl = new URL(`https://mg-windsor-webhook.mg-ismart.workers.dev`);
+          const telem = await fetchCarTelemetry(mg.client, tVin);
+          await syncChargingSessionState(env, dummyUrl, telem, "cron_idle", tVin);
+        } catch (_) {
         }
       }
     }
@@ -14984,6 +15441,14 @@ var multi_worker_default = {
         message: "24/7 background polling is disabled to protect vehicle 12V battery."
       });
     }
+    if (action === "get-trips" || action === "reset-guard") {
+      return json({ error: "Legacy endpoint removed for multi-user isolation. Use authenticated /api/* endpoints." }, 410);
+    }
+    if (action === "unlock" || action === "lock" || action === "climate-on" || action === "climate-off") {
+      if (url.searchParams.get("key") || !env.MG_PHONE) {
+        return await handleCarCommand(env, request, url, null, action);
+      }
+    }
     try {
       if (url.pathname === "/admin" || url.pathname === "/admin/" || url.pathname === "/admin/login") {
         return renderAdminWebsiteHtml(env, url);
@@ -14991,6 +15456,13 @@ var multi_worker_default = {
       if (url.pathname === "/google-callback") return await handleGoogleCallback(env, url);
       if (url.pathname.startsWith("/api/")) return await handleApi(env, request, url);
       if (url.searchParams.has("url")) return await worker_default.fetch(request);
+      if (!env.MG_PHONE) {
+        return json({
+          status: "online",
+          service: "MG Windsor EV Multi-User Cloud Worker",
+          version: "option-a-isolated"
+        });
+      }
       return await silent_webhook_default.fetch(request, env, ctx);
     } catch (e) {
       console.error("Unhandled worker exception:", e);

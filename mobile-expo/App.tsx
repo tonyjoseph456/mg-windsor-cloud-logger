@@ -63,6 +63,10 @@ import {
   isValidChargeRecord,
   BACKEND_URL,
   setActiveD1Vin,
+  setActiveD1Auth,
+  getD1AuthHeaders,
+  fetchWebhookKey,
+  regenerateWebhookKey,
   sheetUrl,
   fetchD1Trips,
   fetchD1TripDates,
@@ -135,6 +139,8 @@ const GOOGLE_MAPS_API_KEY_KEY = 'mg_ismart_google_maps_api_key_v1';
 const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
+const API_TOKEN_KEY = 'mg_pwa_api_token_v1';
+const WEBHOOK_KEY_STORAGE = 'mg_pwa_webhook_key_v1';
 const IS_ADMIN_KEY = 'mg_pwa_is_admin_v1';
 const MASTER_ADMIN_PHONE = '9744010098';
 
@@ -2265,6 +2271,11 @@ export default function App() {
   const [accessCode, setAccessCode] = useState<string>('');
   const [isAuthorizedUser, setIsAuthorizedUser] = useState<boolean>(false);
   const [licenseToken, setLicenseToken] = useState<string>('');
+  const [apiToken, setApiToken] = useState<string>('');
+  const [webhookKey, setWebhookKey] = useState<string>('');
+  const [isResettingLinks, setIsResettingLinks] = useState<boolean>(false);
+  const licenseTokenRef = useRef<string>('');
+  const apiTokenRef = useRef<string>('');
   const [isAdminUser, setIsAdminUser] = useState<boolean>(false);
   const [adminTapCount, setAdminTapCount] = useState<number>(0);
 
@@ -2273,8 +2284,8 @@ export default function App() {
 
   useEffect(() => {
     const currentVin = snapshot?.vehicle?.vin || vin;
-    setActiveD1Vin(currentVin || '');
-  }, [vin, snapshot?.vehicle?.vin]);
+    setActiveD1Auth(currentVin || '', apiToken || licenseToken || '');
+  }, [vin, snapshot?.vehicle?.vin, apiToken, licenseToken]);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [activeTrip, setActiveTrip] = useState<TripRecord | null>(null);
@@ -2803,9 +2814,61 @@ export default function App() {
   const [isAutomationScreenVisible, setIsAutomationScreenVisible] = useState<boolean>(false);
   const [copiedAutomationKey, setCopiedAutomationKey] = useState<string | null>(null);
 
+  const persistD1SessionAuth = async (params: { vin?: string; apiToken?: string; webhookKey?: string }) => {
+    const cleanVin = (params.vin || '').trim();
+    const nextToken = (params.apiToken || '').trim();
+    const nextWebhook = (params.webhookKey || '').trim();
+    if (nextToken) {
+      setApiToken(nextToken);
+      apiTokenRef.current = nextToken;
+      await SecureStore.setItemAsync(API_TOKEN_KEY, nextToken).catch(() => {});
+    }
+    if (nextWebhook) {
+      setWebhookKey(nextWebhook);
+      await SecureStore.setItemAsync(WEBHOOK_KEY_STORAGE, nextWebhook).catch(() => {});
+    }
+    const fallbackVin = snapshot?.vehicle?.vin || vin || '';
+    const fallbackTok = nextToken || apiTokenRef.current || licenseTokenRef.current || '';
+    if (cleanVin || nextToken) {
+      setActiveD1Auth(cleanVin || fallbackVin, fallbackTok);
+    }
+  };
+
+  const ensureAutomationWebhookKey = async (): Promise<string> => {
+    if (webhookKey && webhookKey.trim()) return webhookKey.trim();
+    const activeVinVal = (snapshot?.vehicle?.vin || vin || '').trim();
+    if (activeVinVal && (apiTokenRef.current || licenseTokenRef.current)) {
+      const fetched = await fetchWebhookKey(activeVinVal);
+      if (fetched.success && fetched.webhookKey) {
+        await persistD1SessionAuth({ vin: activeVinVal, webhookKey: fetched.webhookKey });
+        return fetched.webhookKey;
+      }
+    }
+    const client = clientRef.current;
+    if (client?.uid && client?.token && activeVinVal) {
+      const reg = await registerCarSession({
+        uid: client.uid,
+        token: client.token,
+        vin: activeVinVal,
+        phone,
+        licenseToken: licenseTokenRef.current || undefined,
+      });
+      if (reg.success) {
+        await persistD1SessionAuth({
+          vin: reg.vin || activeVinVal,
+          apiToken: reg.apiToken,
+          webhookKey: reg.webhookKey,
+        });
+        return reg.webhookKey || '';
+      }
+    }
+    return '';
+  };
+
   const handleOpenAutomationScreen = () => {
     setCopiedAutomationKey(null);
     setIsAutomationScreenVisible(true);
+    ensureAutomationWebhookKey().catch(() => {});
     automationSlideAnim.stopAnimation();
     automationSlideAnim.setValue(0);
     Animated.timing(automationSlideAnim, {
@@ -2829,6 +2892,38 @@ export default function App() {
         setCopiedAutomationKey(null);
       }
     });
+  };
+
+  const handleResetPrivateLinks = () => {
+    if (isResettingLinks) return;
+    Alert.alert(
+      'Reset Private Links?',
+      'This creates a fresh private link key and immediately stops all old Shortcut and CarPlay links from working. You will need to paste the updated links into Apple Shortcuts.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset Links',
+          style: 'destructive',
+          onPress: async () => {
+            setIsResettingLinks(true);
+            try {
+              const activeVinVal = (snapshot?.vehicle?.vin || vin || '').trim();
+              const res = await regenerateWebhookKey(activeVinVal);
+              if (!res.success || !res.webhookKey) {
+                throw new Error(res.error || 'Could not reset private links');
+              }
+              await persistD1SessionAuth({ vin: activeVinVal, webhookKey: res.webhookKey });
+              setCopiedAutomationKey(null);
+              showBanner('ok', 'Private links reset! Update your Apple Shortcuts with the new links.');
+            } catch (e: any) {
+              Alert.alert('Reset Failed', e?.message || 'Could not reset private links right now.');
+            } finally {
+              setIsResettingLinks(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleCopyAutomationLink = async (key: string, url: string, label: string) => {
@@ -3297,7 +3392,7 @@ export default function App() {
 
   // Query D1 trips and distinct dates whenever Trips or Account tab is opened
   useEffect(() => {
-    if (tab === 'trips' || tab === 'account') {
+    if ((tab === 'trips' || tab === 'account') && (apiToken || licenseToken)) {
       fetchD1TripDates().then((dates) => {
         if (dates && dates.length > 0) setD1TripDates(dates);
       }).catch(() => {});
@@ -3312,7 +3407,7 @@ export default function App() {
         }
       }).catch(() => {});
     }
-  }, [tab]);
+  }, [tab, apiToken, licenseToken]);
 
   const tripDateKeysSet = useMemo(() => {
     const set = new Set<string>();
@@ -3458,7 +3553,7 @@ export default function App() {
 
   // Query D1 charges and distinct dates whenever Charge or Account tab is opened
   useEffect(() => {
-    if (tab === 'charge' || tab === 'account') {
+    if ((tab === 'charge' || tab === 'account') && (apiToken || licenseToken)) {
       fetchD1ChargeDates().then((dates) => {
         if (dates && dates.length > 0) setD1ChargeDates(dates);
       }).catch(() => {});
@@ -3472,7 +3567,7 @@ export default function App() {
         }
       }).catch(() => {});
     }
-  }, [tab]);
+  }, [tab, apiToken, licenseToken]);
 
   const chargeDateKeysSet = useMemo(() => {
     const set = new Set<string>();
@@ -3538,13 +3633,14 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!(apiToken || licenseToken)) return;
     if (tab === 'account') {
       refreshD1Notifications();
     }
     if (tab === 'charge') {
       refreshD1ChargingHistory(false);
     }
-  }, [tab]);
+  }, [tab, apiToken, licenseToken]);
 
   const tripsRef = useRef<TripRecord[]>([]);
   const activeTripRef = useRef<TripRecord | null>(null);
@@ -3872,11 +3968,11 @@ export default function App() {
           try {
             const sub = await reg.pushManager.getSubscription();
             setIsPushSubscribed(Boolean(sub));
-            if (sub && activeVinVal) {
+            if (sub && activeVinVal && (apiToken || licenseToken)) {
               const subJson = sub.toJSON();
               await fetch(`${BACKEND_URL}/api/push-subscribe`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                   vin: activeVinVal,
                   subscription: {
@@ -3894,7 +3990,7 @@ export default function App() {
         })
         .catch(() => {});
     }
-  }, [vin, snapshot?.vehicle?.vin]);
+  }, [vin, snapshot?.vehicle?.vin, apiToken, licenseToken]);
 
   const handleEnablePush = async () => {
     if (
@@ -3945,7 +4041,7 @@ export default function App() {
       const subJson = sub.toJSON();
       const res = await fetch(`${BACKEND_URL}/api/push-subscribe`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           vin: activeVinVal,
           subscription: {
@@ -3983,7 +4079,7 @@ export default function App() {
           await sub.unsubscribe().catch(() => {});
           await fetch(`${BACKEND_URL}/api/push-unsubscribe`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ vin: activeVinVal, endpoint }),
           }).catch(() => {});
         }
@@ -4003,7 +4099,7 @@ export default function App() {
       setIsPushBusy(true);
       const res = await fetch(`${BACKEND_URL}/api/push-test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ vin: activeVinVal }),
       });
       const d = await res.json();
@@ -4076,6 +4172,8 @@ export default function App() {
           rawLiveActivity,
           rawAccessCode,
           rawLicense,
+          rawApiToken,
+          rawWebhookKey,
           rawIsAdmin,
         ] = await Promise.all([
           SecureStore.getItemAsync(SESSION_KEY),
@@ -4094,6 +4192,8 @@ export default function App() {
           SecureStore.getItemAsync(LIVE_ACTIVITY_KEY),
           SecureStore.getItemAsync(ACCESS_CODE_KEY),
           SecureStore.getItemAsync(LICENSE_KEY),
+          SecureStore.getItemAsync(API_TOKEN_KEY),
+          SecureStore.getItemAsync(WEBHOOK_KEY_STORAGE),
           SecureStore.getItemAsync(IS_ADMIN_KEY),
         ]);
 
@@ -4103,7 +4203,18 @@ export default function App() {
 
         if (rawLicense) {
           setLicenseToken(rawLicense);
+          licenseTokenRef.current = rawLicense;
           setIsAuthorizedUser(true);
+        }
+
+        const bootApiToken = (rawApiToken || rawLicense || '').trim();
+        if (bootApiToken) {
+          setApiToken(bootApiToken);
+          apiTokenRef.current = bootApiToken;
+        }
+
+        if (rawWebhookKey) {
+          setWebhookKey(rawWebhookKey);
         }
 
         if (rawIsAdmin === 'true') {
@@ -4247,9 +4358,28 @@ export default function App() {
             setPassword(saved.password);
             setPin(saved.pin || '');
             setVin(saved.vin || '');
-            setActiveD1Vin(saved.vin || '');
+            setActiveD1Auth(saved.vin || '', bootApiToken);
             setIsAuthenticated(true);
             setIsAuthorizedUser(true);
+
+            // Seamless upgrade for already-signed-in devices missing per-user D1 or webhook tokens
+            if (saved.uid && saved.token && saved.vin && (!rawApiToken || !rawWebhookKey)) {
+              registerCarSession({
+                uid: saved.uid,
+                token: saved.token,
+                vin: saved.vin,
+                phone: saved.phone,
+                licenseToken: rawLicense || undefined,
+              }).then(async (reg) => {
+                if (reg.success) {
+                  await persistD1SessionAuth({
+                    vin: reg.vin || saved.vin,
+                    apiToken: reg.apiToken,
+                    webhookKey: reg.webhookKey,
+                  });
+                }
+              }).catch(() => {});
+            }
 
             if (isMasterAdminPhone(saved.phone)) {
               setIsAdminUser(true);
@@ -4262,8 +4392,16 @@ export default function App() {
                 await Promise.all([
                   SecureStore.deleteItemAsync(SESSION_KEY),
                   SecureStore.deleteItemAsync(LICENSE_KEY),
+                  SecureStore.deleteItemAsync(API_TOKEN_KEY),
+                  SecureStore.deleteItemAsync(WEBHOOK_KEY_STORAGE),
                   SecureStore.deleteItemAsync(IS_ADMIN_KEY),
                 ]);
+                licenseTokenRef.current = '';
+                apiTokenRef.current = '';
+                setLicenseToken('');
+                setApiToken('');
+                setWebhookKey('');
+                setActiveD1Auth('', '');
                 setIsAuthenticated(false);
                 setIsAuthorizedUser(false);
                 setIsAdminUser(false);
@@ -4673,6 +4811,15 @@ export default function App() {
           token: client.token,
           vin: discoveredVin,
           phone: usePhone,
+          licenseToken: licenseTokenRef.current || undefined,
+        }).then((reg) => {
+          if (reg.success) {
+            return persistD1SessionAuth({
+              vin: reg.vin || discoveredVin,
+              apiToken: reg.apiToken,
+              webhookKey: reg.webhookKey,
+            });
+          }
         }).catch(() => {});
       }
       await SecureStore.setItemAsync(SNAPSHOT_KEY, JSON.stringify(snap));
@@ -4814,7 +4961,7 @@ export default function App() {
       activeVehicle.name = normalizeVehicleDisplayName(activeVehicle.name, activeVehicle.series);
       const activeVin = activeVehicle.vin;
       setVin(activeVin);
-      setActiveD1Vin(activeVin);
+      setActiveD1Auth(activeVin, licenseTokenRef.current || apiTokenRef.current || '');
       clientRef.current = client;
 
       // Step 2b: Register / consume access code on backend and save permanent device authorization
@@ -4823,6 +4970,8 @@ export default function App() {
         if (consumeRes.licenseToken) {
           await SecureStore.setItemAsync(LICENSE_KEY, consumeRes.licenseToken);
           setLicenseToken(consumeRes.licenseToken);
+          licenseTokenRef.current = consumeRes.licenseToken;
+          await persistD1SessionAuth({ vin: activeVin, apiToken: consumeRes.licenseToken });
         }
         if (cleanCode) {
           await SecureStore.setItemAsync(ACCESS_CODE_KEY, cleanCode);
@@ -4879,13 +5028,18 @@ export default function App() {
             await Promise.all([
               SecureStore.deleteItemAsync(SESSION_KEY),
               SecureStore.deleteItemAsync(SNAPSHOT_KEY),
+              SecureStore.deleteItemAsync(API_TOKEN_KEY),
+              SecureStore.deleteItemAsync(WEBHOOK_KEY_STORAGE),
             ]);
             clientRef.current = null;
+            apiTokenRef.current = '';
+            setApiToken('');
+            setWebhookKey('');
             setSnapshot(null);
             setPassword('');
             setPin('');
             setVin('');
-            setActiveD1Vin('');
+            setActiveD1Auth('', '');
             setTrips([]);
             tripsRef.current = [];
             setChargeLogs([]);
@@ -4923,10 +5077,16 @@ export default function App() {
               SecureStore.deleteItemAsync(GOOGLE_SYNC_KEY),
               SecureStore.deleteItemAsync(ACCESS_CODE_KEY),
               SecureStore.deleteItemAsync(LICENSE_KEY),
+              SecureStore.deleteItemAsync(API_TOKEN_KEY),
+              SecureStore.deleteItemAsync(WEBHOOK_KEY_STORAGE),
               SecureStore.deleteItemAsync(IS_ADMIN_KEY),
             ]);
             setAccessCode('');
             setLicenseToken('');
+            licenseTokenRef.current = '';
+            setApiToken('');
+            apiTokenRef.current = '';
+            setWebhookKey('');
             setIsAdminUser(false);
             setIsAuthorizedUser(false);
             clientRef.current = null;
@@ -4934,7 +5094,7 @@ export default function App() {
             setPassword('');
             setPin('');
             setVin('');
-            setActiveD1Vin('');
+            setActiveD1Auth('', '');
             setTrips([]);
             tripsRef.current = [];
             setChargeLogs([]);
@@ -12670,11 +12830,14 @@ export default function App() {
 
       {/* Siri, widgets & CarPlay Fullscreen Tween Screen */}
       {isAutomationScreenVisible && (() => {
-        const vinParam =
-          displayVin && displayVin !== 'Discovering...'
-            ? `vin=${encodeURIComponent(displayVin)}&`
-            : '';
-        const credsQuery = `phone=${encodeURIComponent(phone)}&password=${encodeURIComponent(password)}&pin=${encodeURIComponent(pin)}`;
+        const activeKey = (webhookKey || '').trim();
+        const cleanPin = (pin || '').trim();
+        const hasValidPin = /^\d{4}$/.test(cleanPin);
+
+        const buildCommandUrl = (action: string, keyVal: string) =>
+          `${BACKEND_URL}/api/command/${action}?key=${encodeURIComponent(keyVal)}&pin=${encodeURIComponent(cleanPin)}`;
+        const buildTripUrl = (action: 'start' | 'stop', keyVal: string) =>
+          `${BACKEND_URL}/api/trip/${action}?key=${encodeURIComponent(keyVal)}&format=text`;
 
         const renderSnowflakeIcon = (color: string) => (
           <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.2}>
@@ -12690,7 +12853,8 @@ export default function App() {
             title: 'Unlock',
             subtitle: 'Silent, no app popup',
             label: 'Silent Unlock',
-            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=unlock&${credsQuery}`,
+            requiresPin: true,
+            buildUrl: (k: string) => buildCommandUrl('unlock', k),
             icon: (
               <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
                 <Rect x="3" y="11" width="18" height="11" rx="2" />
@@ -12703,7 +12867,8 @@ export default function App() {
             title: 'Lock',
             subtitle: 'Silent, no app popup',
             label: 'Silent Lock',
-            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=lock&${credsQuery}`,
+            requiresPin: true,
+            buildUrl: (k: string) => buildCommandUrl('lock', k),
             icon: (
               <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
                 <Rect x="3" y="11" width="18" height="11" rx="2" />
@@ -12716,7 +12881,8 @@ export default function App() {
             title: 'Climate on',
             subtitle: 'Start the AC',
             label: 'Climate On',
-            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-on&${credsQuery}`,
+            requiresPin: true,
+            buildUrl: (k: string) => buildCommandUrl('climate-on', k),
             icon: renderSnowflakeIcon('#34D399'),
           },
           {
@@ -12724,7 +12890,8 @@ export default function App() {
             title: 'Climate off',
             subtitle: 'Stop the AC',
             label: 'Climate Off',
-            url: `https://mg-windsor-webhook.mg-ismart.workers.dev?action=climate-off&${credsQuery}`,
+            requiresPin: true,
+            buildUrl: (k: string) => buildCommandUrl('climate-off', k),
             icon: renderSnowflakeIcon('#94A3B8'),
           },
         ];
@@ -12735,7 +12902,8 @@ export default function App() {
             title: 'Car connects',
             subtitle: 'Starts a trip',
             label: 'CarPlay Start Trip',
-            url: `${BACKEND_URL}/api/trip/start?${vinParam}format=text`,
+            requiresPin: false,
+            buildUrl: (k: string) => buildTripUrl('start', k),
             icon: <View style={[styles.autoDot, { backgroundColor: '#34E096' }]} />,
           },
           {
@@ -12743,10 +12911,35 @@ export default function App() {
             title: 'Car disconnects',
             subtitle: 'Ends the trip and saves it',
             label: 'CarPlay Stop Trip',
-            url: `${BACKEND_URL}/api/trip/stop?${vinParam}format=text`,
+            requiresPin: false,
+            buildUrl: (k: string) => buildTripUrl('stop', k),
             icon: <View style={[styles.autoDot, { backgroundColor: '#F87171' }]} />,
           },
         ];
+
+        const handleCopyItemPress = async (item: {
+          key: string;
+          label: string;
+          requiresPin: boolean;
+          buildUrl: (k: string) => string;
+        }) => {
+          if (item.requiresPin && !hasValidPin) {
+            Alert.alert(
+              '4-Digit MG PIN Required',
+              'For your privacy, your 4-digit MG Security PIN is never stored on the server. Save your 4-digit PIN when logging in so Car Command links can include it locally.'
+            );
+            return;
+          }
+          const resolvedKey = activeKey || (await ensureAutomationWebhookKey());
+          if (!resolvedKey) {
+            Alert.alert(
+              'Private Key Syncing',
+              'Your vehicle session is still registering. Pull to refresh on the Home tab once and try again.'
+            );
+            return;
+          }
+          await handleCopyAutomationLink(item.key, item.buildUrl(resolvedKey), item.label);
+        };
 
         const renderLinkRows = (
           items: {
@@ -12754,7 +12947,8 @@ export default function App() {
             title: string;
             subtitle: string;
             label: string;
-            url: string;
+            requiresPin: boolean;
+            buildUrl: (k: string) => string;
             icon: React.ReactNode;
           }[]
         ) =>
@@ -12771,7 +12965,7 @@ export default function App() {
                   </View>
                   <TouchableOpacity
                     style={[styles.autoCopyBtn, isCopied && styles.autoCopyBtnCopied]}
-                    onPress={() => handleCopyAutomationLink(item.key, item.url, item.label)}
+                    onPress={() => handleCopyItemPress(item)}
                     activeOpacity={0.75}
                     accessibilityLabel={`Copy ${item.title} link`}
                     accessibilityRole="button"
@@ -12894,11 +13088,36 @@ export default function App() {
 
                 {/* 4. CAR COMMANDS */}
                 <Text style={styles.autoSectionHeader}>CAR COMMANDS</Text>
+                {!hasValidPin && (
+                  <Text style={styles.autoPinWarnText}>
+                    Save your 4-digit MG Security PIN at login so Car Command links include it locally (never saved on server).
+                  </Text>
+                )}
                 <View style={styles.autoCard}>{renderLinkRows(carCommandLinks)}</View>
 
                 {/* 5. CARPLAY TRIPS */}
                 <Text style={styles.autoSectionHeader}>CARPLAY TRIPS</Text>
                 <View style={styles.autoCard}>{renderLinkRows(carplayTripLinks)}</View>
+
+                {/* 5b. Private Links Security Card */}
+                <View style={styles.autoPrivacyCard}>
+                  <Text style={styles.autoPrivacyText}>
+                    <Text style={styles.autoSafetyBold}>Private links · Option A: </Text>
+                    No phone number, MG password, or VIN is included in any link. Your 4-digit PIN stays inside your Car Command links only and is never stored in our database.
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.autoResetBtn, isResettingLinks && { opacity: 0.6 }]}
+                    onPress={handleResetPrivateLinks}
+                    disabled={isResettingLinks}
+                    activeOpacity={0.75}
+                    accessibilityLabel="Reset private links"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.autoResetBtnText}>
+                      {isResettingLinks ? 'Resetting private links...' : 'Reset private links'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
 
                 {/* 6. Set up in Shortcuts · 30 seconds */}
                 <View style={styles.gmkHelpCard}>
@@ -20938,6 +21157,43 @@ const styles = StyleSheet.create({
   },
   autoStepRedHighlight: {
     color: '#F87171',
+    fontWeight: '700',
+  },
+  autoPinWarnText: {
+    color: '#FBBF24',
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  autoPrivacyCard: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 22,
+  },
+  autoPrivacyText: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 12,
+  },
+  autoResetBtn: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.45)',
+    backgroundColor: 'rgba(127, 29, 29, 0.25)',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  autoResetBtnText: {
+    color: '#FCA5A5',
+    fontSize: 13.5,
     fontWeight: '700',
   },
 

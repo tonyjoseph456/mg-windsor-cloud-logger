@@ -8,6 +8,8 @@
  * 4. Audit Logging of all login attempts and code redemptions (/api/admin/logs)
  */
 
+import { createEnvAuthKvStore, registerLicenseToken } from './multi-user-auth';
+
 export const ADMIN_TABLE_SCHEMAS = [
   `CREATE TABLE IF NOT EXISTS access_codes (
     code TEXT PRIMARY KEY,
@@ -366,6 +368,15 @@ export async function consumeAccessCode(
     } catch (e: any) {
       console.warn('consumeAccessCode error:', e);
     }
+  }
+
+  try {
+    const authKv = createEnvAuthKvStore(env, async (db) => {
+      await db.prepare('CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT)').run().catch(() => {});
+    });
+    await registerLicenseToken(authKv, { token: licenseToken, phone, vin });
+  } catch (e: any) {
+    console.warn('registerLicenseToken error:', e);
   }
 
   const isAdmin = Boolean(isMasterAdminPhone(phone, env) || code === MASTER_ACCESS_CODE || check.isAdmin);

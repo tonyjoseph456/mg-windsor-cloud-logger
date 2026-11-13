@@ -27,6 +27,9 @@ A complete reverse-engineered port and mobile application built from [`john-laza
 4. **24/7 Cloudflare Worker & D1 Telemetry Backend ([`cloudflare-worker/multi-worker.ts`](file:///c:/Work/Tony/Antigravity/Demo/cloudflare-worker/multi-worker.ts))**
    - Handles Apple CarPlay trip start/stop webhooks, smart 12V-safe AC/DC charging tracking, Google Sheets backup, and native Web Push notifications.
 
+5. **Per-User Isolation & Privacy ([`DATA_AND_PRIVACY.md`](./DATA_AND_PRIVACY.md))**
+   - Clear, plain-English guide to what stays strictly on your phone (password, 4-digit MG PIN, local cache, settings) vs. what is stored in Cloudflare D1 (VIN-isolated trips, charges, notifications, temporary session token, and rotatable `webhookKey` links with no phone, password, or VIN in Shortcut URLs).
+
 ---
 
 ## Credits & Acknowledgements

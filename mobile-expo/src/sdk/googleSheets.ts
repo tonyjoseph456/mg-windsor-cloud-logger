@@ -733,11 +733,30 @@ export async function syncChargingLogsToGoogleSheet(
 export const BACKEND_URL = 'https://mg-windsor-webhook.mg-ismart.workers.dev';
 
 let _activeD1Vin: string = '';
+let _activeD1Token: string = '';
+
 export function setActiveD1Vin(vin?: string | null): void {
   _activeD1Vin = (vin || '').trim().toUpperCase();
 }
 export function getActiveD1Vin(): string {
   return _activeD1Vin;
+}
+export function setActiveD1Token(token?: string | null): void {
+  _activeD1Token = (token || '').trim();
+}
+export function getActiveD1Token(): string {
+  return _activeD1Token;
+}
+export function setActiveD1Auth(vin?: string | null, token?: string | null): void {
+  if (vin !== undefined) _activeD1Vin = (vin || '').trim().toUpperCase();
+  if (token !== undefined) _activeD1Token = (token || '').trim();
+}
+export function getD1AuthHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra || {}) };
+  if (_activeD1Token) {
+    headers.Authorization = `Bearer ${_activeD1Token}`;
+  }
+  return headers;
 }
 
 export interface BackendConfig {
@@ -1038,7 +1057,7 @@ export async function fetchD1Trips(date?: string, vinOverride?: string): Promise
     if (vin) params.set('vin', vin);
     const qs = params.toString();
     const url = `${BACKEND_URL}/api/trips${qs ? `?${qs}` : ''}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: getD1AuthHeaders() });
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.trips)) {
@@ -1083,7 +1102,7 @@ export async function syncTripsToD1(trips: TripRecord[], vinOverride?: string): 
     }));
     const res = await fetch(`${BACKEND_URL}/api/trips/sync${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined, trips: payload }),
     });
     if (!res.ok) return false;
@@ -1100,7 +1119,7 @@ export async function deleteD1Trip(tripId: string, vinOverride?: string): Promis
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/trips/delete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ id: tripId, vin: vin || undefined }),
     });
     if (!res.ok) return false;
@@ -1117,7 +1136,7 @@ export async function clearD1Trips(vinOverride?: string): Promise<boolean> {
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/trips/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return false;
@@ -1134,7 +1153,7 @@ export async function dedupD1Trips(vinOverride?: string): Promise<{ success: boo
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/trips/dedup${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return { success: false, removedCount: 0 };
@@ -1170,7 +1189,7 @@ export async function syncChargesToD1(charges: ChargeLogRecord[], vinOverride?: 
     }));
     const res = await fetch(`${BACKEND_URL}/api/charges/sync${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined, charges: payload }),
     });
     if (!res.ok) return false;
@@ -1187,7 +1206,7 @@ export async function deleteD1Charge(chargeId: string, vinOverride?: string): Pr
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/charges/delete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ id: chargeId, vin: vin || undefined }),
     });
     if (!res.ok) return false;
@@ -1204,7 +1223,7 @@ export async function clearD1Charges(vinOverride?: string): Promise<boolean> {
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/charges/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return false;
@@ -1219,7 +1238,9 @@ export async function clearD1Charges(vinOverride?: string): Promise<boolean> {
 export async function fetchD1TripDates(vinOverride?: string): Promise<string[]> {
   try {
     const vin = (vinOverride || _activeD1Vin || '').trim();
-    const res = await fetch(`${BACKEND_URL}/api/trip/dates${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`);
+    const res = await fetch(`${BACKEND_URL}/api/trip/dates${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      headers: getD1AuthHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.dates)) {
@@ -1267,7 +1288,7 @@ export async function fetchChargingHistory(refresh = false, vinOverride?: string
     if (vin) params.set('vin', vin);
     const qs = params.toString();
     const url = `${BACKEND_URL}/api/charging-history${qs ? `?${qs}` : ''}`;
-    const res = await fetch(url, { headers: { 'Cache-Control': 'no-store' } });
+    const res = await fetch(url, { headers: getD1AuthHeaders({ 'Cache-Control': 'no-store' }) });
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.sessions)) {
@@ -1284,7 +1305,7 @@ export async function clearChargingHistory(vinOverride?: string): Promise<boolea
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/charging-history/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return false;
@@ -1304,7 +1325,7 @@ export async function fetchD1Charges(date?: string, vinOverride?: string): Promi
     if (vin) params.set('vin', vin);
     const qs = params.toString();
     const url = `${BACKEND_URL}/api/charging-history${qs ? `?${qs}` : ''}`;
-    const res = await fetch(url, { headers: { 'Cache-Control': 'no-store' } });
+    const res = await fetch(url, { headers: getD1AuthHeaders({ 'Cache-Control': 'no-store' }) });
     if (!res.ok) return [];
     const data = await res.json();
     const list = data.sessions || data.charges;
@@ -1322,7 +1343,7 @@ export async function dedupD1Charges(vinOverride?: string): Promise<{ success: b
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/charges/dedup${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined }),
     });
     if (!res.ok) return { success: false, removedCount: 0 };
@@ -1337,7 +1358,9 @@ export async function dedupD1Charges(vinOverride?: string): Promise<{ success: b
 export async function fetchD1ChargeDates(vinOverride?: string): Promise<string[]> {
   try {
     const vin = (vinOverride || _activeD1Vin || '').trim();
-    const res = await fetch(`${BACKEND_URL}/api/charge/dates${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`);
+    const res = await fetch(`${BACKEND_URL}/api/charge/dates${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      headers: getD1AuthHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.dates)) {
@@ -1349,25 +1372,80 @@ export async function fetchD1ChargeDates(vinOverride?: string): Promise<string[]
   return [];
 }
 
-export async function registerCarSession(car: { uid: string; token: string; vin?: string; phone?: string }): Promise<boolean> {
+/** Register an authenticated MG session with the backend and receive per-user D1 and webhook tokens. */
+export async function registerCarSession(car: {
+  uid: string;
+  token: string;
+  vin?: string;
+  phone?: string;
+  licenseToken?: string;
+}): Promise<{ success: boolean; vin?: string; apiToken?: string; webhookKey?: string; error?: string }> {
   try {
     if (car.vin) setActiveD1Vin(car.vin);
     const res = await fetch(`${BACKEND_URL}/api/register-car`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(car),
     });
-    return res.ok;
-  } catch (_) {
-    return false;
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok || !data?.success) {
+      return { success: false, error: data?.error || `HTTP ${res.status}` };
+    }
+    const resolvedVin = (data.vin || car.vin || '').trim();
+    if (resolvedVin && data.apiToken) {
+      setActiveD1Auth(resolvedVin, data.apiToken);
+    } else {
+      if (resolvedVin) setActiveD1Vin(resolvedVin);
+      if (typeof data.apiToken === 'string' && data.apiToken) setActiveD1Token(data.apiToken);
+    }
+    return {
+      success: true,
+      vin: resolvedVin || undefined,
+      apiToken: typeof data.apiToken === 'string' ? data.apiToken : undefined,
+      webhookKey: typeof data.webhookKey === 'string' ? data.webhookKey : undefined,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Network error' };
   }
+}
+
+async function requestWebhookKey(
+  path: string,
+  method: 'GET' | 'POST',
+  vinOverride?: string
+): Promise<{ success: boolean; webhookKey?: string; error?: string }> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}${path}${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      method,
+      headers: method === 'POST' ? getD1AuthHeaders({ 'Content-Type': 'application/json' }) : getD1AuthHeaders(),
+      ...(method === 'POST' ? { body: JSON.stringify({ vin: vin || undefined }) } : {}),
+    });
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok || !data?.success || !data?.webhookKey) {
+      return { success: false, error: data?.error || `HTTP ${res.status}` };
+    }
+    return { success: true, webhookKey: String(data.webhookKey) };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Network error' };
+  }
+}
+
+/** Fetch the authenticated car's private webhook key for Shortcut and CarPlay links. */
+export function fetchWebhookKey(vinOverride?: string): Promise<{ success: boolean; webhookKey?: string; error?: string }> {
+  return requestWebhookKey('/api/webhook-key', 'GET', vinOverride);
+}
+
+/** Rotate the authenticated car's private webhook key, invalidating any previously shared links. */
+export function regenerateWebhookKey(vinOverride?: string): Promise<{ success: boolean; webhookKey?: string; error?: string }> {
+  return requestWebhookKey('/api/webhook-key/regenerate', 'POST', vinOverride);
 }
 
 export async function deregisterCarSession(params: { vin?: string; phone?: string; clearHistory?: boolean }): Promise<boolean> {
   try {
     const res = await fetch(`${BACKEND_URL}/api/deregister-car`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(params),
     });
     return res.ok;
@@ -1391,7 +1469,9 @@ export interface AppNotificationRecord {
 export async function fetchD1Notifications(limit = 50, vinOverride?: string): Promise<AppNotificationRecord[]> {
   try {
     const vin = (vinOverride || _activeD1Vin || '').trim();
-    const res = await fetch(`${BACKEND_URL}/api/notifications?limit=${limit}${vin ? `&vin=${encodeURIComponent(vin)}` : ''}`);
+    const res = await fetch(`${BACKEND_URL}/api/notifications?limit=${limit}${vin ? `&vin=${encodeURIComponent(vin)}` : ''}`, {
+      headers: getD1AuthHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     if (data.success && Array.isArray(data.notifications)) {
@@ -1408,7 +1488,7 @@ export async function clearD1Notifications(vinOverride?: string): Promise<boolea
     const vin = (vinOverride || _activeD1Vin || '').trim();
     const res = await fetch(`${BACKEND_URL}/api/notifications/clear${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ vin: vin || undefined }),
     });
     return res.ok;
@@ -1460,6 +1540,10 @@ export async function consumeAccessCode(
       }),
     });
     const data = await res.json();
+    if (data?.success && typeof data?.licenseToken === 'string' && data.licenseToken) {
+      setActiveD1Token(data.licenseToken);
+    }
+    if (vin) setActiveD1Vin(vin);
     return data;
   } catch (err: any) {
     return { success: false, error: err.message || 'Failed to authorize account' };
