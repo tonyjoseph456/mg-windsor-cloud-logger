@@ -11428,11 +11428,13 @@ export default function App() {
               },
             ]}
           >
-            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <SafeAreaView style={{ flex: 1, minHeight: 0, width: '100%', alignItems: 'center' }}>
               <ScrollView
-                style={{ flex: 1, width: '100%' }}
+                style={styles.tripsScrollView}
                 contentContainerStyle={styles.tsScrollContent}
-                showsVerticalScrollIndicator={false}
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
+                {...(Platform.OS === 'web' ? ({ className: 'trips-scroller' } as any) : {})}
               >
                 {/* 1. Header Row */}
                 <View style={styles.accountHeader}>
@@ -11790,11 +11792,13 @@ export default function App() {
               },
             ]}
           >
-            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <SafeAreaView style={{ flex: 1, minHeight: 0, width: '100%', alignItems: 'center' }}>
               <ScrollView
-                style={{ flex: 1, width: '100%' }}
-                contentContainerStyle={styles.tsScrollContent}
-                showsVerticalScrollIndicator={false}
+                style={styles.tripsScrollView}
+                contentContainerStyle={styles.pnScrollContent}
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
+                {...(Platform.OS === 'web' ? ({ className: 'trips-scroller' } as any) : {})}
               >
                 {/* 1. Header Row */}
                 <View style={styles.accountHeader}>
@@ -11916,8 +11920,6 @@ export default function App() {
                   </View>
                 </View>
 
-                <View style={{ flex: 1, minHeight: 16 }} />
-
                 {/* 6. Bottom Action Buttons */}
                 {isPushSubscribed ? (
                   <View>
@@ -12026,11 +12028,13 @@ export default function App() {
               },
             ]}
           >
-            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+            <SafeAreaView style={{ flex: 1, minHeight: 0, width: '100%', alignItems: 'center' }}>
               <ScrollView
-                style={{ flex: 1, width: '100%' }}
+                style={styles.tripsScrollView}
                 contentContainerStyle={styles.nhScrollContent}
-                showsVerticalScrollIndicator={false}
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
+                {...(Platform.OS === 'web' ? ({ className: 'trips-scroller' } as any) : {})}
               >
                 {/* 1. Header Row */}
                 <View style={styles.nhHeaderRow}>
@@ -19034,7 +19038,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: Platform.OS === 'web' ? 120 : 130,
+    paddingBottom: Platform.OS === 'web' ? 140 : 145,
   },
   accountHeader: {
     flexDirection: 'row',
@@ -19389,7 +19393,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: Platform.OS === 'ios' ? 32 : 24,
+    paddingBottom: Platform.OS === 'web' ? 140 : 145,
   },
   tsCard: {
     backgroundColor: '#111827',
@@ -19687,6 +19691,14 @@ const styles = StyleSheet.create({
   },
 
   // Dedicated Push Notifications Screen Styles
+  pnScrollContent: {
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: Platform.OS === 'web' ? 160 : 165,
+  },
   pnStatusCard: {
     backgroundColor: '#111827',
     borderRadius: 20,
@@ -19862,7 +19874,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: 36,
+    paddingBottom: Platform.OS === 'web' ? 140 : 145,
   },
   nhHeaderRow: {
     flexDirection: 'row',
