@@ -83,6 +83,7 @@ export function LiquidGlassTabBar<T extends string>({
   const capsuleX = useRef(new Animated.Value(0)).current;
   const capsulePressAnim = useRef(new Animated.Value(0)).current;
   const capsuleLeftRef = useRef<number>(0);
+  const capsuleTargetLeftRef = useRef<number | null>(null);
   const lastPointerUpAtRef = useRef<number>(0);
 
   const interactionRef = useRef<{
@@ -183,11 +184,20 @@ export function LiquidGlassTabBar<T extends string>({
     const targetLeft = activeIdx * slotW;
     if (!hasMeasuredRef.current) {
       hasMeasuredRef.current = true;
+      capsuleTargetLeftRef.current = targetLeft;
       capsuleX.setValue(targetLeft);
       capsuleLeftRef.current = targetLeft;
       return;
     }
 
+    if (
+      capsuleTargetLeftRef.current !== null &&
+      Math.abs(capsuleTargetLeftRef.current - targetLeft) < 0.5
+    ) {
+      return;
+    }
+
+    capsuleTargetLeftRef.current = targetLeft;
     Animated.spring(capsuleX, {
       toValue: targetLeft,
       tension: 260,
@@ -213,6 +223,7 @@ export function LiquidGlassTabBar<T extends string>({
           const slotW = rect.width / tabsRef.current.length;
           const nextLeft = activeIdxRef.current * slotW;
           hasMeasuredRef.current = true;
+          capsuleTargetLeftRef.current = nextLeft;
           capsuleX.setValue(nextLeft);
           capsuleLeftRef.current = nextLeft;
         }
@@ -240,6 +251,7 @@ export function LiquidGlassTabBar<T extends string>({
         const slotW = width / tabCount;
         const targetLeft = activeIdxRef.current * slotW;
         hasMeasuredRef.current = true;
+        capsuleTargetLeftRef.current = targetLeft;
         capsuleX.setValue(targetLeft);
         capsuleLeftRef.current = targetLeft;
       }
@@ -287,8 +299,10 @@ export function LiquidGlassTabBar<T extends string>({
         useNativeDriver: false,
       }).start();
 
+      const targetLeft = downIdx * slotW;
+      capsuleTargetLeftRef.current = targetLeft;
       Animated.spring(capsuleX, {
-        toValue: downIdx * slotW,
+        toValue: targetLeft,
         tension: 290,
         friction: 24,
         useNativeDriver: false,
@@ -343,20 +357,23 @@ export function LiquidGlassTabBar<T extends string>({
       setGreenMask(1 << settleIdx);
       lastPointerUpAtRef.current = Date.now();
 
-      Animated.parallel([
-        Animated.spring(capsulePressAnim, {
-          toValue: 0,
-          tension: 270,
-          friction: 24,
-          useNativeDriver: false,
-        }),
-        Animated.spring(capsuleX, {
-          toValue: settleIdx * ia.slotW,
-          tension: 260,
-          friction: 24,
-          useNativeDriver: false,
-        }),
-      ]).start();
+      const targetLeft = settleIdx * ia.slotW;
+      capsuleTargetLeftRef.current = targetLeft;
+
+      // Run press-scale & position springs independently so re-targeting X never cancels scale return
+      Animated.spring(capsulePressAnim, {
+        toValue: 0,
+        tension: 270,
+        friction: 24,
+        useNativeDriver: false,
+      }).start();
+
+      Animated.spring(capsuleX, {
+        toValue: targetLeft,
+        tension: 260,
+        friction: 24,
+        useNativeDriver: false,
+      }).start();
 
       if (!cancelled && tabsRef.current[settleIdx]) {
         onSelectTabRef.current(tabsRef.current[settleIdx].id);
@@ -410,10 +427,16 @@ export function LiquidGlassTabBar<T extends string>({
         cleanup();
         endInteraction(true);
       };
+      const onLostCapture = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        cleanup();
+        endInteraction(false);
+      };
       const cleanup = () => {
         window.removeEventListener('pointermove', onWindowMove);
         window.removeEventListener('pointerup', onWindowUp);
         window.removeEventListener('pointercancel', onWindowCancel);
+        el?.removeEventListener?.('lostpointercapture', onLostCapture as any);
         try {
           el?.releasePointerCapture?.(pointerId);
         } catch {}
@@ -426,6 +449,7 @@ export function LiquidGlassTabBar<T extends string>({
       window.addEventListener('pointermove', onWindowMove, { passive: true });
       window.addEventListener('pointerup', onWindowUp, { passive: true });
       window.addEventListener('pointercancel', onWindowCancel, { passive: true });
+      el?.addEventListener?.('lostpointercapture', onLostCapture as any, { passive: true });
 
       beginInteraction(e.clientX, rectLeft, rectW, pointerId);
     },
@@ -764,11 +788,6 @@ const styles = StyleSheet.create({
   tabLabelActive: {
     color: ACTIVE_GREEN,
     fontWeight: '700',
-    ...(Platform.OS === 'web'
-      ? ({
-          textShadow: '0 0 10px rgba(52, 211, 153, 0.35)',
-        } as any)
-      : {}),
   },
 });
 
