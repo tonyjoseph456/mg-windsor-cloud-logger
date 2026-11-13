@@ -2270,6 +2270,40 @@ export default function App() {
     });
   };
 
+  // Dedicated Google Maps Key Screen State & Animation (Horizontal tween from right to centre)
+  const mapsKeySlideAnim = useRef(new Animated.Value(0)).current;
+  const [isMapsKeyScreenVisible, setIsMapsKeyScreenVisible] = useState<boolean>(false);
+  const [isMapsKeyInputFocused, setIsMapsKeyInputFocused] = useState<boolean>(false);
+
+  const handleOpenMapsKeyScreen = () => {
+    setTempMapsApiKey(googleMapsApiKey || '');
+    setIsMapsKeyInputFocused(false);
+    setIsMapsKeyScreenVisible(true);
+    mapsKeySlideAnim.stopAnimation();
+    mapsKeySlideAnim.setValue(0);
+    Animated.timing(mapsKeySlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseMapsKeyScreen = () => {
+    setIsMapsKeyInputFocused(false);
+    mapsKeySlideAnim.stopAnimation();
+    Animated.timing(mapsKeySlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsMapsKeyScreenVisible(false);
+      }
+    });
+  };
+
   // Trips & Charge Data Options Bottom Sheet States
   const [showTripsOptionsMenu, setShowTripsOptionsMenu] = useState<boolean>(false);
   const [showChargeOptionsMenu, setShowChargeOptionsMenu] = useState<boolean>(false);
@@ -2278,7 +2312,6 @@ export default function App() {
   const [activeProfileModal, setActiveProfileModal] = useState<
     | 'vehicle'
     | 'analytics'
-    | 'maps_key'
     | 'push'
     | 'notifs_log'
     | 'carplay'
@@ -5207,8 +5240,8 @@ export default function App() {
   });
 
   const profileSubscreenAnim = Animated.add(
-    accountScreenSlideAnim,
-    Animated.add(analyticsSlideAnim, textSizeSlideAnim)
+    Animated.add(accountScreenSlideAnim, analyticsSlideAnim),
+    Animated.add(textSizeSlideAnim, mapsKeySlideAnim)
   );
   const profileTranslateX = profileSubscreenAnim.interpolate({
     inputRange: [0, 1],
@@ -5227,6 +5260,11 @@ export default function App() {
   });
 
   const textSizeTranslateX = textSizeSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const mapsKeyTranslateX = mapsKeySlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -6866,7 +6904,7 @@ export default function App() {
                   {/* Google Maps key */}
                   <TouchableOpacity
                     style={styles.profileRowItem}
-                    onPress={() => setActiveProfileModal('maps_key')}
+                    onPress={handleOpenMapsKeyScreen}
                     activeOpacity={0.7}
                   >
                     <View style={styles.profileRowIconWrap}>
@@ -7029,7 +7067,6 @@ export default function App() {
                       <Text style={styles.profileModalTitle}>
                         {activeProfileModal === 'vehicle' && 'Connected Vehicle'}
                         {activeProfileModal === 'analytics' && 'Monthly Analytics'}
-                        {activeProfileModal === 'maps_key' && 'Google Maps API Key'}
                         {activeProfileModal === 'push' && 'Push Notifications'}
                         {activeProfileModal === 'notifs_log' && 'Notification History'}
                         {activeProfileModal === 'carplay' && 'Apple CarPlay Automations'}
@@ -7171,88 +7208,6 @@ export default function App() {
                 </View>
               </AccountSectionCard>
             )}
-
-            {/* CARD: GOOGLE MAPS API KEY */}
-          {activeProfileModal === 'maps_key' && (
-            <AccountSectionCard
-              defaultExpanded={true}
-              title="Google Maps API Key"
-              icon="🗺️"
-              badge={googleMapsApiKey ? 'Configured' : 'Optional'}
-              badgeBg={googleMapsApiKey ? '#064E3B' : '#1E293B'}
-              badgeColor={googleMapsApiKey ? '#34D399' : '#94A3B8'}
-              preview={
-                googleMapsApiKey
-                  ? 'Using personal Google Maps API Key (Custom Dark Mode)'
-                  : 'Using OpenStreetMap Dark Basemap (Zero API Key Needed)'
-              }
-            >
-              <Text style={{ color: '#94A3B8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
-                Enter your Google Maps JavaScript API key to render official Google Maps with custom dark night mode on the Location screen.
-                If left blank, the app automatically uses free OpenStreetMap dark tiles with zero API keys required.
-              </Text>
-
-              <View style={{ marginBottom: 10 }}>
-                <Text style={{ color: '#64748B', fontSize: 11, fontWeight: '700', marginBottom: 6, letterSpacing: 0.5 }}>
-                  GOOGLE MAPS JAVASCRIPT API KEY
-                </Text>
-                <TextInput
-                  style={[styles.input, { fontFamily: Platform.OS === 'web' ? 'monospace' : undefined, fontSize: 13 }]}
-                  placeholder="e.g. AIzaSy..."
-                  placeholderTextColor="#64748B"
-                  value={tempMapsApiKey}
-                  onChangeText={setTempMapsApiKey}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  secureTextEntry={false}
-                />
-              </View>
-
-              <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
-                <TouchableOpacity
-                  style={[styles.ctrlBtn, styles.activeBtn, { flex: 1 }]}
-                  onPress={() => handleSaveMapsApiKey(tempMapsApiKey)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.ctrlBtnText}>
-                    {isMapsKeySaved ? '✓ Saved!' : 'Save API Key'}
-                  </Text>
-                </TouchableOpacity>
-
-                {googleMapsApiKey ? (
-                  <TouchableOpacity
-                    style={[styles.ctrlBtn, { backgroundColor: '#7F1D1D25', borderColor: '#EF444450' }]}
-                    onPress={() => handleSaveMapsApiKey('')}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.ctrlBtnText, { color: '#FCA5A5' }]}>Remove</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-
-              <View style={{ marginTop: 12, padding: 12, backgroundColor: '#0B111E', borderRadius: 12, borderWidth: 1, borderColor: '#1E293B', gap: 6 }}>
-                <Text style={{ color: '#F8FAFC', fontSize: 12, fontWeight: '700' }}>
-                  💡 How to activate your Google Maps API Key:
-                </Text>
-                <Text style={{ color: '#94A3B8', fontSize: 11.5, lineHeight: 17 }}>
-                  1. Open{' '}
-                  <Text
-                    style={{ color: '#38BDF8', fontWeight: '700', textDecorationLine: 'underline' }}
-                    onPress={() => Linking.openURL('https://console.cloud.google.com/apis/library/maps-backend.googleapis.com')}
-                  >
-                    Google Cloud: Maps JavaScript API
-                  </Text>{' '}
-                  and click the blue <Text style={{ color: '#34D399', fontWeight: '800' }}>ENABLE</Text> button.
-                </Text>
-                <Text style={{ color: '#94A3B8', fontSize: 11.5, lineHeight: 17 }}>
-                  2. Ensure a Billing Account is linked to the project in Google Cloud Console. Google provides <Text style={{ color: '#34D399', fontWeight: '800' }}>$200 monthly free credit</Text> (~28,000 map loads/month free of charge).
-                </Text>
-                <Text style={{ color: '#64748B', fontSize: 11, fontStyle: 'italic', marginTop: 2 }}>
-                  If the key is not activated yet, the app automatically runs OpenStreetMap so your maps always stay functional.
-                </Text>
-              </View>
-            </AccountSectionCard>
-          )}
 
           {/* CARD 2: MONTHLY DRIVING & CHARGING ANALYTICS */}
           {activeProfileModal === 'analytics' && (() => {
@@ -11461,6 +11416,173 @@ export default function App() {
         );
       })()}
 
+      {/* Google Maps Key Fullscreen Tween Screen */}
+      {isMapsKeyScreenVisible && (() => {
+        const isConfigured = Boolean(googleMapsApiKey);
+        const isMaskedView =
+          !isMapsKeyInputFocused &&
+          isConfigured &&
+          tempMapsApiKey === googleMapsApiKey;
+        const maskedKeyValue =
+          googleMapsApiKey.length > 4
+            ? `${googleMapsApiKey.slice(0, 4)}${'•'.repeat(Math.min(20, Math.max(16, googleMapsApiKey.length - 4)))}`
+            : '•'.repeat(Math.max(8, googleMapsApiKey.length));
+        const hasRemovableValue = Boolean(googleMapsApiKey || tempMapsApiKey.trim());
+
+        return (
+          <Animated.View
+            style={[
+              styles.accountScreenLayer,
+              {
+                transform: [{ translateX: mapsKeyTranslateX }],
+              },
+            ]}
+          >
+            <SafeAreaView style={{ flex: 1, width: '100%', alignItems: 'center' }}>
+              <ScrollView
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={styles.accountScrollContent}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+              >
+                {/* 1. Header Row */}
+                <View style={styles.accountHeader}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 }}>
+                    <TouchableOpacity
+                      style={styles.accountBackBtn}
+                      onPress={handleCloseMapsKeyScreen}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Back to Profile"
+                      accessibilityRole="button"
+                    >
+                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                      </Svg>
+                    </TouchableOpacity>
+                    <Text
+                      style={[styles.accountHeaderTitle, { flexShrink: 1 }]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                    >
+                      Google Maps key
+                    </Text>
+                  </View>
+                  <View
+                    style={
+                      isConfigured
+                        ? styles.accountConnectedBadge
+                        : styles.gmkOptionalBadge
+                    }
+                  >
+                    <Text
+                      style={
+                        isConfigured
+                          ? styles.accountConnectedBadgeText
+                          : styles.gmkOptionalBadgeText
+                      }
+                    >
+                      {isConfigured ? 'Configured' : 'Optional'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* 2. Description */}
+                <Text style={styles.gmkDescription}>
+                  Add your Google Maps key for official maps with dark mode on the Location screen. Leave it empty to use free OpenStreetMap dark maps.
+                </Text>
+
+                {/* 3. Maps JavaScript API key input */}
+                <Text style={styles.gmkInputLabel}>Maps JavaScript API key</Text>
+                <TextInput
+                  style={[styles.gmkInput, isMapsKeyInputFocused && styles.gmkInputFocused]}
+                  placeholder="AIzaSy..."
+                  placeholderTextColor="#475569"
+                  value={isMaskedView ? maskedKeyValue : tempMapsApiKey}
+                  onFocus={() => setIsMapsKeyInputFocused(true)}
+                  onBlur={() => setIsMapsKeyInputFocused(false)}
+                  onChangeText={setTempMapsApiKey}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  spellCheck={false}
+                  selectionColor="#34E096"
+                  accessibilityLabel="Maps JavaScript API key"
+                />
+
+                {/* 4. Action Buttons Row */}
+                <View style={styles.gmkBtnRow}>
+                  <TouchableOpacity
+                    style={styles.gmkSaveBtn}
+                    onPress={() => {
+                      setIsMapsKeyInputFocused(false);
+                      handleSaveMapsApiKey(tempMapsApiKey);
+                    }}
+                    activeOpacity={0.8}
+                    accessibilityLabel="Save key"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.gmkSaveBtnText}>
+                      {isMapsKeySaved ? '✓ Saved!' : 'Save key'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.gmkRemoveBtn,
+                      !hasRemovableValue && { opacity: 0.45 },
+                    ]}
+                    disabled={!hasRemovableValue}
+                    onPress={() => {
+                      setIsMapsKeyInputFocused(false);
+                      handleSaveMapsApiKey('');
+                    }}
+                    activeOpacity={0.8}
+                    accessibilityLabel="Remove"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.gmkRemoveBtnText}>Remove</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* 5. How to get a key Card */}
+                <View style={styles.gmkHelpCard}>
+                  <Text style={styles.gmkHelpTitle}>How to get a key</Text>
+
+                  <View style={styles.gmkStepRow}>
+                    <View style={styles.gmkStepBadge}>
+                      <Text style={styles.gmkStepBadgeText}>1</Text>
+                    </View>
+                    <Text style={styles.gmkStepText}>
+                      Open Google Cloud and enable the{' '}
+                      <Text
+                        style={styles.gmkStepBoldWhite}
+                        onPress={() =>
+                          Linking.openURL(
+                            'https://console.cloud.google.com/apis/library/maps-backend.googleapis.com'
+                          )
+                        }
+                      >
+                        Maps JavaScript API.
+                      </Text>
+                    </Text>
+                  </View>
+
+                  <View style={[styles.gmkStepRow, { marginBottom: 0 }]}>
+                    <View style={styles.gmkStepBadge}>
+                      <Text style={styles.gmkStepBadgeText}>2</Text>
+                    </View>
+                    <Text style={styles.gmkStepText}>
+                      Link a billing account. Google gives{' '}
+                      <Text style={styles.gmkStepGreenHighlight}>$200 free credit</Text>{' '}
+                      every month, about 28,000 map loads.
+                    </Text>
+                  </View>
+                </View>
+              </ScrollView>
+            </SafeAreaView>
+          </Animated.View>
+        );
+      })()}
+
       {/* PIN Modal */}
       <Modal visible={Boolean(pinPrompt?.visible)} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -11591,6 +11713,10 @@ export default function App() {
                 if (isTextSizeScreenVisible) {
                   setIsTextSizeScreenVisible(false);
                   textSizeSlideAnim.setValue(0);
+                }
+                if (isMapsKeyScreenVisible) {
+                  setIsMapsKeyScreenVisible(false);
+                  mapsKeySlideAnim.setValue(0);
                 }
                 setTab(item.id);
               }}
@@ -18665,6 +18791,135 @@ const styles = StyleSheet.create({
   tsResetBtnText: {
     color: '#F8FAFC',
     fontSize: 15.5,
+    fontWeight: '700',
+  },
+
+  // Dedicated Google Maps Key Screen Styles
+  gmkOptionalBadge: {
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
+  gmkOptionalBadgeText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  gmkDescription: {
+    color: '#94A3B8',
+    fontSize: 14,
+    lineHeight: 21,
+    marginBottom: 20,
+  },
+  gmkInputLabel: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  gmkInput: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 14,
+    height: 52,
+    paddingHorizontal: 16,
+    color: '#CBD5E1',
+    fontSize: 15,
+    fontFamily: Platform.select({
+      web: 'monospace',
+      android: 'monospace',
+      ios: 'Menlo',
+    }),
+  },
+  gmkInputFocused: {
+    borderColor: '#34E096',
+    color: '#F8FAFC',
+  },
+  gmkBtnRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 14,
+    marginBottom: 22,
+  },
+  gmkSaveBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: '#34E096',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gmkSaveBtnText: {
+    color: '#04120B',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+  gmkRemoveBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: '#221216',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gmkRemoveBtnText: {
+    color: '#F87171',
+    fontSize: 15.5,
+    fontWeight: '700',
+  },
+  gmkHelpCard: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 20,
+  },
+  gmkHelpTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 16,
+  },
+  gmkStepRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 14,
+  },
+  gmkStepBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(6, 78, 59, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    marginTop: 1,
+  },
+  gmkStepBadgeText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  gmkStepText: {
+    flex: 1,
+    color: '#CBD5E1',
+    fontSize: 14,
+    lineHeight: 20.5,
+  },
+  gmkStepBoldWhite: {
+    color: '#F8FAFC',
+    fontWeight: '700',
+  },
+  gmkStepGreenHighlight: {
+    color: '#34D399',
     fontWeight: '700',
   },
 });
