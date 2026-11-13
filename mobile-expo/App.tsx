@@ -3573,20 +3573,25 @@ export default function App() {
       updateLiveActivityNow();
     }, 20_000);
 
-    // Full telemetry sync (every 60s) from vehicle & Cloudflare D1
-    const syncInterval = setInterval(() => {
-      if (refreshVehicleTelemetryRef.current) {
-        refreshVehicleTelemetryRef.current(true).catch(() => {});
+    // Full telemetry sync (every 60s) from vehicle & Cloudflare D1, sequenced to avoid
+    // concurrent TAP requests colliding on MG's vehicle queue.
+    let liveSyncInFlight = false;
+    const syncInterval = setInterval(async () => {
+      if (liveSyncInFlight) return;
+      liveSyncInFlight = true;
+      try {
+        if (refreshVehicleTelemetryRef.current) {
+          await refreshVehicleTelemetryRef.current(true).catch(() => {});
+        }
+        await refreshD1ChargingHistory(true).catch(() => {});
+        const d1Charges = await fetchD1Charges('all').catch(() => null);
+        if (Array.isArray(d1Charges)) {
+          setChargeLogs(d1Charges);
+          chargeLogsRef.current = d1Charges;
+        }
+      } finally {
+        liveSyncInFlight = false;
       }
-      refreshD1ChargingHistory(true).catch(() => {});
-      fetchD1Charges('all')
-        .then((d1Charges) => {
-          if (Array.isArray(d1Charges)) {
-            setChargeLogs(d1Charges);
-            chargeLogsRef.current = d1Charges;
-          }
-        })
-        .catch(() => {});
     }, 60_000);
 
     return () => {

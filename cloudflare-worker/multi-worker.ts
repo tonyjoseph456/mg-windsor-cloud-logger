@@ -20,6 +20,11 @@ import { hashControlPin } from '../src/sdk/crypto';
 import legacy from './silent-webhook';
 import mgProxy from './worker';
 import {
+  evaluateChargingStateDecision,
+  parseTelemetryFromStatus,
+  ParsedCarTelemetry,
+} from './charging-sync';
+import {
   initAccessControlD1,
   ADMIN_TABLE_SCHEMAS,
   handleAuthApi,
@@ -1035,6 +1040,7 @@ const D1_TABLE_SCHEMAS = [
     start_range_km REAL,
     outage_count INTEGER DEFAULT 0,
     paused_at INTEGER,
+    pause_pending_at INTEGER,
     active_duration_seconds INTEGER DEFAULT 0,
     last_poll_time INTEGER,
     date TEXT NOT NULL,
@@ -1110,6 +1116,9 @@ async function initD1(db: any) {
       await db.prepare(`ALTER TABLE trips ADD COLUMN ${col}`).run();
     } catch (_) {}
   }
+  try {
+    await db.prepare('ALTER TABLE charging_sessions ADD COLUMN pause_pending_at INTEGER').run();
+  } catch (_) {}
   // Backfill any pre-existing single-user rows (where vin IS NULL) to the primary owner's VIN from mg_active_session
   try {
     const sessRow: any = await db.prepare("SELECT value FROM kv_store WHERE key = 'mg_active_session'").first();
@@ -2366,75 +2375,10 @@ async function getMgClientForWebhook(env: Env, url: URL): Promise<{ client: MgIn
   return null;
 }
 
-async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<{
-  odometer: number;
-  soc: number;
-  lat: number | null;
-  lng: number | null;
-  speedKmh: number;
-  cabinTempC: number | null;
-  exteriorTempC: number | null;
-  isCharging: boolean;
-  isPluggedIn: boolean;
-  powerKw: number;
-  rangeKm: number;
-  chargeType: 'AC' | 'DC';
-  chargeTimeElapsedSec: number;
-  bmsStartTime: number | null;
-  status: any;
-}> {
+async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<ParsedCarTelemetry> {
   if (vin && !client.vin) client.vin = vin;
   const status: any = await client.status(true);
-  const odometer = Number(status.odometer_km ?? status.charge?.odometer_km) || 0;
-  const soc = status.charge?.soc != null ? Number(status.charge.soc) : (status.fuel_level != null ? Number(status.fuel_level) : 0);
-  const lat = status.gps?.latitude ?? null;
-  const lng = status.gps?.longitude ?? null;
-  const speedKmh = Number(status.gps?.speed_kmh) || 0;
-  const cabinTempC = status.interior_temperature != null ? Number(status.interior_temperature) : null;
-  const exteriorTempC = status.exterior_temperature != null ? Number(status.exterior_temperature) : null;
-  const ch = status.charge;
-  const isCharging = Boolean(ch?.is_charging);
-  const isPluggedIn = Boolean(ch?.is_plugged_in || ch?.is_charging);
-  const v = Number(ch?.charging_voltage) || 0;
-  const a = Number(ch?.charging_current) || 0;
-  const calcKw = v > 0 && a > 0 ? Number(((v * a) / 1000).toFixed(2)) : 0;
-  const powerKw = calcKw > 0 ? calcKw : (isCharging ? 3.3 : 0);
-  const chargeType: 'AC' | 'DC' = powerKw > 11 ? 'DC' : 'AC';
-  const rangeKm = Number(ch?.range_km ?? status.range_km) || 0;
-  const nowSec = Math.floor(Date.now() / 1000);
-  const rawElapsed = Number(ch?.charge_time_elapsed_s) || 0;
-  const rawStartTime = Number(ch?.start_time) || 0;
-  const elapsedFromStart =
-    rawStartTime > 1700000000 && nowSec >= rawStartTime && (nowSec - rawStartTime) < 86400
-      ? nowSec - rawStartTime
-      : 0;
-  const chargeTimeElapsedSec =
-    rawElapsed > 0 && rawElapsed < 86400
-      ? Math.max(rawElapsed, elapsedFromStart)
-      : elapsedFromStart;
-  const bmsStartTime =
-    rawStartTime > 1700000000 && nowSec >= rawStartTime && (nowSec - rawStartTime) < 86400
-      ? rawStartTime
-      : chargeTimeElapsedSec > 0
-      ? nowSec - chargeTimeElapsedSec
-      : null;
-  return {
-    odometer,
-    soc,
-    lat,
-    lng,
-    speedKmh,
-    cabinTempC,
-    exteriorTempC,
-    isCharging,
-    isPluggedIn,
-    powerKw,
-    rangeKm,
-    chargeType,
-    chargeTimeElapsedSec,
-    bmsStartTime,
-    status,
-  };
+  return parseTelemetryFromStatus(status);
 }
 
 // ---------------------------------------------------------------- Charging Session Tracking Helpers (Cloudflare D1)
@@ -2562,6 +2506,7 @@ async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any
           last_power_kw = COALESCE(?, last_power_kw),
           outage_count = COALESCE(?, outage_count),
           paused_at = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(?, paused_at) END,
+          pause_pending_at = CASE WHEN ? = 1 THEN NULL ELSE COALESCE(?, pause_pending_at) END,
           active_duration_seconds = COALESCE(?, active_duration_seconds),
           last_poll_time = COALESCE(?, last_poll_time),
           date = COALESCE(?, date)
@@ -2583,6 +2528,8 @@ async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any
         updates.outage_count ?? null,
         updates.paused_at === null ? 1 : 0,
         updates.paused_at ?? null,
+        updates.pause_pending_at === null ? 1 : 0,
+        updates.pause_pending_at ?? null,
         updates.active_duration_seconds ?? null,
         updates.last_poll_time ?? Math.floor(Date.now() / 1000),
         updates.date ?? null,
@@ -2668,9 +2615,13 @@ async function syncChargingSessionState(
   const v = normVin(vin || url.searchParams.get('vin'));
   const activeSession = await d1GetActiveChargingSession(env, v);
   const nowSec = Math.floor(Date.now() / 1000);
+  const hasChargeData = liveTelem?.hasChargeTelemetry !== false;
 
   // If no active charging session in D1
   if (!activeSession) {
+    if (!hasChargeData && triggerSource !== 'trip_start') {
+      return null;
+    }
     if (!liveTelem.isCharging) {
       // Missed Fast Charge Recovery: If the car is no longer actively charging when polled (or when the next trip starts),
       // check if SOC jumped by >= 3% since the last completed trip at the same odometer without a recorded charging session.
@@ -2896,6 +2847,7 @@ async function syncChargingSessionState(
       charging_loss_kwh: lossKwh,
       peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
       last_power_kw: 0,
+      pause_pending_at: null,
       active_duration_seconds: activeSec,
       last_poll_time: nowSec,
     };
@@ -2920,8 +2872,15 @@ async function syncChargingSessionState(
     return { ...activeSession, ...completedUpdates };
   }
 
+  const decision = evaluateChargingStateDecision(activeSession, liveTelem, currentSoc, nowSec);
+
+  // SCENARIO 10: Charge telemetry unavailable / timed out — leave session untouched.
+  if (decision.action === 'ignore_unavailable') {
+    return activeSession;
+  }
+
   // SCENARIO 6: Full Charge Auto-Shutoff (100% or >=99% & charger stopped)
-  if (!liveTelem.isCharging && currentSoc >= 99) {
+  if (decision.action === 'complete_full') {
     const wallDurationSec = Math.max(0, nowSec - (Number(activeSession.start_time) || nowSec));
     const activeSec = Math.max(
       Number(activeSession.active_duration_seconds) || 0,
@@ -2945,6 +2904,7 @@ async function syncChargingSessionState(
       charging_loss_kwh: lossKwh,
       peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
       last_power_kw: 0,
+      pause_pending_at: null,
       active_duration_seconds: activeSec,
       last_poll_time: nowSec,
     };
@@ -2969,60 +2929,74 @@ async function syncChargingSessionState(
     return { ...activeSession, ...completedUpdates };
   }
 
-  // SCENARIO 3: Mid-Charge Grid Power Outage / Breaker Cut
-  if (!liveTelem.isCharging && currentSoc < 99) {
-    if (activeSession.status === 'ongoing') {
+  // First non-charging poll (< 2 min confirmed): record pending timestamp without pausing or notifying.
+  if (decision.action === 'pending_pause') {
+    const pendingUpdates = {
+      pause_pending_at: decision.pausePendingAt,
+      end_soc: currentSoc,
+      last_poll_time: Number(activeSession.last_poll_time) || nowSec,
+    };
+    await d1UpdateChargingSession(env, activeSession.id, pendingUpdates);
+    return { ...activeSession, ...pendingUpdates };
+  }
+
+  // SCENARIO 3: Confirmed Mid-Charge Grid Power Outage / Breaker Cut
+  if (decision.action === 'confirm_pause') {
+    const updates = {
+      status: 'paused',
+      paused_at: decision.pausedAt,
+      pause_pending_at: null,
+      end_soc: currentSoc,
+      last_power_kw: 0,
+      last_poll_time: nowSec,
+    };
+    await d1UpdateChargingSession(env, activeSession.id, updates);
+
+    const pauseTitle = '⚠️ Charging Paused (Grid Outage / Breaker Cut)';
+    const pauseBody = `Grid power dropped at ${currentSoc}%. Waiting for power to restore...`;
+    await dispatchTripNotification(url, pauseTitle, pauseBody, 'warning,electric_plug', env, sessionVin);
+    await d1InsertNotification(env, {
+      id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: sessionVin,
+      type: 'charge_paused',
+      title: pauseTitle,
+      message: pauseBody,
+      timestamp: nowSec,
+      date: istDateString(nowSec),
+      is_read: 0,
+      metadata: JSON.stringify({ ...activeSession, ...updates }),
+    });
+
+    return { ...activeSession, ...updates };
+  }
+
+  if (decision.action === 'stay_paused') {
+    const pausedSec = nowSec - (Number(activeSession.paused_at) || nowSec);
+    if (pausedSec > 28800) { // Paused > 8 hours -> finalize
+      const socAdded = Math.max(0, currentSoc - startSoc);
+      const kwhAdded = Number(((socAdded / 100) * 38.0).toFixed(2));
+      const effFactor = (activeSession.charge_type === 'DC') ? 0.94 : 0.88;
+      const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
+      const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
       const updates = {
-        status: 'paused',
-        paused_at: nowSec,
-        last_power_kw: 0,
+        status: 'completed',
+        end_time: activeSession.paused_at || nowSec,
+        end_soc: currentSoc,
+        soc_added: socAdded,
+        kwh_added: kwhAdded,
+        energy_used_kwh: grossEnergyUsed,
+        charging_loss_kwh: lossKwh,
+        pause_pending_at: null,
         last_poll_time: nowSec,
       };
       await d1UpdateChargingSession(env, activeSession.id, updates);
-
-      const pauseTitle = '⚠️ Charging Paused (Grid Outage / Breaker Cut)';
-      const pauseBody = `Grid power dropped at ${currentSoc}%. Waiting for power to restore...`;
-      await dispatchTripNotification(url, pauseTitle, pauseBody, 'warning,electric_plug', env, sessionVin);
-      await d1InsertNotification(env, {
-        id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        vin: sessionVin,
-        type: 'charge_paused',
-        title: pauseTitle,
-        message: pauseBody,
-        timestamp: nowSec,
-        date: istDateString(nowSec),
-        is_read: 0,
-        metadata: JSON.stringify({ ...activeSession, ...updates }),
-      });
-
       return { ...activeSession, ...updates };
-    } else if (activeSession.status === 'paused') {
-      const pausedSec = nowSec - (Number(activeSession.paused_at) || nowSec);
-      if (pausedSec > 28800) { // Paused > 8 hours -> finalize
-        const socAdded = Math.max(0, currentSoc - startSoc);
-        const kwhAdded = Number(((socAdded / 100) * 38.0).toFixed(2));
-        const effFactor = (activeSession.charge_type === 'DC') ? 0.94 : 0.88;
-        const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
-        const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-        const updates = {
-          status: 'completed',
-          end_time: activeSession.paused_at || nowSec,
-          end_soc: currentSoc,
-          soc_added: socAdded,
-          kwh_added: kwhAdded,
-          energy_used_kwh: grossEnergyUsed,
-          charging_loss_kwh: lossKwh,
-          last_poll_time: nowSec,
-        };
-        await d1UpdateChargingSession(env, activeSession.id, updates);
-        return { ...activeSession, ...updates };
-      }
     }
     return activeSession;
   }
 
   // SCENARIOS 3 (restored), 4 (solar/fluctuating), 7 (DC fast charge)
-  if (liveTelem.isCharging) {
+  if (decision.action === 'charging') {
     let outageCount = Number(activeSession.outage_count) || 0;
     const wasPaused = activeSession.status === 'paused';
     if (wasPaused) {
@@ -3072,6 +3046,7 @@ async function syncChargingSessionState(
       active_duration_seconds: activeSec,
       outage_count: outageCount,
       paused_at: null,
+      pause_pending_at: null,
       last_poll_time: nowSec,
     };
     if (updatedStartTime !== undefined) {
