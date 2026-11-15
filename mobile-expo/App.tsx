@@ -18,6 +18,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Vibration,
   View,
 } from 'react-native';
 import Svg, { Circle, Path, Rect, G, Line, Polyline, Polygon, Defs, LinearGradient, Stop } from 'react-native-svg';
@@ -673,8 +674,56 @@ function formatShortDayMonth(dateKey: string): string {
   return dateKey;
 }
 
+function isMonthDateKey(dateKey: string): boolean {
+  return /^\d{4}-\d{2}$/.test(dateKey);
+}
+
+function formatMonthDateKey(dateKey: string): string {
+  const parts = dateKey.split('-');
+  if (parts.length >= 2) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const mon = CHARGE_MONTH_NAMES[m];
+    if (mon && Number.isFinite(y)) {
+      return `${mon} ${y}`;
+    }
+  }
+  return dateKey;
+}
+
+function matchesSelectedDateKey(itemDateKey: string, selectedDateKey: string): boolean {
+  if (!selectedDateKey || selectedDateKey === 'all') return true;
+  if (isMonthDateKey(selectedDateKey)) {
+    return itemDateKey.startsWith(`${selectedDateKey}-`);
+  }
+  return itemDateKey === selectedDateKey;
+}
+
+function triggerHapticFeedback(kind: 'tap' | 'success' | 'error' = 'tap') {
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        const pattern = kind === 'success' ? [18, 45, 22] : kind === 'error' ? [35, 40, 35] : 22;
+        navigator.vibrate(pattern);
+      }
+      return;
+    }
+    if (Platform.OS === 'ios') {
+      Vibration.vibrate(20);
+      return;
+    }
+    const pattern = kind === 'success' ? [0, 18, 45, 22] : kind === 'error' ? [0, 35, 40, 35] : 22;
+    Vibration.vibrate(pattern);
+  } catch {
+    // Ignore when haptic hardware is unavailable
+  }
+}
+
 function formatDisplayDateKey(dateKey: string): string {
   if (!dateKey || dateKey === 'all') return '--';
+  if (isMonthDateKey(dateKey)) {
+    return `All · ${formatMonthDateKey(dateKey)}`;
+  }
   const parts = dateKey.split('-');
   if (parts.length === 3) {
     const y = parseInt(parts[0], 10);
@@ -1583,8 +1632,12 @@ function DatePickerBottomSheet({
   const parseMonthStart = (key: string) => {
     if (key && key !== 'all') {
       const parts = key.split('-');
-      if (parts.length === 3) {
-        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+      if (parts.length >= 2) {
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        if (Number.isFinite(y) && Number.isFinite(m) && m >= 1 && m <= 12) {
+          return new Date(y, m - 1, 1);
+        }
       }
     }
     const now = new Date();
@@ -1651,6 +1704,8 @@ function DatePickerBottomSheet({
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
+  const viewedMonthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const isViewedMonthAllSelected = draftDateKey === viewedMonthKey || selectedDateKey === viewedMonthKey;
   const monthLabel = `${LONG_MONTH_NAMES[month]} ${year}`;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const firstDayOfWeek = new Date(year, month, 1).getDay();
@@ -1823,6 +1878,25 @@ function DatePickerBottomSheet({
               accessibilityRole="button"
             >
               <Text style={styles.dpTodayBtnText}>Today</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.dpShowAllBtn,
+                isViewedMonthAllSelected && styles.dpShowAllBtnActive,
+              ]}
+              onPress={() => handleDismiss(viewedMonthKey)}
+              activeOpacity={0.8}
+              accessibilityLabel={`Show all in ${monthLabel}`}
+              accessibilityRole="button"
+            >
+              <Text
+                style={[
+                  styles.dpShowAllBtnText,
+                  isViewedMonthAllSelected && styles.dpShowAllBtnTextActive,
+                ]}
+              >
+                Show all
+              </Text>
             </TouchableOpacity>
           </View>
         </Animated.View>
@@ -3453,20 +3527,20 @@ export default function App() {
     if (selectedTripDate === 'all') {
       return trips;
     }
-    return trips.filter((t) => getTripDateKey(t) === selectedTripDate);
+    return trips.filter((t) => matchesSelectedDateKey(getTripDateKey(t), selectedTripDate));
   }, [trips, selectedTripDate]);
 
   // Group displayed trips by time of day (Evening, Afternoon, Morning, Night)
   const groupedTrips = useMemo(() => {
     const groups: { title: string; trips: TripRecord[] }[] = [];
     let currentGroup: { title: string; trips: TripRecord[] } | null = null;
+    const includeDatePrefix = selectedTripDate === 'all' || isMonthDateKey(selectedTripDate);
 
     for (const trip of displayedTrips) {
       const timeGroup = getTripTimeOfDayGroup(trip);
-      const groupTitle =
-        selectedTripDate === 'all'
-          ? `${formatDisplayDateKey(getTripDateKey(trip))} · ${timeGroup}`
-          : timeGroup;
+      const groupTitle = includeDatePrefix
+        ? `${formatDisplayDateKey(getTripDateKey(trip))} · ${timeGroup}`
+        : timeGroup;
 
       if (!currentGroup || currentGroup.title !== groupTitle) {
         currentGroup = { title: groupTitle, trips: [trip] };
@@ -3613,7 +3687,7 @@ export default function App() {
     if (selectedChargeDate === 'all') {
       return chargeLogs;
     }
-    return chargeLogs.filter((c) => getChargeDateKey(c) === selectedChargeDate);
+    return chargeLogs.filter((c) => matchesSelectedDateKey(getChargeDateKey(c), selectedChargeDate));
   }, [chargeLogs, selectedChargeDate]);
   const [preChargeBaseline, setPreChargeBaseline] = useState<PreChargeBaseline | null>(null);
   const [cloudSyncUrl, setCloudSyncUrl] = useState<string>(DEFAULT_CLOUD_SYNC_URL);
@@ -3704,6 +3778,8 @@ export default function App() {
   // Loading & command states
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [activeRemoteCommand, setActiveRemoteCommand] = useState<string | null>(null);
+  const activeRemoteCommandRef = useRef<string | null>(null);
   const [banner, setBanner] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // PIN prompt modal (when PIN wasn't saved during login)
@@ -3711,6 +3787,7 @@ export default function App() {
     visible: boolean;
     label: string;
     onConfirm: (pinVal: string) => void;
+    onCancel?: () => void;
   } | null>(null);
   const [tempPin, setTempPin] = useState('');
 
@@ -5384,10 +5461,19 @@ export default function App() {
     );
   };
 
+  const setRemoteCommandBusy = (cmdLabel: string | null) => {
+    activeRemoteCommandRef.current = cmdLabel;
+    setActiveRemoteCommand(cmdLabel);
+  };
+
   const triggerCommand = async (
     label: string,
     liveFn: (c: MgIndiaClient) => Promise<void>
   ) => {
+    if (activeRemoteCommandRef.current) return;
+    triggerHapticFeedback('tap');
+    setRemoteCommandBusy(label);
+
     const runWithPin = async (pinToUse: string) => {
       setIsSyncing(true);
       showBanner('ok', `Sending ${label} to vehicle...`);
@@ -5419,11 +5505,17 @@ export default function App() {
         clientRef.current = client;
 
         await liveFn(client);
+        triggerHapticFeedback('success');
+        setRemoteCommandBusy(null);
+        showBanner('ok', `${label} confirmed by your vehicle.`);
         Alert.alert('Command Executed', `${label} was confirmed by your vehicle.`);
         await refreshVehicleTelemetry(client);
       } catch (err) {
+        triggerHapticFeedback('error');
+        setRemoteCommandBusy(null);
         Alert.alert(`${label} Failed`, (err as Error).message);
       } finally {
+        setRemoteCommandBusy(null);
         setIsSyncing(false);
       }
     };
@@ -5435,9 +5527,14 @@ export default function App() {
       setPinPrompt({
         visible: true,
         label,
+        onCancel: () => {
+          setPinPrompt(null);
+          setRemoteCommandBusy(null);
+        },
         onConfirm: async (entered) => {
           setPinPrompt(null);
           if (!/^\d{4}$/.test(entered)) {
+            setRemoteCommandBusy(null);
             Alert.alert('Invalid PIN', 'Control PIN must be 4 digits.');
             return;
           }
@@ -6880,10 +6977,7 @@ export default function App() {
 
               {/* 4. Date Selector Pill & Trip Count Row */}
               {(() => {
-                const summaryTrips =
-                  selectedTripDate === 'all'
-                    ? trips.filter((t) => getTripDateKey(t) === todayKey)
-                    : displayedTrips;
+                const summaryTrips = displayedTrips;
                 const totalDistKm = Number(
                   summaryTrips.reduce((acc, t) => acc + (Number(t.distanceKm) || 0), 0).toFixed(1)
                 );
@@ -6942,7 +7036,7 @@ export default function App() {
                             <Text style={styles.tripsHeroUnit}> km</Text>
                           </Text>
                           <Text style={styles.tripsHeroSub}>
-                            Average {avgEff > 0 ? avgEff : '7.54'} km/kWh
+                            Average {avgEff > 0 ? avgEff : '--'} km/kWh
                           </Text>
                         </View>
 
@@ -6969,6 +7063,8 @@ export default function App() {
                       ? 'No Trips Recorded Today'
                       : selectedTripDate === 'all'
                       ? 'No Completed Trips Saved Yet'
+                      : isMonthDateKey(selectedTripDate)
+                      ? `No Trips Recorded in ${formatMonthDateKey(selectedTripDate)}`
                       : `No Trips on ${formatDisplayDateKey(selectedTripDate)}`}
                   </Text>
                   <Text style={styles.tripEmptySubtitle}>
@@ -7297,90 +7393,154 @@ export default function App() {
             })()}
 
             {/* 6. Four Circular Quick Action Buttons */}
-            <View style={styles.mockupActionsRow}>
-              {/* Button 1: Unlock / Lock */}
-              <TouchableOpacity
-                style={styles.mockupActionItem}
-                onPress={() =>
-                  triggerCommand(status.locked ? 'Unlock Doors' : 'Lock Doors', (c) =>
-                    c.controlDoorLock(!status.locked)
-                  )
-                }
-                activeOpacity={0.7}
-              >
-                <View style={[styles.mockupActionCircle, !status.locked && styles.mockupActionCircleRed]}>
-                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={!status.locked ? '#F87171' : '#34D399'} strokeWidth={2}>
-                    {status.locked ? (
-                      <>
-                        <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                        <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                      </>
-                    ) : (
-                      <>
-                        <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                        <Path d="M7 11V7a5 5 0 0 1 9.9-1" />
-                      </>
-                    )}
-                  </Svg>
-                </View>
-                <Text style={styles.mockupActionLabel}>
-                  {status.locked ? 'Unlock' : 'Lock'}
-                </Text>
-              </TouchableOpacity>
+            {(() => {
+              const cmdBusy = Boolean(activeRemoteCommand);
+              const lockCmd = status.locked ? 'Unlock Doors' : 'Lock Doors';
+              const climateCmd = status.climate_running ? 'Stop Climate AC' : 'Start Climate AC';
+              const isLockActive = activeRemoteCommand === lockCmd;
+              const isClimateActive = activeRemoteCommand === climateCmd;
+              const isFindActive = activeRemoteCommand === 'Find My Car';
+              const isTailgateActive = activeRemoteCommand === 'Release Tailgate';
 
-              {/* Button 2: Climate */}
-              <TouchableOpacity
-                style={styles.mockupActionItem}
-                onPress={() =>
-                  triggerCommand(
-                    status.climate_running ? 'Stop Climate' : 'Start Climate',
-                    (c) => c.controlClimate(!status.climate_running)
-                  )
-                }
-                activeOpacity={0.7}
-              >
-                <View style={[styles.mockupActionCircle, status.climate_running && styles.mockupActionCircleBlue]}>
-                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={status.climate_running ? '#38BDF8' : '#34D399'} strokeWidth={2}>
-                    <Path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M4.93 19.07l14.14-14.14" strokeLinecap="round" />
-                  </Svg>
-                </View>
-                <Text style={styles.mockupActionLabel}>
-                  {status.climate_running ? 'Stop AC' : 'Climate'}
-                </Text>
-              </TouchableOpacity>
+              return (
+                <View style={styles.mockupActionsRow}>
+                  {/* Button 1: Unlock / Lock */}
+                  <TouchableOpacity
+                    style={[styles.mockupActionItem, cmdBusy && !isLockActive && styles.remoteControlDisabled]}
+                    disabled={cmdBusy}
+                    onPress={() =>
+                      triggerCommand(lockCmd, (c) => c.controlDoorLock(!status.locked))
+                    }
+                    activeOpacity={0.6}
+                    accessibilityLabel={lockCmd}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: cmdBusy, busy: isLockActive }}
+                  >
+                    <View
+                      style={[
+                        styles.mockupActionCircle,
+                        !status.locked && styles.mockupActionCircleRed,
+                        isLockActive && styles.mockupActionCircleBusy,
+                      ]}
+                    >
+                      {isLockActive ? (
+                        <ActivityIndicator size="small" color="#34D399" />
+                      ) : (
+                        <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={!status.locked ? '#F87171' : '#34D399'} strokeWidth={2}>
+                          {status.locked ? (
+                            <>
+                              <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                              <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                            </>
+                          ) : (
+                            <>
+                              <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                              <Path d="M7 11V7a5 5 0 0 1 9.9-1" />
+                            </>
+                          )}
+                        </Svg>
+                      )}
+                    </View>
+                    <Text style={[styles.mockupActionLabel, isLockActive && styles.remoteActionLabelActive]}>
+                      {isLockActive ? 'Sending...' : status.locked ? 'Unlock' : 'Lock'}
+                    </Text>
+                  </TouchableOpacity>
 
-              {/* Button 3: Find car */}
-              <TouchableOpacity
-                style={styles.mockupActionItem}
-                onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
-                activeOpacity={0.7}
-              >
-                <View style={styles.mockupActionCircle}>
-                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
-                    <Path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z" />
-                    <Circle cx="12" cy="10" r="3" />
-                  </Svg>
-                </View>
-                <Text style={styles.mockupActionLabel}>Find car</Text>
-              </TouchableOpacity>
+                  {/* Button 2: Climate */}
+                  <TouchableOpacity
+                    style={[styles.mockupActionItem, cmdBusy && !isClimateActive && styles.remoteControlDisabled]}
+                    disabled={cmdBusy}
+                    onPress={() =>
+                      triggerCommand(climateCmd, (c) => c.controlClimate(!status.climate_running))
+                    }
+                    activeOpacity={0.6}
+                    accessibilityLabel={climateCmd}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: cmdBusy, busy: isClimateActive }}
+                  >
+                    <View
+                      style={[
+                        styles.mockupActionCircle,
+                        status.climate_running && styles.mockupActionCircleBlue,
+                        isClimateActive && styles.mockupActionCircleBusy,
+                      ]}
+                    >
+                      {isClimateActive ? (
+                        <ActivityIndicator size="small" color="#34D399" />
+                      ) : (
+                        <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={status.climate_running ? '#38BDF8' : '#34D399'} strokeWidth={2}>
+                          <Path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M4.93 19.07l14.14-14.14" strokeLinecap="round" />
+                        </Svg>
+                      )}
+                    </View>
+                    <Text style={[styles.mockupActionLabel, isClimateActive && styles.remoteActionLabelActive]}>
+                      {isClimateActive ? 'Sending...' : status.climate_running ? 'Stop AC' : 'Climate'}
+                    </Text>
+                  </TouchableOpacity>
 
-              {/* Button 4: Tailgate */}
-              <TouchableOpacity
-                style={styles.mockupActionItem}
-                onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.mockupActionCircle, status.boot_open && styles.mockupActionCircleRed]}>
-                  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={status.boot_open ? '#F87171' : '#34D399'} strokeWidth={2}>
-                    <Rect x="3" y="8" width="18" height="12" rx="2" />
-                    <Path d="M3 12h18M8 8V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v4" strokeLinecap="round" />
-                  </Svg>
+                  {/* Button 3: Find car */}
+                  <TouchableOpacity
+                    style={[styles.mockupActionItem, cmdBusy && !isFindActive && styles.remoteControlDisabled]}
+                    disabled={cmdBusy}
+                    onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
+                    activeOpacity={0.6}
+                    accessibilityLabel="Find My Car"
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: cmdBusy, busy: isFindActive }}
+                  >
+                    <View
+                      style={[
+                        styles.mockupActionCircle,
+                        isFindActive && styles.mockupActionCircleBusy,
+                      ]}
+                    >
+                      {isFindActive ? (
+                        <ActivityIndicator size="small" color="#34D399" />
+                      ) : (
+                        <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                          <Path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z" />
+                          <Circle cx="12" cy="10" r="3" />
+                        </Svg>
+                      )}
+                    </View>
+                    <Text style={[styles.mockupActionLabel, isFindActive && styles.remoteActionLabelActive]}>
+                      {isFindActive ? 'Sending...' : 'Find car'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Button 4: Tailgate */}
+                  <TouchableOpacity
+                    style={[styles.mockupActionItem, cmdBusy && !isTailgateActive && styles.remoteControlDisabled]}
+                    disabled={cmdBusy}
+                    onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
+                    activeOpacity={0.6}
+                    accessibilityLabel="Release Tailgate"
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: cmdBusy, busy: isTailgateActive }}
+                  >
+                    <View
+                      style={[
+                        styles.mockupActionCircle,
+                        status.boot_open && styles.mockupActionCircleRed,
+                        isTailgateActive && styles.mockupActionCircleBusy,
+                      ]}
+                    >
+                      {isTailgateActive ? (
+                        <ActivityIndicator size="small" color="#34D399" />
+                      ) : (
+                        <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={status.boot_open ? '#F87171' : '#34D399'} strokeWidth={2}>
+                          <Rect x="3" y="8" width="18" height="12" rx="2" />
+                          <Path d="M3 12h18M8 8V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v4" strokeLinecap="round" />
+                        </Svg>
+                      )}
+                    </View>
+                    <Text style={[styles.mockupActionLabel, isTailgateActive && styles.remoteActionLabelActive]}>
+                      {isTailgateActive ? 'Sending...' : status.boot_open ? 'Boot Open' : 'Tailgate'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
-                <Text style={styles.mockupActionLabel}>
-                  {status.boot_open ? 'Boot Open' : 'Tailgate'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+              );
+            })()}
 
             {/* 7. Three Navigation / Detail List Rows with Chevrons */}
             <View style={styles.mockupListContainer}>
@@ -7868,10 +8028,7 @@ export default function App() {
 
             {/* 6. Day Totals Row */}
             {(() => {
-              const summaryCharges =
-                selectedChargeDate === 'all'
-                  ? chargeLogs.filter((c) => getChargeDateKey(c) === todayKey)
-                  : displayedCharges;
+              const summaryCharges = displayedCharges;
 
               const totalPackKwh = Number(
                 summaryCharges
@@ -7952,6 +8109,8 @@ export default function App() {
                     ? 'No charging sessions today'
                     : selectedChargeDate === 'all'
                     ? 'No Completed Charging Sessions Saved Yet'
+                    : isMonthDateKey(selectedChargeDate)
+                    ? `No charging sessions in ${formatMonthDateKey(selectedChargeDate)}`
                     : `No charging sessions on ${formatDisplayDateKey(selectedChargeDate)}`}
                 </Text>
                 <Text style={styles.chargeEmptySub}>
@@ -9643,177 +9802,197 @@ export default function App() {
                 </View>
               </View>
 
-              {/* Subtext info */}
-              <Text style={styles.remSubtext}>
-                Your PIN is checked before any command is sent to the car.
-              </Text>
-
-              {/* Primary 4-Row Control Card */}
-              <View style={styles.remControlCard}>
-                {/* Row 1: Doors */}
-                <View style={styles.remRow}>
-                  <View style={styles.remRowLeft}>
-                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
-                      <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                      <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </Svg>
-                    <Text style={styles.remRowLabel}>Doors</Text>
-                  </View>
-                  <View style={styles.remBtnPair}>
+              {(() => {
+                const isRemoteBusy = Boolean(activeRemoteCommand);
+                const renderActionBtn = (
+                  text: string,
+                  cmdLabel: string,
+                  fn: (c: MgIndiaClient) => Promise<void>
+                ) => {
+                  const isActive = activeRemoteCommand === cmdLabel;
+                  const isDisabled = isRemoteBusy && !isActive;
+                  return (
                     <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Lock Doors', (c) => c.controlDoorLock(true))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Lock Doors"
+                      style={[
+                        styles.remActionBtn,
+                        isActive && styles.remActionBtnActive,
+                        isDisabled && styles.remActionBtnDisabled,
+                      ]}
+                      disabled={isRemoteBusy}
+                      onPress={() => triggerCommand(cmdLabel, fn)}
+                      activeOpacity={0.6}
+                      accessibilityLabel={cmdLabel}
                       accessibilityRole="button"
+                      accessibilityState={{ disabled: isRemoteBusy, busy: isActive }}
                     >
-                      <Text style={styles.remActionBtnText}>Lock</Text>
+                      {isActive ? (
+                        <View style={styles.remActionBtnLoading}>
+                          <ActivityIndicator size="small" color="#34D399" />
+                          <Text style={[styles.remActionBtnText, styles.remActionBtnTextActive]}>Sending</Text>
+                        </View>
+                      ) : (
+                        <Text style={[styles.remActionBtnText, isDisabled && styles.remActionBtnTextDisabled]}>
+                          {text}
+                        </Text>
+                      )}
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Unlock Doors', (c) => c.controlDoorLock(false))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Unlock Doors"
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.remActionBtnText}>Unlock</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                  );
+                };
 
-                <View style={styles.remRowDivider} />
+                const isFindActive = activeRemoteCommand === 'Find My Car';
+                const isFindDisabled = isRemoteBusy && !isFindActive;
+                const isTailgateActive = activeRemoteCommand === 'Release Tailgate';
+                const isTailgateDisabled = isRemoteBusy && !isTailgateActive;
 
-                {/* Row 2: Climate */}
-                <View style={styles.remRow}>
-                  <View style={styles.remRowLeft}>
-                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
-                      <Path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M4.93 19.07L19.07 4.93" strokeLinecap="round" strokeLinejoin="round" />
-                    </Svg>
-                    <Text style={styles.remRowLabel}>Climate</Text>
-                  </View>
-                  <View style={styles.remBtnPair}>
-                    <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Start Climate AC', (c) => c.controlClimate(true))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Start Climate AC"
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.remActionBtnText}>Start</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Stop Climate AC', (c) => c.controlClimate(false))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Stop Climate AC"
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.remActionBtnText}>Stop</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                return (
+                  <>
+                    {/* Subtext info or active waiting status */}
+                    {activeRemoteCommand ? (
+                      <View style={styles.remStatusPill}>
+                        <ActivityIndicator size="small" color="#34D399" />
+                        <Text style={styles.remStatusPillText}>
+                          Sending {activeRemoteCommand} · Waiting for vehicle...
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.remSubtext}>
+                        Your PIN is checked before any command is sent to the car.
+                      </Text>
+                    )}
 
-                <View style={styles.remRowDivider} />
+                    {/* Primary 4-Row Control Card */}
+                    <View style={styles.remControlCard}>
+                      {/* Row 1: Doors */}
+                      <View style={styles.remRow}>
+                        <View style={styles.remRowLeft}>
+                          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                            <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                            <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                          </Svg>
+                          <Text style={styles.remRowLabel}>Doors</Text>
+                        </View>
+                        <View style={styles.remBtnPair}>
+                          {renderActionBtn('Lock', 'Lock Doors', (c) => c.controlDoorLock(true))}
+                          {renderActionBtn('Unlock', 'Unlock Doors', (c) => c.controlDoorLock(false))}
+                        </View>
+                      </View>
 
-                {/* Row 3: Windows */}
-                <View style={styles.remRow}>
-                  <View style={styles.remRowLeft}>
-                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
-                      <Rect x="5" y="3" width="14" height="18" rx="2" />
-                      <Path d="M5 8h14" />
-                    </Svg>
-                    <Text style={styles.remRowLabel}>Windows</Text>
-                  </View>
-                  <View style={styles.remBtnPair}>
-                    <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Open Windows"
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.remActionBtnText}>Open</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Close Windows"
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.remActionBtnText}>Close</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                      <View style={styles.remRowDivider} />
 
-                <View style={styles.remRowDivider} />
+                      {/* Row 2: Climate */}
+                      <View style={styles.remRow}>
+                        <View style={styles.remRowLeft}>
+                          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                            <Path d="M12 2v20M2 12h20M4.93 4.93l14.14 14.14M4.93 19.07L19.07 4.93" strokeLinecap="round" strokeLinejoin="round" />
+                          </Svg>
+                          <Text style={styles.remRowLabel}>Climate</Text>
+                        </View>
+                        <View style={styles.remBtnPair}>
+                          {renderActionBtn('Start', 'Start Climate AC', (c) => c.controlClimate(true))}
+                          {renderActionBtn('Stop', 'Stop Climate AC', (c) => c.controlClimate(false))}
+                        </View>
+                      </View>
 
-                {/* Row 4: Sunroof */}
-                <View style={styles.remRow}>
-                  <View style={styles.remRowLeft}>
-                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
-                      <Path d="M4 17a8 8 0 0 1 16 0z" strokeLinecap="round" strokeLinejoin="round" />
-                      <Path d="M12 9v8" />
-                    </Svg>
-                    <Text style={styles.remRowLabel}>Sunroof</Text>
-                  </View>
-                  <View style={styles.remBtnPair}>
-                    <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Open Sunroof', (c) => c.controlSunroof(true))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Open Sunroof"
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.remActionBtnText}>Open</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.remActionBtn}
-                      onPress={() => triggerCommand('Close Sunroof', (c) => c.controlSunroof(false))}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Close Sunroof"
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.remActionBtnText}>Close</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
+                      <View style={styles.remRowDivider} />
 
-              {/* Bottom 2 Feature Cards: Find My Car & Release Tailgate */}
-              <View style={styles.remBottomGrid}>
-                {/* Card 1: Find my car */}
-                <TouchableOpacity
-                  style={styles.remFeatureCard}
-                  onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Find my car"
-                  accessibilityRole="button"
-                >
-                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
-                    <Path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                    <Circle cx="12" cy="10" r="3" />
-                  </Svg>
-                  <Text style={styles.remFeatureTitle}>Find my car</Text>
-                  <Text style={styles.remFeatureSub}>Horn and lights</Text>
-                </TouchableOpacity>
+                      {/* Row 3: Windows */}
+                      <View style={styles.remRow}>
+                        <View style={styles.remRowLeft}>
+                          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                            <Rect x="5" y="3" width="14" height="18" rx="2" />
+                            <Path d="M5 8h14" />
+                          </Svg>
+                          <Text style={styles.remRowLabel}>Windows</Text>
+                        </View>
+                        <View style={styles.remBtnPair}>
+                          {renderActionBtn('Open', 'Open Windows', (c) => c.controlWindows(true, [9, 10, 11, 12]))}
+                          {renderActionBtn('Close', 'Close Windows', (c) => c.controlWindows(false, [9, 10, 11, 12]))}
+                        </View>
+                      </View>
 
-                {/* Card 2: Release tailgate */}
-                <TouchableOpacity
-                  style={styles.remFeatureCard}
-                  onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Release tailgate"
-                  accessibilityRole="button"
-                >
-                  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
-                    <Rect x="3" y="8" width="18" height="12" rx="2" />
-                    <Path d="M3 12h18M8 8V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v4" strokeLinecap="round" />
-                  </Svg>
-                  <Text style={styles.remFeatureTitle}>Release tailgate</Text>
-                  <Text style={styles.remFeatureSub}>Opens the boot</Text>
-                </TouchableOpacity>
-              </View>
+                      <View style={styles.remRowDivider} />
+
+                      {/* Row 4: Sunroof */}
+                      <View style={styles.remRow}>
+                        <View style={styles.remRowLeft}>
+                          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                            <Path d="M4 17a8 8 0 0 1 16 0z" strokeLinecap="round" strokeLinejoin="round" />
+                            <Path d="M12 9v8" />
+                          </Svg>
+                          <Text style={styles.remRowLabel}>Sunroof</Text>
+                        </View>
+                        <View style={styles.remBtnPair}>
+                          {renderActionBtn('Open', 'Open Sunroof', (c) => c.controlSunroof(true))}
+                          {renderActionBtn('Close', 'Close Sunroof', (c) => c.controlSunroof(false))}
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Bottom 2 Feature Cards: Find My Car & Release Tailgate */}
+                    <View style={styles.remBottomGrid}>
+                      {/* Card 1: Find my car */}
+                      <TouchableOpacity
+                        style={[
+                          styles.remFeatureCard,
+                          isFindActive && styles.remFeatureCardActive,
+                          isFindDisabled && styles.remoteControlDisabled,
+                        ]}
+                        disabled={isRemoteBusy}
+                        onPress={() => triggerCommand('Find My Car', (c) => c.findMyCar())}
+                        activeOpacity={0.6}
+                        accessibilityLabel="Find my car"
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: isRemoteBusy, busy: isFindActive }}
+                      >
+                        {isFindActive ? (
+                          <ActivityIndicator size="small" color="#34D399" />
+                        ) : (
+                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                            <Path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                            <Circle cx="12" cy="10" r="3" />
+                          </Svg>
+                        )}
+                        <Text style={[styles.remFeatureTitle, isFindActive && styles.remActionBtnTextActive]}>
+                          {isFindActive ? 'Sending...' : 'Find my car'}
+                        </Text>
+                        <Text style={styles.remFeatureSub}>
+                          {isFindActive ? 'Waiting for response' : 'Horn and lights'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      {/* Card 2: Release tailgate */}
+                      <TouchableOpacity
+                        style={[
+                          styles.remFeatureCard,
+                          isTailgateActive && styles.remFeatureCardActive,
+                          isTailgateDisabled && styles.remoteControlDisabled,
+                        ]}
+                        disabled={isRemoteBusy}
+                        onPress={() => triggerCommand('Release Tailgate', (c) => c.releaseTailgate())}
+                        activeOpacity={0.6}
+                        accessibilityLabel="Release tailgate"
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: isRemoteBusy, busy: isTailgateActive }}
+                      >
+                        {isTailgateActive ? (
+                          <ActivityIndicator size="small" color="#34D399" />
+                        ) : (
+                          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                            <Rect x="3" y="8" width="18" height="12" rx="2" />
+                            <Path d="M3 12h18M8 8V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v4" strokeLinecap="round" />
+                          </Svg>
+                        )}
+                        <Text style={[styles.remFeatureTitle, isTailgateActive && styles.remActionBtnTextActive]}>
+                          {isTailgateActive ? 'Sending...' : 'Release tailgate'}
+                        </Text>
+                        <Text style={styles.remFeatureSub}>
+                          {isTailgateActive ? 'Waiting for response' : 'Opens the boot'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                );
+              })()}
             </ScrollView>
           </SafeAreaView>
         </Animated.View>
@@ -11885,12 +12064,26 @@ export default function App() {
                   <View style={styles.analyticsColsRow}>
                     <View style={styles.analyticsCol}>
                       <Text style={styles.analyticsMetricLabel}>Driven</Text>
-                      <Text style={styles.analyticsMetricVal}>{displayDrivenKm.toFixed(1)} km</Text>
+                      <Text
+                        style={styles.analyticsMetricVal}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.75}
+                      >
+                        {displayDrivenKm.toFixed(1)} km
+                      </Text>
                       <Text style={styles.analyticsMetricSub}>{displayDriveDur}</Text>
                     </View>
                     <View style={styles.analyticsCol}>
                       <Text style={styles.analyticsMetricLabel}>Used</Text>
-                      <Text style={styles.analyticsMetricVal}>{displayDriveEnergy.toFixed(2)} kWh</Text>
+                      <Text
+                        style={styles.analyticsMetricVal}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.75}
+                      >
+                        {displayDriveEnergy.toFixed(2)} kWh
+                      </Text>
                       <Text style={styles.analyticsMetricSub}>{displayEff.toFixed(2)} km/kWh</Text>
                     </View>
                   </View>
@@ -11904,19 +12097,41 @@ export default function App() {
                   <View style={styles.analyticsColsRow}>
                     <View style={styles.analyticsCol}>
                       <Text style={styles.analyticsMetricLabel}>Added</Text>
-                      <Text style={[styles.analyticsMetricVal, { color: '#10B981' }]}>
+                      <Text
+                        style={[styles.analyticsMetricVal, { color: '#10B981' }]}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.75}
+                      >
                         +{displayPackKwh.toFixed(1)} kWh
                       </Text>
                       <Text style={styles.analyticsMetricSub}>to the pack</Text>
                     </View>
                     <View style={styles.analyticsCol}>
                       <Text style={styles.analyticsMetricLabel}>From wall</Text>
-                      <Text style={styles.analyticsMetricVal}>{displayWallKwh.toFixed(2)} kWh</Text>
+                      <Text
+                        style={styles.analyticsMetricVal}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.75}
+                      >
+                        {displayWallKwh.toFixed(2)} kWh
+                      </Text>
                     </View>
+                  </View>
+                  <View style={[styles.analyticsColsRow, styles.analyticsColsSecondRow]}>
                     <View style={styles.analyticsCol}>
                       <Text style={styles.analyticsMetricLabel}>Loss</Text>
-                      <Text style={styles.analyticsMetricVal}>{displayLossKwh.toFixed(2)} kWh</Text>
+                      <Text
+                        style={styles.analyticsMetricVal}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.75}
+                      >
+                        {displayLossKwh.toFixed(2)} kWh
+                      </Text>
                     </View>
+                    <View style={styles.analyticsCol} />
                   </View>
                 </View>
 
@@ -13523,7 +13738,17 @@ export default function App() {
               onChangeText={setTempPin}
             />
             <View style={{ flexDirection: 'row', gap: 10 }}>
-              <TouchableOpacity style={styles.ctrlBtn} onPress={() => setPinPrompt(null)}>
+              <TouchableOpacity
+                style={styles.ctrlBtn}
+                onPress={() => {
+                  if (pinPrompt?.onCancel) {
+                    pinPrompt.onCancel();
+                  } else {
+                    setPinPrompt(null);
+                    setRemoteCommandBusy(null);
+                  }
+                }}
+              >
                 <Text style={styles.ctrlBtnText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -16663,6 +16888,17 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(56, 189, 248, 0.45)',
     backgroundColor: 'rgba(56, 189, 248, 0.12)',
   },
+  mockupActionCircleBusy: {
+    borderColor: '#34D399',
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    transform: [{ scale: 0.95 }],
+  },
+  remoteControlDisabled: {
+    opacity: 0.38,
+  },
+  remoteActionLabelActive: {
+    color: '#34D399',
+  },
   mockupActionLabel: {
     fontSize: 12,
     fontWeight: '600',
@@ -17007,7 +17243,8 @@ const styles = StyleSheet.create({
   dpActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   dpTodayBtn: {
     flex: 1,
@@ -17021,6 +17258,27 @@ const styles = StyleSheet.create({
     color: '#062116',
     fontSize: 15.5,
     fontWeight: '800',
+  },
+  dpShowAllBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: '#0F172A',
+    borderWidth: 1.5,
+    borderColor: '#34E096',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dpShowAllBtnActive: {
+    backgroundColor: 'rgba(52, 224, 150, 0.18)',
+  },
+  dpShowAllBtnText: {
+    color: '#34E096',
+    fontSize: 15.5,
+    fontWeight: '800',
+  },
+  dpShowAllBtnTextActive: {
+    color: '#6EE7B7',
   },
 
   // Tyres & Closures Dedicated Screen Styles
@@ -17568,6 +17826,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
+  remStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.4)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 16,
+  },
+  remStatusPillText: {
+    flex: 1,
+    color: '#A7F3D0',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   remActionBtn: {
     minWidth: 76,
     height: 40,
@@ -17579,10 +17855,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 14,
   },
+  remActionBtnActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderColor: '#34D399',
+    transform: [{ scale: 0.96 }],
+  },
+  remActionBtnDisabled: {
+    opacity: 0.38,
+  },
+  remActionBtnLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   remActionBtnText: {
     color: '#F8FAFC',
     fontSize: 14,
     fontWeight: '700',
+  },
+  remActionBtnTextActive: {
+    color: '#34D399',
+  },
+  remActionBtnTextDisabled: {
+    color: '#64748B',
   },
   remRowDivider: {
     height: 1,
@@ -17604,6 +17899,11 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'center',
     minHeight: 110,
+  },
+  remFeatureCardActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderColor: '#34D399',
+    transform: [{ scale: 0.98 }],
   },
   remFeatureTitle: {
     color: '#F8FAFC',
@@ -20318,10 +20618,19 @@ const styles = StyleSheet.create({
   },
   analyticsColsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
+    gap: 14,
+  },
+  analyticsColsSecondRow: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(30, 41, 59, 0.65)',
   },
   analyticsCol: {
     flex: 1,
+    minWidth: 120,
   },
   analyticsMetricLabel: {
     color: '#94A3B8',
@@ -20330,9 +20639,10 @@ const styles = StyleSheet.create({
   },
   analyticsMetricVal: {
     color: '#F8FAFC',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     letterSpacing: -0.3,
+    flexShrink: 1,
   },
   analyticsMetricSub: {
     color: '#94A3B8',
