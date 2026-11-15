@@ -10,4 +10,5 @@ mobile-expo/node_modules/
 mobile-expo/.expo/
 mobile-expo/dist/
 mobile-expo/dist-web/
+mobile-expo/.pwa-build-hash
 mobile-expo/.git_bak/

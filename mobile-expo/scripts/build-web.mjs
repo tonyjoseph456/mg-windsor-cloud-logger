@@ -1,22 +1,71 @@
-// Builds the PWA into ./dist-web and injects the manifest + iOS "Add to Home Screen" tags.
+// Builds the PWA into ./dist-web (skipping if unchanged unless --force) and injects the manifest + iOS "Add to Home Screen" tags.
 import { execSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const out = 'dist-web';
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const projectDir = path.resolve(scriptDir, '..');
+const out = path.join(projectDir, 'dist-web');
+const stampFile = path.join(projectDir, '.pwa-build-hash');
+const forceRebuild = process.argv.includes('--force');
+
+function collectFiles(dirPath, acc = []) {
+  if (!fs.existsSync(dirPath)) return acc;
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    const full = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      collectFiles(full, acc);
+    } else if (entry.isFile()) {
+      acc.push(full);
+    }
+  }
+  return acc;
+}
+
+function computePwaSourceHash() {
+  const hash = crypto.createHash('sha256');
+  const rootFiles = ['App.tsx', 'index.js', 'app.json', 'package.json', 'package-lock.json', 'tsconfig.json', 'scripts/build-web.mjs']
+    .map((rel) => path.join(projectDir, rel))
+    .filter((p) => fs.existsSync(p));
+  const candidates = [
+    ...rootFiles,
+    ...collectFiles(path.join(projectDir, 'src')),
+    ...collectFiles(path.join(projectDir, 'public')),
+  ].sort();
+
+  for (const filePath of candidates) {
+    hash.update(path.relative(projectDir, filePath).replace(/\\/g, '/'));
+    hash.update('\0');
+    hash.update(fs.readFileSync(filePath));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+const currentHash = computePwaSourceHash();
+const previousHash = fs.existsSync(stampFile) ? fs.readFileSync(stampFile, 'utf8').trim() : '';
+if (!forceRebuild && currentHash === previousHash && fs.existsSync(path.join(out, 'index.html'))) {
+  console.log(`PWA unchanged since previous build (${currentHash.slice(0, 12)}), skipping rebuild.`);
+  process.exit(0);
+}
+
 fs.rmSync(out, { recursive: true, force: true });
 const nodeBinDir = path.dirname(process.execPath);
 const envWithNode = {
   ...process.env,
   PATH: `${nodeBinDir}${path.delimiter}${process.env.PATH || ''}`,
 };
-execSync(`"${process.execPath}" node_modules/expo/bin/cli export -p web --output-dir ${out}`, {
+execSync(`"${process.execPath}" node_modules/expo/bin/cli export -p web --output-dir dist-web`, {
+  cwd: projectDir,
   stdio: 'inherit',
   env: envWithNode,
 });
 
-if (fs.existsSync('public')) {
-  fs.cpSync('public', out, { recursive: true });
+const publicDir = path.join(projectDir, 'public');
+if (fs.existsSync(publicDir)) {
+  fs.cpSync(publicDir, out, { recursive: true });
 }
 fs.writeFileSync(
   path.join(out, 'manifest.json'),
@@ -202,4 +251,5 @@ fs.writeFileSync(
   Cache-Control: public, max-age=31536000, immutable
 `
 );
-console.log('\nPWA ready in ./' + out);
+fs.writeFileSync(stampFile, `${currentHash}\n`);
+console.log('\nPWA ready in ./dist-web (hash ' + currentHash.slice(0, 12) + ')');
