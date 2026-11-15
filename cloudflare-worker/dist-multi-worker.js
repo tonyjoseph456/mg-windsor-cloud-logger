@@ -11632,12 +11632,12 @@ var tripRow = (t) => {
     t.efficiencyKmPerKwh ?? 0,
     t.startLocation || (t.startLat != null ? `${t.startLat},${t.startLng}` : "--"),
     t.endLocation || (t.endLat != null ? `${t.endLat},${t.endLng}` : "--"),
-    fmtDur(t.idleDurationSeconds || 0),
-    t.idleEnergyKwh ?? 0,
+    "",
+    "",
     t.endCabinTempC ?? t.cabinTempC ?? "",
     t.endExteriorTempC ?? t.exteriorTempC ?? "",
-    t.maxSpeedKmh ?? 0,
-    t.avgSpeedKmh ?? 0,
+    "",
+    t.avgSpeedKmh ?? (durSec > 0 && Number(t.distanceKm) > 0 ? Number((Number(t.distanceKm) / (durSec / 3600)).toFixed(1)) : 0),
     JSON.stringify(t)
   ];
 };
@@ -14753,7 +14753,7 @@ async function handleApi(env, request, url) {
         start_lng: telem.lng,
         start_cabin_temp_c: telem.cabinTempC,
         start_exterior_temp_c: telem.exteriorTempC,
-        max_speed_kmh: telem.speedKmh || 0,
+        max_speed_kmh: null,
         status: "ongoing"
       };
       await d1InsertTrip(env, trip);
@@ -14907,8 +14907,6 @@ ${idleText}`, {
     const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
     const endLocation = await resolveLocation(telem?.lat, telem?.lng);
     const avgSpeedKmh = durationSec > 0 && distanceKm > 0 ? Number((distanceKm / (durationSec / 3600)).toFixed(1)) : 0;
-    const estPeakSpeed = avgSpeedKmh > 0 ? Math.min(115, Math.max(Number((avgSpeedKmh * 1.48).toFixed(1)), Number((avgSpeedKmh + 14).toFixed(1)))) : 0;
-    const maxSpeedKmh = Math.max(Number(ongoingTrip.max_speed_kmh) || 0, Number(telem?.speedKmh) || 0, estPeakSpeed);
     const updates = {
       end_timestamp: nowSec,
       duration_seconds: durationSec,
@@ -14919,7 +14917,7 @@ ${idleText}`, {
       efficiency_km_per_kwh: efficiencyKmPerKwh,
       end_location: endLocation,
       avg_speed_kmh: avgSpeedKmh,
-      max_speed_kmh: maxSpeedKmh,
+      max_speed_kmh: null,
       end_lat: telem?.lat ?? null,
       end_lng: telem?.lng ?? null,
       end_cabin_temp_c: telem?.cabinTempC ?? ongoingTrip.start_cabin_temp_c ?? null,
@@ -15403,7 +15401,8 @@ ${notificationText}`, {
       const eff = dist > 0 && usedKwh > 0 ? `${(dist / usedKwh).toFixed(1)} km/kWh` : "-- km/kWh";
       const curSoc = u.live?.soc ?? t.endSoc;
       const curRange = u.live?.rangeKm ? `${u.live.rangeKm} km` : "-- km";
-      const isActuallyMoving = dist >= 0.2 || t.maxSpeedKmh && t.maxSpeedKmh > 5;
+      const isActuallyMoving = dist >= 0.2;
+      const avgSpd = durSec > 0 && dist > 0 ? Number((dist / (durSec / 3600)).toFixed(1)) : 0;
       const state = isActuallyMoving ? "Driving" : "Stationary";
       const title = isActuallyMoving ? "MG Windsor EV \u2022 Driving" : "MG Windsor EV \u2022 Ready";
       const headline = isActuallyMoving ? `${dist} km \u2022 ${eff}` : `Parked / Idle \u2022 ${curSoc}% SOC`;
@@ -15415,7 +15414,7 @@ ${notificationText}`, {
         battery: `${curSoc}% SOC`,
         range: curRange,
         duration: durStr,
-        speed: `${t.maxSpeedKmh || 0} km/h`,
+        speed: avgSpd > 0 ? `${avgSpd} km/h avg` : "--",
         efficiency: eff,
         odometer: `${curOdo} km`,
         aux: u.live?.aux ? `${u.live.aux} V` : "--",

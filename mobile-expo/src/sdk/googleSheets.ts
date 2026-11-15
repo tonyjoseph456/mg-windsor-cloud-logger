@@ -563,8 +563,6 @@ export async function syncTripsToGoogleSheet(
 
     const durSec = t.durationSeconds || 0;
     const durStr = `${Math.floor(durSec / 60)} min ${durSec % 60} sec`;
-    const idleSec = t.idleDurationSeconds || 0;
-    const idleStr = idleSec > 0 ? `${Math.floor(idleSec / 60)} min ${idleSec % 60} sec` : 'None';
 
     const sIso = istIso(t.startTimestampSec);
     const eIso = istIso(t.endTimestampSec);
@@ -583,11 +581,11 @@ export async function syncTripsToGoogleSheet(
       t.efficiencyKmPerKwh > 0 ? t.efficiencyKmPerKwh : 0,
       t.startLocation || 'Unknown',
       t.endLocation || 'Unknown',
-      idleStr,
-      t.idleEnergyKwh || 0,
+      '',
+      '',
       t.endCabinTempC ?? t.cabinTempC ?? '--',
       t.endExteriorTempC ?? t.exteriorTempC ?? '--',
-      t.maxSpeedKmh,
+      '',
       t.avgSpeedKmh,
     ];
 
@@ -905,10 +903,7 @@ export function mapD1TripToRecord(r: any): TripRecord {
   const energyUsedKwh = Number(r.energy_used_kwh) || Number((((startSoc - endSoc) / 100) * 37.3).toFixed(2));
   const efficiencyKmPerKwh = Number(r.efficiency_km_per_kwh) || (energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0);
   const avgSpeedKmh = Number(r.avg_speed_kmh) || (durationSeconds > 0 && distanceKm > 0 ? Number((distanceKm / (durationSecToHours(durationSeconds))).toFixed(1)) : 0);
-  const rawMaxSpeed = Number(r.max_speed_kmh) || 0;
-  const maxSpeedKmh = rawMaxSpeed > 0
-    ? rawMaxSpeed
-    : (avgSpeedKmh > 0 ? Math.min(115, Math.max(Number((avgSpeedKmh * 1.48).toFixed(1)), Number((avgSpeedKmh + 14).toFixed(1)))) : 0);
+  const maxSpeedKmh = 0;
 
   const startLat = r.start_lat != null ? Number(r.start_lat) : null;
   const startLng = r.start_lng != null ? Number(r.start_lng) : null;
@@ -1089,7 +1084,7 @@ export async function syncTripsToD1(trips: TripRecord[], vinOverride?: string): 
       start_location: t.startLocation,
       end_location: t.endLocation,
       avg_speed_kmh: t.avgSpeedKmh,
-      max_speed_kmh: t.maxSpeedKmh,
+      max_speed_kmh: null,
       start_lat: t.startLat ?? null,
       start_lng: t.startLng ?? null,
       end_lat: t.endLat ?? null,

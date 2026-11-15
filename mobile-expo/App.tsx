@@ -282,6 +282,33 @@ async function geocodeAddressCoords(address: string): Promise<{ lat: number; lng
   return null;
 }
 
+function getTripDurationSeconds(
+  trip: Pick<TripRecord, 'durationSeconds' | 'startTimestampSec' | 'endTimestampSec'>
+): number {
+  if (trip.durationSeconds > 0) return trip.durationSeconds;
+  if (trip.startTimestampSec > 0 && trip.endTimestampSec > trip.startTimestampSec) {
+    return trip.endTimestampSec - trip.startTimestampSec;
+  }
+  return 0;
+}
+
+function getTripAverageSpeedKmh(
+  trip: Pick<
+    TripRecord,
+    'avgSpeedKmh' | 'distanceKm' | 'durationSeconds' | 'startTimestampSec' | 'endTimestampSec'
+  >,
+  overrideDurationSec?: number
+): number {
+  const existing = Number(trip.avgSpeedKmh) || 0;
+  if (existing > 0) return Number(existing.toFixed(1));
+  const durSec =
+    overrideDurationSec && overrideDurationSec > 0
+      ? overrideDurationSec
+      : getTripDurationSeconds(trip);
+  const distKm = Number(trip.distanceKm) || 0;
+  return durSec > 0 && distKm > 0 ? Number((distKm / (durSec / 3600)).toFixed(1)) : 0;
+}
+
 function mergeD1TripsWithLocalRichData(
   d1Trips: TripRecord[],
   localTrips: TripRecord[],
@@ -309,12 +336,10 @@ function mergeD1TripsWithLocalRichData(
     const endExteriorTempC =
       dt.endExteriorTempC ?? match?.endExteriorTempC ?? match?.exteriorTempC ?? liveStatus?.exterior_temperature ?? null;
 
-    const avgSpd = dt.avgSpeedKmh || match?.avgSpeedKmh || 0;
-    const estPeak =
-      avgSpd > 0
-        ? Math.min(115, Math.max(Number((avgSpd * 1.48).toFixed(1)), Number((avgSpd + 14).toFixed(1))))
-        : 0;
-    const maxSpeedKmh = Math.max(dt.maxSpeedKmh || 0, match?.maxSpeedKmh || 0, estPeak);
+    const avgSpeedKmh = getTripAverageSpeedKmh({
+      ...dt,
+      avgSpeedKmh: dt.avgSpeedKmh || match?.avgSpeedKmh || 0,
+    });
 
     return {
       ...dt,
@@ -340,7 +365,10 @@ function mergeD1TripsWithLocalRichData(
       endExteriorTempC,
       cabinTempC: endCabinTempC,
       exteriorTempC: endExteriorTempC,
-      maxSpeedKmh,
+      idleDurationSeconds: 0,
+      idleEnergyKwh: 0,
+      avgSpeedKmh,
+      maxSpeedKmh: 0,
     };
   });
   return deduplicateTripList(mapped);
@@ -549,8 +577,8 @@ async function normalizeCloudTrip(
     endLng: t.endLng ?? null,
     startLocation: startLoc,
     endLocation: endLoc,
-    idleDurationSeconds: Number(t.idleDurationSeconds ?? 0),
-    idleEnergyKwh: Number(t.idleEnergyKwh ?? 0),
+    idleDurationSeconds: 0,
+    idleEnergyKwh: 0,
     acState: t.acState || '',
     startCabinTempC: t.startCabinTempC ?? null,
     endCabinTempC: t.endCabinTempC ?? null,
@@ -560,7 +588,7 @@ async function normalizeCloudTrip(
     exteriorTempC: t.endExteriorTempC ?? t.exteriorTempC ?? null,
     acTargetTempC: '',
     acFanSpeed: '',
-    maxSpeedKmh: Number(t.maxSpeedKmh ?? 0),
+    maxSpeedKmh: 0,
     avgSpeedKmh: Number(t.avgSpeedKmh ?? 0),
     status: 'completed',
   };
@@ -3077,6 +3105,7 @@ export default function App() {
           : trip.energyUsedKwh > 0
           ? `${(trip.distanceKm / trip.energyUsedKwh).toFixed(2)} km/kWh`
           : '8.6 km/kWh';
+        const avgSpd = getTripAverageSpeedKmh(trip, durSec);
 
         const blob = await renderTelemetryCardToBlob({
           titleBadge: 'MG WINDSOR EV • TRIP TELEMETRY',
@@ -3098,8 +3127,7 @@ export default function App() {
             { label: '4. Distance', value: `${trip.distanceKm} km (${trip.startOdometerKm} → ${trip.endOdometerKm} km)` },
             { label: '5. Energy Used', value: `${trip.energyUsedKwh} kWh (${eff})` },
             { label: '6. Route', value: `${startShort} → ${endShort}` },
-            { label: '7. Max Speed', value: `${trip.maxSpeedKmh || (trip.avgSpeedKmh * 1.45).toFixed(0)} km/h` },
-            { label: '8. Average Speed', value: `${trip.avgSpeedKmh || (trip.distanceKm / (durSec / 3600)).toFixed(0)} km/h` },
+            { label: '7. Average Speed', value: avgSpd > 0 ? `${avgSpd} km/h` : '--' },
           ],
         });
 
@@ -3261,8 +3289,8 @@ export default function App() {
       endLng: curLng,
       startLocation: activeTrip?.startLocation || base?.locationName || locLabel,
       endLocation: locLabel,
-      idleDurationSeconds: activeTrip?.idleDurationSeconds || 0,
-      idleEnergyKwh: activeTrip?.idleEnergyKwh || 0,
+      idleDurationSeconds: 0,
+      idleEnergyKwh: 0,
       acState: describeAcState(status),
       startCabinTempC: activeTrip?.startCabinTempC ?? base?.interiorTemperature ?? status.interior_temperature ?? null,
       endCabinTempC: status.interior_temperature ?? activeTrip?.endCabinTempC ?? null,
@@ -3272,11 +3300,7 @@ export default function App() {
       exteriorTempC: status.exterior_temperature ?? null,
       acTargetTempC: '',
       acFanSpeed: '',
-      maxSpeedKmh: Math.max(
-        activeTrip?.maxSpeedKmh || 0,
-        status.gps?.speed_kmh || 0,
-        avgSpd
-      ),
+      maxSpeedKmh: 0,
       avgSpeedKmh: avgSpd,
       status: 'completed',
     };
@@ -10753,59 +10777,39 @@ export default function App() {
                   </View>
                 </View>
 
-                {/* Bottom 2-Column Stats Card */}
-                <View style={styles.tripDetailBottomCard}>
-                  <View style={styles.tripDetailStatRow}>
-                    <View style={styles.tripDetailStatCol}>
-                      <Text style={styles.tripDetailStatLabel}>Max speed</Text>
-                      <Text style={styles.tripDetailStatVal}>
-                        {selectedTripForDetail.maxSpeedKmh || (selectedTripForDetail.avgSpeedKmh * 1.48).toFixed(1)} km/h
-                      </Text>
-                    </View>
-                    <View style={styles.tripDetailStatCol}>
-                      <Text style={styles.tripDetailStatLabel}>Average speed</Text>
-                      <Text style={styles.tripDetailStatVal}>
-                        {selectedTripForDetail.avgSpeedKmh || (selectedTripForDetail.distanceKm / ((selectedTripForDetail.durationSeconds || 3600) / 3600)).toFixed(1)} km/h
-                      </Text>
-                    </View>
-                  </View>
+                {/* Bottom Stats Card */}
+                {(() => {
+                  const detailAvgSpd = getTripAverageSpeedKmh(selectedTripForDetail);
+                  return (
+                    <View style={styles.tripDetailBottomCard}>
+                      <View style={styles.tripDetailStatRow}>
+                        <View style={styles.tripDetailStatCol}>
+                          <Text style={styles.tripDetailStatLabel}>Average speed</Text>
+                          <Text style={styles.tripDetailStatVal}>
+                            {detailAvgSpd > 0 ? `${detailAvgSpd} km/h` : '--'}
+                          </Text>
+                        </View>
+                      </View>
 
-                  <View style={styles.tripDetailDivider} />
+                      <View style={styles.tripDetailDivider} />
 
-                  <View style={styles.tripDetailStatRow}>
-                    <View style={styles.tripDetailStatCol}>
-                      <Text style={styles.tripDetailStatLabel}>Cabin</Text>
-                      <Text style={styles.tripDetailStatVal}>
-                        {selectedTripForDetail.startCabinTempC ?? 29}° → {selectedTripForDetail.endCabinTempC ?? 25}°C
-                      </Text>
+                      <View style={styles.tripDetailStatRow}>
+                        <View style={styles.tripDetailStatCol}>
+                          <Text style={styles.tripDetailStatLabel}>Cabin</Text>
+                          <Text style={styles.tripDetailStatVal}>
+                            {selectedTripForDetail.startCabinTempC ?? 29}° → {selectedTripForDetail.endCabinTempC ?? 25}°C
+                          </Text>
+                        </View>
+                        <View style={styles.tripDetailStatCol}>
+                          <Text style={styles.tripDetailStatLabel}>Outside</Text>
+                          <Text style={styles.tripDetailStatVal}>
+                            {selectedTripForDetail.startExteriorTempC ?? 27}° → {selectedTripForDetail.endExteriorTempC ?? 29}°C
+                          </Text>
+                        </View>
+                      </View>
                     </View>
-                    <View style={styles.tripDetailStatCol}>
-                      <Text style={styles.tripDetailStatLabel}>Outside</Text>
-                      <Text style={styles.tripDetailStatVal}>
-                        {selectedTripForDetail.startExteriorTempC ?? 27}° → {selectedTripForDetail.endExteriorTempC ?? 29}°C
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.tripDetailDivider} />
-
-                  <View style={styles.tripDetailStatRow}>
-                    <View style={styles.tripDetailStatCol}>
-                      <Text style={styles.tripDetailStatLabel}>Idling</Text>
-                      <Text style={styles.tripDetailStatVal}>
-                        {selectedTripForDetail.idleDurationSeconds > 0
-                          ? `${Math.round(selectedTripForDetail.idleDurationSeconds / 60)} min`
-                          : 'None'}
-                      </Text>
-                    </View>
-                    <View style={styles.tripDetailStatCol}>
-                      <Text style={styles.tripDetailStatLabel}>Idle energy</Text>
-                      <Text style={styles.tripDetailStatVal}>
-                        {(selectedTripForDetail.idleEnergyKwh || 0).toFixed(2)} kWh
-                      </Text>
-                    </View>
-                  </View>
-                </View>
+                  );
+                })()}
               </ScrollView>
             </SafeAreaView>
           </Animated.View>
@@ -14766,11 +14770,11 @@ function getTripEfficiencyDisplay(trip: TripRecord): {
 function formatTripTextReport(
   t: TripRecord,
   durSec: number,
-  ac: string,
-  idle: string
+  ac: string
 ): string {
   const eff = getTripEfficiencyDisplay(t);
   const effReport = eff.subNote ? `${eff.detailValue} (${eff.subNote})` : eff.detailValue;
+  const avgSpd = getTripAverageSpeedKmh(t, durSec);
   return [
     '⚡ MG WINDSOR EV • TRIP TELEMETRY REPORT ⚡',
     `📅 Date: ${extractDate(t.startDateTime)}`,
@@ -14779,9 +14783,8 @@ function formatTripTextReport(
     `📍 Distance: ${t.distanceKm} km (Odo: ${t.startOdometerKm} → ${t.endOdometerKm} km)`,
     `🔋 Battery: ${t.startSoc.toFixed(1)}% → ${t.endSoc.toFixed(1)}% (${(t.startSoc - t.endSoc).toFixed(1)}% used | ${t.energyUsedKwh} kWh)`,
     `⚡ Energy & Efficiency: ${effReport}`,
-    `🚀 Speed: Avg ${t.avgSpeedKmh} km/h • Max ${t.maxSpeedKmh} km/h`,
+    `🚀 Average Speed: ${avgSpd > 0 ? `${avgSpd} km/h` : '--'}`,
     `🌡️ Temperature: ${ac}`,
-    `💤 Idling: ${idle}`,
     `🗺️ Start: ${t.startLocation || 'Unknown'}`,
     `🏁 Destination: ${t.endLocation || 'Unknown'}`,
   ].join('\n');
@@ -14830,19 +14833,7 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
       ? trip.endTimestampSec - trip.startTimestampSec
       : trip.durationSeconds;
 
-  const effectiveAvgSpeed =
-    trip.avgSpeedKmh > 0
-      ? trip.avgSpeedKmh
-      : computedDurationSec > 0 && trip.distanceKm > 0
-      ? Number((trip.distanceKm / (computedDurationSec / 3600)).toFixed(1))
-      : 0;
-
-  const effectiveMaxSpeed =
-    trip.maxSpeedKmh > 0
-      ? trip.maxSpeedKmh
-      : effectiveAvgSpeed > 0
-      ? Math.min(115, Math.max(Number((effectiveAvgSpeed * 1.48).toFixed(1)), Number((effectiveAvgSpeed + 14).toFixed(1))))
-      : 0;
+  const effectiveAvgSpeed = getTripAverageSpeedKmh(trip, computedDurationSec);
 
   const startLatVal = trip.startLat ?? resolvedStartCoords?.lat ?? null;
   const startLngVal = trip.startLng ?? resolvedStartCoords?.lng ?? null;
@@ -14920,11 +14911,6 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
       : '';
   const acSummary = `${cabinStr} • ${extStr}${remoteAcStr}`;
 
-  const idleSummary =
-    trip.idleDurationSeconds > 0
-      ? `${formatDurationDetailed(trip.idleDurationSeconds)} (${trip.idleEnergyKwh} kWh spent)`
-      : 'None (0 min / 0.00 kWh)';
-
   const tripDate = extractDate(trip.startDateTime);
   const travelTimeRange = formatDetailedTravelTime(trip.startDateTime, trip.endDateTime);
   const startShort = cleanLocationSummary(trip.startLocation);
@@ -14964,7 +14950,7 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
             { label: 'BATTERY', value: `${trip.startSoc.toFixed(0)}% → ${trip.endSoc.toFixed(0)}%`, color: '#34D399' },
             { label: effDisplay.pillLabel, value: effDisplay.pillValue },
           ],
-          heading: 'ALL 10 TRIP & DRIVING METRICS',
+          heading: 'TRIP & DRIVING METRICS',
           metrics: [
             { label: '1. Starting Battery %', value: `${trip.startSoc.toFixed(1)}% (${trip.startEnergyKwh} kWh)` },
             { label: '2. Ending Battery %', value: `${trip.endSoc.toFixed(1)}% (${trip.endEnergyKwh} kWh)` },
@@ -14985,10 +14971,8 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
             },
             { label: '📍 6a. Start Location', value: fullStartLocation },
             { label: '🏁 6b. Destination', value: fullEndLocation },
-            { label: '7. Idling Time & Energy', value: idleSummary },
-            { label: '🌡️ 8. Cabin & Ambient Temp', value: acSummary },
-            { label: '9. Maximum Speed', value: `${effectiveMaxSpeed} km/h` },
-            { label: '10. Average Speed', value: `${effectiveAvgSpeed} km/h` },
+            { label: '🌡️ 7. Cabin & Ambient Temp', value: acSummary },
+            { label: '8. Average Speed', value: effectiveAvgSpeed > 0 ? `${effectiveAvgSpeed} km/h` : '--' },
           ],
         });
 
@@ -14996,7 +14980,7 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
           blob,
           `windsor-trip-${trip.id}.png`,
           'MG Windsor EV Trip Telemetry',
-          formatTripTextReport(trip, computedDurationSec, acSummary, idleSummary)
+          formatTripTextReport(trip, computedDurationSec, acSummary)
         );
         return;
       }
@@ -15008,7 +14992,7 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
 
     // High fidelity text report fallback
     try {
-      const textReport = formatTripTextReport(trip, computedDurationSec, acSummary, idleSummary);
+      const textReport = formatTripTextReport(trip, computedDurationSec, acSummary);
       await Share.share({
         title: 'MG Windsor EV Trip Telemetry',
         message: textReport,
@@ -15130,7 +15114,7 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
                 </View>
               </View>
 
-              <Text style={styles.tripDetailsHeading}>ALL 10 TRIP &amp; DRIVING METRICS</Text>
+              <Text style={styles.tripDetailsHeading}>TRIP &amp; DRIVING METRICS</Text>
 
               {/* 1. Starting Battery */}
               <View style={styles.metricRow}>
@@ -15185,28 +15169,18 @@ function TripSessionCard({ trip, liveStatus }: { trip: TripRecord; liveStatus?: 
                 <Text style={styles.metricBlockValue}>{fullEndLocation}</Text>
               </View>
 
-              {/* 7. Idling Time & Energy */}
-              <View style={styles.metricRow}>
-                <Text style={styles.metricRowLabel}>7. Idling Time &amp; Energy</Text>
-                <Text style={styles.metricRowValue}>{idleSummary}</Text>
-              </View>
-
-              {/* 8. Cabin & Ambient Temperatures (From real vehicle sensors) */}
+              {/* 7. Cabin & Ambient Temperatures (From real vehicle sensors) */}
               <View style={styles.metricBlock}>
-                <Text style={styles.metricBlockLabel}>🌡️ 8. Cabin &amp; Outside Temperature (Sensors)</Text>
+                <Text style={styles.metricBlockLabel}>🌡️ 7. Cabin &amp; Outside Temperature (Sensors)</Text>
                 <Text style={styles.metricBlockValue}>{acSummary}</Text>
               </View>
 
-              {/* 9. Max Speed */}
+              {/* 8. Avg Speed */}
               <View style={styles.metricRow}>
-                <Text style={styles.metricRowLabel}>9. Maximum Speed</Text>
-                <Text style={styles.metricRowValue}>{effectiveMaxSpeed} km/h</Text>
-              </View>
-
-              {/* 10. Avg Speed */}
-              <View style={styles.metricRow}>
-                <Text style={styles.metricRowLabel}>10. Average Speed</Text>
-                <Text style={styles.metricRowValue}>{effectiveAvgSpeed} km/h</Text>
+                <Text style={styles.metricRowLabel}>8. Average Speed</Text>
+                <Text style={styles.metricRowValue}>
+                  {effectiveAvgSpeed > 0 ? `${effectiveAvgSpeed} km/h` : '--'}
+                </Text>
               </View>
 
               {/* IMAGE WATERMARK (Excluded from buttons, only in captured image/card) */}
