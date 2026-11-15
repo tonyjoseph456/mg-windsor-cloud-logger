@@ -7200,17 +7200,28 @@ export default function App() {
 
             {/* 5. 2-Column Metrics Layout: Row 1 (Battery SOH, Efficiency) & Row 2 (Cabin/Ext Temp, 12V Battery) */}
             {(() => {
+              const isActivelyCharging = Boolean(charge?.is_charging);
               const cycleKm =
                 charge?.distance_since_last_charge_km ?? preChargeBaseline?.distanceSinceLastChargeKm ?? 0;
               const cycleKwh =
                 charge?.power_usage_since_last_charge_kwh ??
                 preChargeBaseline?.energyUsedSinceLastChargeKwh ??
                 0;
-              let eff = cycleKm > 0 && cycleKwh > 0 ? cycleKm / cycleKwh : 0;
-              if (eff <= 0 && trips.length > 0 && trips[0].efficiencyKmPerKwh && trips[0].efficiencyKmPerKwh > 0) {
+              let eff = !isActivelyCharging && cycleKm > 0 && cycleKwh > 0 ? cycleKm / cycleKwh : 0;
+              if (
+                !isActivelyCharging &&
+                eff <= 0 &&
+                trips.length > 0 &&
+                trips[0].efficiencyKmPerKwh &&
+                trips[0].efficiencyKmPerKwh > 0
+              ) {
                 eff = trips[0].efficiencyKmPerKwh;
               }
-              const displayEff = eff > 0 ? `${eff.toFixed(2)} km/kWh` : '9.03 km/kWh';
+              const displayEff = isActivelyCharging
+                ? '-- km/kWh'
+                : eff > 0
+                  ? `${eff.toFixed(2)} km/kWh`
+                  : '9.03 km/kWh';
 
               const inTemp = status.interior_temperature;
               const exTemp = status.exterior_temperature;
@@ -7553,6 +7564,7 @@ export default function App() {
 
             {/* 3. 2x3 Metrics Grid Card */}
             {(() => {
+              const isActivelyCharging = Boolean(charge?.is_charging);
               const distSince =
                 charge?.distance_since_last_charge_km ??
                 preChargeBaseline?.distanceSinceLastChargeKm ??
@@ -7561,8 +7573,11 @@ export default function App() {
                 charge?.power_usage_since_last_charge_kwh ??
                 preChargeBaseline?.energyUsedSinceLastChargeKwh ??
                 14;
-              const efficiencyVal =
-                usedSince > 0 ? (distSince / usedSince).toFixed(2) : '8.03';
+              const efficiencyVal = isActivelyCharging
+                ? '--'
+                : usedSince > 0
+                  ? (distSince / usedSince).toFixed(2)
+                  : '8.03';
               const elapsedMinutes = charge?.is_charging
                 ? Math.round((charge?.charge_time_elapsed_s || 0) / 60)
                 : 0;
@@ -7650,7 +7665,7 @@ export default function App() {
                     <View style={styles.chargeGridCell}>
                       <Text style={styles.chargeGridLabel}>Efficiency</Text>
                       <Text style={styles.chargeGridVal}>{efficiencyVal} km/kWh</Text>
-                      <Text style={styles.chargeGridSub}>Live driving</Text>
+                      <Text style={styles.chargeGridSub}>{isActivelyCharging ? 'Charging' : 'Live driving'}</Text>
                     </View>
                   </View>
 
@@ -11124,7 +11139,9 @@ export default function App() {
                     </View>
                     <View style={styles.chargeDetailGridCellRight}>
                       <Text style={styles.chargeDetailGridLabel}>Efficiency since</Text>
-                      <Text style={styles.chargeDetailGridVal}>{effSince.toFixed(2)} km/kWh</Text>
+                      <Text style={styles.chargeDetailGridVal}>
+                        {session.status === 'charging' ? '-- km/kWh' : `${effSince.toFixed(2)} km/kWh`}
+                      </Text>
                     </View>
                   </View>
 
