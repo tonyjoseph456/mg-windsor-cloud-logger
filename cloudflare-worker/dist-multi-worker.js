@@ -8124,14 +8124,47 @@ function parseStatus(raw) {
     raw
   };
 }
+function ingestCapabilityBlock(cfg, rawBlock) {
+  if (!rawBlock) return;
+  let block = rawBlock;
+  if (typeof block === "string") {
+    try {
+      block = JSON.parse(block);
+    } catch {
+      return;
+    }
+  }
+  if (Array.isArray(block)) {
+    for (const item of block) {
+      if (!item || typeof item !== "object") continue;
+      const code = String(item.itemCode ?? item.code ?? item.key ?? "").trim();
+      const value = item.itemValue ?? item.value ?? item.val;
+      if (code && value !== void 0) {
+        cfg[code] = value;
+      }
+    }
+    return;
+  }
+  if (typeof block === "object") {
+    Object.assign(cfg, block);
+  }
+}
 function discoverCapabilities(payloads) {
   const cfg = {};
   const featureIds = /* @__PURE__ */ new Set();
   for (const payload of payloads) {
     if (!payload || typeof payload !== "object") continue;
-    for (const block of [payload.configuration, payload.config, payload.modelConfig]) {
-      if (block && typeof block === "object") {
-        Object.assign(cfg, block);
+    const sources = [payload, payload.data].filter((s) => s && typeof s === "object");
+    for (const src of sources) {
+      for (const block of [
+        src.configuration,
+        src.config,
+        src.modelConfig,
+        src.vehicleModelConfiguration,
+        src.modelConfiguration,
+        src.modelConfigurationJsonStr
+      ]) {
+        ingestCapabilityBlock(cfg, block);
       }
     }
     for (const item of asList(payload)) {
@@ -8406,7 +8439,7 @@ var MgIndiaClient = class {
       await this.vehicles();
     }
     const operationVin = this.vin || "";
-    const payloads = [];
+    const payloads = this.vehicle?.raw ? [this.vehicle.raw] : [];
     for (const path of [
       "/vehicle/feature/list",
       "/vehicle/service/subscription",

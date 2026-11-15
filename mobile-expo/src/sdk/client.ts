@@ -277,15 +277,49 @@ export function parseStatus(raw: Record<string, any>): Status {
   };
 }
 
+function ingestCapabilityBlock(cfg: Record<string, any>, rawBlock: any): void {
+  if (!rawBlock) return;
+  let block = rawBlock;
+  if (typeof block === 'string') {
+    try {
+      block = JSON.parse(block);
+    } catch {
+      return;
+    }
+  }
+  if (Array.isArray(block)) {
+    for (const item of block) {
+      if (!item || typeof item !== 'object') continue;
+      const code = String(item.itemCode ?? item.code ?? item.key ?? '').trim();
+      const value = item.itemValue ?? item.value ?? item.val;
+      if (code && value !== undefined) {
+        cfg[code] = value;
+      }
+    }
+    return;
+  }
+  if (typeof block === 'object') {
+    Object.assign(cfg, block);
+  }
+}
+
 export function discoverCapabilities(payloads: Array<Record<string, any>>): Capabilities {
   const cfg: Record<string, any> = {};
   const featureIds = new Set<number>();
 
   for (const payload of payloads) {
     if (!payload || typeof payload !== 'object') continue;
-    for (const block of [payload.configuration, payload.config, payload.modelConfig]) {
-      if (block && typeof block === 'object') {
-        Object.assign(cfg, block);
+    const sources = [payload, payload.data].filter((s) => s && typeof s === 'object');
+    for (const src of sources) {
+      for (const block of [
+        src.configuration,
+        src.config,
+        src.modelConfig,
+        src.vehicleModelConfiguration,
+        src.modelConfiguration,
+        src.modelConfigurationJsonStr,
+      ]) {
+        ingestCapabilityBlock(cfg, block);
       }
     }
     for (const item of asList(payload)) {
@@ -627,7 +661,7 @@ export class MgIndiaClient {
       await this.vehicles();
     }
     const operationVin = this.vin || '';
-    const payloads: Array<Record<string, any>> = [];
+    const payloads: Array<Record<string, any>> = this.vehicle?.raw ? [this.vehicle.raw] : [];
     for (const path of [
       '/vehicle/feature/list',
       '/vehicle/service/subscription',

@@ -6,3 +6,4 @@ export * from './models';
 export * from './tap';
 export * from './googleSheets';
 export * from './tripPlanner';
+export * from './windsorVariants';

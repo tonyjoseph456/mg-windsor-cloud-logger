@@ -114,6 +114,10 @@ import {
   PlannedStop,
   TripPlan,
   LatLng,
+  WINDSOR_VARIANTS,
+  WindsorVariantId,
+  getWindsorVariantById,
+  resolveWindsorSunroofState,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 import {
@@ -141,6 +145,7 @@ const GOOGLE_CLIENT_ID_KEY = 'mg_ismart_google_client_id_v1';
 const FONT_SCALE_KEY = 'mg_ismart_font_scale_v1';
 const GOOGLE_MAPS_API_KEY_KEY = 'mg_ismart_google_maps_api_key_v1';
 const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
+const VARIANT_OVERRIDE_KEY = 'mg_windsor_selected_variant_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const API_TOKEN_KEY = 'mg_pwa_api_token_v1';
@@ -2399,6 +2404,7 @@ export default function App() {
 
   // Home Screen Redesign: Color & Detail Sections State
   const [carColorOverride, setCarColorOverride] = useState<string | null>(null);
+  const [variantOverridesByVin, setVariantOverridesByVin] = useState<Record<string, WindsorVariantId>>({});
   const [showColorPicker, setShowColorPicker] = useState<boolean>(false);
   const [draftCarColorOverride, setDraftCarColorOverride] = useState<string | null>(null);
   const colorSheetSlideAnim = useRef(new Animated.Value(0)).current;
@@ -3459,6 +3465,23 @@ export default function App() {
   useEffect(() => {
     SecureStore.getItemAsync(COLOR_OVERRIDE_KEY).then((c) => {
       if (c) setCarColorOverride(c);
+    }).catch(() => {});
+
+    SecureStore.getItemAsync(VARIANT_OVERRIDE_KEY).then((rawMap) => {
+      if (!rawMap) return;
+      try {
+        const parsed = JSON.parse(rawMap);
+        if (parsed && typeof parsed === 'object') {
+          const sanitized: Record<string, WindsorVariantId> = {};
+          for (const [k, v] of Object.entries(parsed)) {
+            const spec = getWindsorVariantById(String(v || ''));
+            if (spec) sanitized[k] = spec.id;
+          }
+          setVariantOverridesByVin(sanitized);
+        }
+      } catch {
+        // ignore invalid stored variant map
+      }
     }).catch(() => {});
 
     SecureStore.getItemAsync(GOOGLE_MAPS_API_KEY_KEY).then((k) => {
@@ -6577,6 +6600,33 @@ export default function App() {
     handleCloseColorPicker();
   };
 
+  const activeVariantVinKey =
+    (rawVehicle?.vin || snapshot?.vehicle?.vin || vin || 'default').trim().toUpperCase() || 'default';
+  const manualVariantOverrideId =
+    variantOverridesByVin[activeVariantVinKey] ?? variantOverridesByVin['default'] ?? null;
+  const windsorSunroofState = resolveWindsorSunroofState(snapshot, manualVariantOverrideId);
+
+  const handleSelectWindsorVariant = async (variantId: WindsorVariantId | null) => {
+    triggerHapticFeedback('tap');
+    const nextMap = { ...variantOverridesByVin };
+    if (variantId) {
+      nextMap[activeVariantVinKey] = variantId;
+    } else {
+      delete nextMap[activeVariantVinKey];
+      delete nextMap['default'];
+    }
+    setVariantOverridesByVin(nextMap);
+    try {
+      if (Object.keys(nextMap).length > 0) {
+        await SecureStore.setItemAsync(VARIANT_OVERRIDE_KEY, JSON.stringify(nextMap));
+      } else {
+        await SecureStore.deleteItemAsync(VARIANT_OVERRIDE_KEY);
+      }
+    } catch {
+      // ignore persistence errors
+    }
+  };
+
   // Screen Width for Horizontal Tween Animations between Home, Tyres, Location, and Remote Commands
   const screenWidth = Math.max(Dimensions.get('window').width || 420, 500);
 
@@ -8385,7 +8435,10 @@ export default function App() {
                 <View style={{ flex: 1, paddingLeft: 14 }}>
                   <Text style={styles.profileVehicleTitle}>{displayName || 'Windsor EV'}</Text>
                   <Text style={styles.profileVehicleSub}>
-                    {rawVehicle?.series || 'EQ100'} · VIN ...{vinLast8}
+                    {windsorSunroofState.activeVariant
+                      ? `${windsorSunroofState.activeVariant.label} (${windsorSunroofState.activeVariant.batteryLabel})`
+                      : rawVehicle?.series || 'EQ100'}{' '}
+                    · VIN ...{vinLast8}
                   </Text>
                   <Text style={styles.profileVehiclePhone}>+91 {phone || '9744010098'}</Text>
                 </View>
@@ -8622,6 +8675,14 @@ export default function App() {
               <View style={{ gap: 10, marginBottom: 18 }}>
                 <InfoRow label="Registered Mobile" value={`+91 ${phone}`} />
                 <InfoRow label="Vehicle Name" value={displayName} />
+                <InfoRow
+                  label="Variant / Model"
+                  value={
+                    windsorSunroofState.activeVariant
+                      ? `${windsorSunroofState.activeVariant.label} (${windsorSunroofState.activeVariant.batteryLabel})`
+                      : 'Not detected (Set in Account)'
+                  }
+                />
                 <InfoRow
                   label="Series Code"
                   value={rawVehicle?.series || 'EQ100'}
@@ -9807,10 +9868,12 @@ export default function App() {
                 const renderActionBtn = (
                   text: string,
                   cmdLabel: string,
-                  fn: (c: MgIndiaClient) => Promise<void>
+                  fn: (c: MgIndiaClient) => Promise<void>,
+                  disabledOverride = false
                 ) => {
                   const isActive = activeRemoteCommand === cmdLabel;
-                  const isDisabled = isRemoteBusy && !isActive;
+                  const btnDisabled = isRemoteBusy || disabledOverride;
+                  const isDisabled = (isRemoteBusy && !isActive) || disabledOverride;
                   return (
                     <TouchableOpacity
                       style={[
@@ -9818,12 +9881,12 @@ export default function App() {
                         isActive && styles.remActionBtnActive,
                         isDisabled && styles.remActionBtnDisabled,
                       ]}
-                      disabled={isRemoteBusy}
+                      disabled={btnDisabled}
                       onPress={() => triggerCommand(cmdLabel, fn)}
                       activeOpacity={0.6}
                       accessibilityLabel={cmdLabel}
                       accessibilityRole="button"
-                      accessibilityState={{ disabled: isRemoteBusy, busy: isActive }}
+                      accessibilityState={{ disabled: btnDisabled, busy: isActive }}
                     >
                       {isActive ? (
                         <View style={styles.remActionBtnLoading}>
@@ -9838,6 +9901,13 @@ export default function App() {
                     </TouchableOpacity>
                   );
                 };
+
+                const isSunroofSupported = windsorSunroofState.sunroofEnabled;
+                const sunroofRowSubtitle = !isSunroofSupported && windsorSunroofState.activeVariant
+                  ? `Disabled · ${windsorSunroofState.activeVariant.label} has no sunroof`
+                  : windsorSunroofState.activeVariant?.hasSunroof
+                  ? `${windsorSunroofState.activeVariant.label} · Glass roof`
+                  : 'Not verified · May open windows';
 
                 const isFindActive = activeRemoteCommand === 'Find My Car';
                 const isFindDisabled = isRemoteBusy && !isFindActive;
@@ -9915,18 +9985,82 @@ export default function App() {
                       {/* Row 4: Sunroof */}
                       <View style={styles.remRow}>
                         <View style={styles.remRowLeft}>
-                          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2}>
+                          <Svg
+                            width={20}
+                            height={20}
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke={isSunroofSupported ? '#34D399' : '#64748B'}
+                            strokeWidth={2}
+                          >
                             <Path d="M4 17a8 8 0 0 1 16 0z" strokeLinecap="round" strokeLinejoin="round" />
                             <Path d="M12 9v8" />
                           </Svg>
-                          <Text style={styles.remRowLabel}>Sunroof</Text>
+                          <View style={styles.remRowTitleWrap}>
+                            <Text style={[styles.remRowLabel, !isSunroofSupported && styles.remRowLabelMuted]}>
+                              Sunroof
+                            </Text>
+                            <Text
+                              style={[
+                                styles.remRowSubLabel,
+                                windsorSunroofState.showUnconfiguredWarning && styles.remRowSubLabelWarn,
+                              ]}
+                            >
+                              {sunroofRowSubtitle}
+                            </Text>
+                          </View>
                         </View>
                         <View style={styles.remBtnPair}>
-                          {renderActionBtn('Open', 'Open Sunroof', (c) => c.controlSunroof(true))}
-                          {renderActionBtn('Close', 'Close Sunroof', (c) => c.controlSunroof(false))}
+                          {renderActionBtn(
+                            'Open',
+                            'Open Sunroof',
+                            (c) => c.controlSunroof(true),
+                            !isSunroofSupported
+                          )}
+                          {renderActionBtn(
+                            'Close',
+                            'Close Sunroof',
+                            (c) => c.controlSunroof(false),
+                            !isSunroofSupported
+                          )}
                         </View>
                       </View>
                     </View>
+
+                    {windsorSunroofState.showUnconfiguredWarning && (
+                      <View style={styles.remVariantWarnCard}>
+                        <View style={styles.remVariantWarnHeader}>
+                          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth={2.2}>
+                            <Path
+                              d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <Line x1="12" y1="9" x2="12" y2="13" strokeLinecap="round" />
+                            <Line x1="12" y1="17" x2="12.01" y2="17" strokeLinecap="round" />
+                          </Svg>
+                          <Text style={styles.remVariantWarnTitle}>Variant not detected</Text>
+                        </View>
+                        <Text style={styles.remVariantWarnBody}>
+                          The Sunroof command will open windows on non-sunroof models (Excite, Exclusive, Exclusive Pro). Please set your variant in the Account page if it was not detected properly.
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.remVariantWarnBtn}
+                          onPress={() => {
+                            setTab('account');
+                            setIsRemoteScreenVisible(false);
+                            remoteSlideAnim.setValue(0);
+                            handleOpenAccountScreen();
+                          }}
+                          activeOpacity={0.75}
+                          accessibilityLabel="Set variant in Account page"
+                          accessibilityRole="button"
+                        >
+                          <Text style={styles.remVariantWarnBtnText}>Set variant in Account page</Text>
+                          <Text style={styles.remVariantWarnBtnArrow}>›</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
 
                     {/* Bottom 2 Feature Cards: Find My Car & Release Tailgate */}
                     <View style={styles.remBottomGrid}>
@@ -11652,6 +11786,60 @@ export default function App() {
                   <Text style={styles.accountInfoVal}>{rawVehicle?.series || 'EQ100'}</Text>
                 </View>
                 <View style={styles.accountInfoDivider} />
+                <View style={styles.accountInfoRow}>
+                  <Text style={styles.accountInfoLabel}>Variant / Model</Text>
+                  <View style={styles.accountVariantStatusWrap}>
+                    {windsorSunroofState.activeVariant ? (
+                      <>
+                        <Text style={styles.accountInfoVal}>
+                          {windsorSunroofState.activeVariant.label} ({windsorSunroofState.activeVariant.batteryLabel})
+                        </Text>
+                        <View style={styles.accountStatusBadgeOk}>
+                          <Text style={styles.accountStatusBadgeOkText}>
+                            {windsorSunroofState.source === 'detected' ? 'Detected' : 'Selected'}
+                          </Text>
+                        </View>
+                      </>
+                    ) : (
+                      <View style={styles.accountStatusBadgeWarn}>
+                        <Text style={styles.accountStatusBadgeWarnText}>Not detected</Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+                <View style={styles.accountInfoDivider} />
+                <View style={styles.accountInfoRow}>
+                  <Text style={styles.accountInfoLabel}>Glass roof / Sunroof</Text>
+                  <Text
+                    style={[
+                      styles.accountInfoVal,
+                      {
+                        color: !windsorSunroofState.activeVariant
+                          ? '#FBBF24'
+                          : windsorSunroofState.sunroofEnabled
+                          ? '#34D399'
+                          : '#94A3B8',
+                      },
+                    ]}
+                  >
+                    {!windsorSunroofState.activeVariant
+                      ? 'Not set'
+                      : windsorSunroofState.sunroofEnabled
+                      ? 'Equipped · Enabled'
+                      : 'None · Disabled'}
+                  </Text>
+                </View>
+                {!windsorSunroofState.detectedVariant && (
+                  <>
+                    <View style={styles.accountInfoDivider} />
+                    <View style={styles.accountDetectionNoteRow}>
+                      <Text style={styles.accountDetectionNoteText}>
+                        Car / MG server check: {windsorSunroofState.serverSummary}
+                      </Text>
+                    </View>
+                  </>
+                )}
+                <View style={styles.accountInfoDivider} />
                 {(() => {
                   const fullVin = (rawVehicle?.vin || vin || '').trim();
                   const maskedVin = fullVin.length > 8 ? `...${fullVin.slice(-8)}` : fullVin || '...8H014788';
@@ -11695,6 +11883,86 @@ export default function App() {
                   <Text style={styles.accountInfoVal}>{/^\d{4}$/.test(pin) ? 'Configured' : 'Ask on command'}</Text>
                 </View>
               </View>
+
+              {/* 2b. Variant Selector (shown when variant is not auto-detected from car/MG server) */}
+              {!windsorSunroofState.detectedVariant && (
+                <View style={styles.accountVariantSection}>
+                  <View style={styles.accountVariantHeaderRow}>
+                    <Text style={[styles.accountPinSectionTitle, { marginTop: 0, marginBottom: 0 }]}>
+                      Select Windsor variant / model
+                    </Text>
+                    {windsorSunroofState.manualVariant && (
+                      <TouchableOpacity
+                        onPress={() => handleSelectWindsorVariant(null)}
+                        activeOpacity={0.7}
+                        accessibilityLabel="Clear variant selection"
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.accountVariantClearText}>Clear</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <Text style={styles.accountVariantSub}>
+                    {windsorSunroofState.manualVariant
+                      ? `Remote Sunroof command is ${windsorSunroofState.sunroofEnabled ? 'enabled' : 'disabled'} for ${windsorSunroofState.manualVariant.label}.`
+                      : 'Could not detect your variant from the car or MG server. Select your brochure trim below to enable or disable remote sunroof control.'}
+                  </Text>
+                  <View style={styles.accountVariantCard}>
+                    {WINDSOR_VARIANTS.map((variant, idx) => {
+                      const isSelected = windsorSunroofState.manualVariant?.id === variant.id;
+                      return (
+                        <React.Fragment key={variant.id}>
+                          {idx > 0 && <View style={styles.accountInfoDivider} />}
+                          <TouchableOpacity
+                            style={[
+                              styles.accountVariantRow,
+                              isSelected && styles.accountVariantRowActive,
+                            ]}
+                            onPress={() => handleSelectWindsorVariant(variant.id)}
+                            activeOpacity={0.7}
+                            accessibilityLabel={`Select Windsor ${variant.label} ${variant.batteryLabel}`}
+                            accessibilityRole="radio"
+                            accessibilityState={{ checked: isSelected }}
+                          >
+                            <View style={styles.accountVariantTextCol}>
+                              <View style={styles.accountVariantTitleLine}>
+                                <Text
+                                  style={[
+                                    styles.accountVariantName,
+                                    isSelected && styles.accountVariantNameActive,
+                                  ]}
+                                >
+                                  {variant.label}
+                                </Text>
+                                <View style={styles.accountVariantBatteryBadge}>
+                                  <Text style={styles.accountVariantBatteryText}>
+                                    {variant.batteryLabel}
+                                  </Text>
+                                </View>
+                              </View>
+                              <Text style={styles.accountVariantRoofSub}>
+                                {variant.sunroofLabel}
+                              </Text>
+                            </View>
+                            <View
+                              style={[
+                                styles.accountVariantRadio,
+                                isSelected && styles.accountVariantRadioActive,
+                              ]}
+                            >
+                              {isSelected && (
+                                <Svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#062116" strokeWidth={3}>
+                                  <Path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                                </Svg>
+                              )}
+                            </View>
+                          </TouchableOpacity>
+                        </React.Fragment>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
 
               {/* 3. Change 4-digit control PIN Section */}
               <Text style={styles.accountPinSectionTitle}>Change 4-digit control PIN</Text>
@@ -17812,14 +18080,78 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   remRowLeft: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    paddingRight: 10,
+  },
+  remRowTitleWrap: {
+    flex: 1,
   },
   remRowLabel: {
     color: '#F8FAFC',
     fontSize: 16,
     fontWeight: '700',
+  },
+  remRowLabelMuted: {
+    color: '#94A3B8',
+  },
+  remRowSubLabel: {
+    color: '#94A3B8',
+    fontSize: 11.5,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  remRowSubLabelWarn: {
+    color: '#FBBF24',
+  },
+  remVariantWarnCard: {
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.38)',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 16,
+  },
+  remVariantWarnHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  remVariantWarnTitle: {
+    color: '#FCD34D',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  remVariantWarnBody: {
+    color: '#E2E8F0',
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  remVariantWarnBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.35)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  remVariantWarnBtnText: {
+    color: '#FBBF24',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  remVariantWarnBtnArrow: {
+    color: '#FBBF24',
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 18,
   },
   remBtnPair: {
     flexDirection: 'row',
@@ -20391,6 +20723,132 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#1E293B',
     width: '100%',
+  },
+  accountVariantStatusWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexWrap: 'wrap',
+    gap: 8,
+    flexShrink: 1,
+    marginLeft: 12,
+  },
+  accountStatusBadgeOk: {
+    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  accountStatusBadgeOkText: {
+    color: '#34D399',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  accountStatusBadgeWarn: {
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.35)',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+  },
+  accountStatusBadgeWarnText: {
+    color: '#FBBF24',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  accountDetectionNoteRow: {
+    paddingVertical: 10,
+  },
+  accountDetectionNoteText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  accountVariantSection: {
+    marginTop: 18,
+  },
+  accountVariantHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  accountVariantClearText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  accountVariantSub: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  accountVariantCard: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    overflow: 'hidden',
+  },
+  accountVariantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  accountVariantRowActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+  },
+  accountVariantTextCol: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  accountVariantTitleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  accountVariantName: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  accountVariantNameActive: {
+    color: '#34D399',
+  },
+  accountVariantBatteryBadge: {
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  accountVariantBatteryText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  accountVariantRoofSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+  },
+  accountVariantRadio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: '#334155',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountVariantRadioActive: {
+    backgroundColor: '#34D399',
+    borderColor: '#34D399',
   },
   accountPinSectionTitle: {
     color: '#94A3B8',
