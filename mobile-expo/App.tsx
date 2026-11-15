@@ -82,6 +82,8 @@ import {
   dedupD1Charges,
   ChargingSessionRecord,
   fetchChargingHistory,
+  syncChargingTelemetrySnapshot,
+  mapD1ChargeToRecord,
   clearChargingHistory,
   registerCarSession,
   deregisterCarSession,
@@ -3610,12 +3612,20 @@ export default function App() {
   const [d1ChargingSessions, setD1ChargingSessions] = useState<ChargingSessionRecord[]>([]);
   const [isChargingHistoryLoading, setIsChargingHistoryLoading] = useState<boolean>(false);
 
+  const applyD1ChargingSessions = (sessions: ChargingSessionRecord[]) => {
+    setD1ChargingSessions(sessions);
+    const mapped = deduplicateChargeList(sessions.map(mapD1ChargeToRecord));
+    setChargeLogs(mapped);
+    chargeLogsRef.current = mapped;
+    SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(mapped)).catch(() => {});
+  };
+
   const refreshD1ChargingHistory = async (refreshFromVehicle = false) => {
     setIsChargingHistoryLoading(true);
     try {
       const list = await fetchChargingHistory(refreshFromVehicle);
       if (Array.isArray(list)) {
-        setD1ChargingSessions(list);
+        applyD1ChargingSessions(list);
       }
     } catch (_) {}
     finally {
@@ -4827,13 +4837,20 @@ export default function App() {
           vin: discoveredVin,
           phone: usePhone,
           licenseToken: licenseTokenRef.current || undefined,
-        }).then((reg) => {
+        }).then(async (reg) => {
           if (reg.success) {
-            return persistD1SessionAuth({
+            await persistD1SessionAuth({
               vin: reg.vin || discoveredVin,
               apiToken: reg.apiToken,
               webhookKey: reg.webhookKey,
             });
+          }
+          const syncVin = reg.vin || discoveredVin;
+          if (snap?.status?.charge != null && (reg.success || apiToken || licenseTokenRef.current)) {
+            const syncRes = await syncChargingTelemetrySnapshot(snap.status, syncVin);
+            if (syncRes.success && Array.isArray(syncRes.sessions)) {
+              applyD1ChargingSessions(syncRes.sessions);
+            }
           }
         }).catch(() => {});
       }

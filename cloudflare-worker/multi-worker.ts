@@ -21,11 +21,18 @@ import legacy from './silent-webhook';
 import mgProxy from './worker';
 import {
   BMS_FULL_RANGE_KM,
+  PAUSED_SESSION_TIMEOUT_SECONDS,
   evaluateChargingStateDecision,
+  findMissedChargeBaseline,
   hasValidGpsCoords,
   parseTelemetryFromStatus,
   ParsedCarTelemetry,
   resolveChargingEndRangeKm,
+  resolveCompletedSessionTiming,
+  resolveNewSessionStartAnchor,
+  shouldBlockChargingSessionStart,
+  shouldDiscardZeroEnergySession,
+  shouldFinalizeOnMovement,
 } from './charging-sync';
 import {
   initAccessControlD1,
@@ -1246,6 +1253,31 @@ async function initD1(db: any) {
         AND start_odometer_km IS NOT NULL
     `).run();
   } catch (_) {}
+  // One-time cleanup: purge historical false 0 kWh driving-triggered charging entries from D1
+  try {
+    const cleanupDone: any = await db
+      .prepare("SELECT value FROM kv_store WHERE key = 'cleanup_zero_kwh_charges_v1'")
+      .first();
+    if (!cleanupDone?.value) {
+      await db.prepare(`
+        DELETE FROM charging_sessions
+        WHERE status = 'completed'
+          AND COALESCE(kwh_added, 0) <= 0
+          AND COALESCE(soc_added, 0) <= 0
+          AND (end_soc IS NULL OR end_soc <= start_soc)
+          AND (start_soc < 99 OR COALESCE(energy_used_kwh, 0) <= 0.1)
+      `).run();
+      await db.prepare(`
+        DELETE FROM charges
+        WHERE status = 'completed'
+          AND COALESCE(energy_added_kwh, 0) <= 0
+          AND (end_soc IS NULL OR end_soc <= start_soc)
+      `).run();
+      await db
+        .prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES ('cleanup_zero_kwh_charges_v1', '1')")
+        .run();
+    }
+  } catch (_) {}
   if (d1InitErrors.length === 0) {
     d1Initialized = true;
   }
@@ -1695,13 +1727,13 @@ async function d1GetActiveTrip(env: Env, vin?: string | null) {
     await initD1(env.DB);
     try {
       const row = await env.DB.prepare("SELECT * FROM trips WHERE status = 'ongoing' AND vin = ? ORDER BY start_timestamp DESC LIMIT 1").bind(v).first();
-      if (row) return row;
+      return row || null;
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
       const activeV = await env.TRIP_KV.get(`d1_fallback:active_trip:${v}`, 'json');
-      if (activeV && normVin(activeV.vin) === v) return activeV;
+      if (activeV && normVin(activeV.vin) === v && activeV.status === 'ongoing') return activeV;
       const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
       return trips.find((t: any) => t.status === 'ongoing' && normVin(t.vin) === v) || null;
     } catch (_) {}
@@ -2374,13 +2406,15 @@ async function d1GetActiveChargingSession(env: Env, vin?: string | null): Promis
       const row = await env.DB.prepare(
         "SELECT * FROM charging_sessions WHERE status IN ('ongoing', 'paused') AND vin = ? ORDER BY start_time DESC LIMIT 1"
       ).bind(v).first();
-      if (row) return row;
+      return row || null;
     } catch (_) {}
   }
   if (env.TRIP_KV) {
     try {
       const act = await env.TRIP_KV.get(`d1_fallback:active_charging_session:${v}`, 'json');
-      if (act && normVin(act.vin) === v) return act;
+      if (act && normVin(act.vin) === v && (act.status === 'ongoing' || act.status === 'paused')) {
+        return act;
+      }
     } catch (_) {}
   }
   return null;
@@ -2432,6 +2466,7 @@ async function d1GetLastCompletedTrip(env: Env, vin?: string | null): Promise<an
 async function d1GetRecentParkedTripsPerVin(env: Env, minEndTimestampSec: number): Promise<any[]> {
   if (env.DB) {
     await initD1(env.DB);
+    const recentOngoingFloor = Math.floor(Date.now() / 1000) - 12 * 3600;
     try {
       const res = await env.DB.prepare(`
         SELECT t.* FROM trips t
@@ -2442,7 +2477,14 @@ async function d1GetRecentParkedTripsPerVin(env: Env, minEndTimestampSec: number
           GROUP BY vin
         ) latest ON t.vin = latest.vin AND t.end_timestamp = latest.max_end
         WHERE t.status = 'completed'
-      `).bind(minEndTimestampSec).all();
+          AND NOT EXISTS (
+            SELECT 1 FROM trips active
+            WHERE active.vin = t.vin
+              AND active.status = 'ongoing'
+              AND active.start_timestamp >= latest.max_end - 60
+              AND active.start_timestamp >= ?
+          )
+      `).bind(minEndTimestampSec, recentOngoingFloor).all();
       return res.results || [];
     } catch (_) {}
   }
@@ -2483,12 +2525,17 @@ async function d1CreateChargingSession(env: Env, session: any) {
   }
   if (env.TRIP_KV) {
     try {
-      await env.TRIP_KV.put(`d1_fallback:active_charging_session:${v}`, JSON.stringify({ ...session, vin: v }));
+      const kvKey = `d1_fallback:active_charging_session:${v}`;
+      if (session.status === 'completed') {
+        await env.TRIP_KV.delete(kvKey);
+      } else {
+        await env.TRIP_KV.put(kvKey, JSON.stringify({ ...session, vin: v }));
+      }
     } catch (_) {}
   }
 }
 
-async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any) {
+async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any, vin?: string | null) {
   if (env.DB) {
     await initD1(env.DB);
     try {
@@ -2549,14 +2596,15 @@ async function d1UpdateChargingSession(env: Env, sessionId: string, updates: any
       console.warn('d1UpdateChargingSession error:', err);
     }
   }
-  if (env.TRIP_KV && (updates?.vin)) {
+  const kvVin = requireScopedVin(vin || updates?.vin);
+  if (env.TRIP_KV && kvVin) {
     try {
-      const kvKey = `d1_fallback:active_charging_session:${normVin(updates.vin)}`;
+      const kvKey = `d1_fallback:active_charging_session:${kvVin}`;
       if (updates.status === 'completed') {
         await env.TRIP_KV.delete(kvKey);
       } else {
         const active = (await env.TRIP_KV.get(kvKey, 'json')) || {};
-        await env.TRIP_KV.put(kvKey, JSON.stringify({ ...active, ...updates }));
+        await env.TRIP_KV.put(kvKey, JSON.stringify({ ...active, ...updates, vin: kvVin }));
       }
     } catch (_) {}
   }
@@ -2613,6 +2661,24 @@ async function d1ClearChargingHistory(env: Env, vin?: string | null) {
 }
 
 // ---------------------------------------------------------------- Core 10-Scenario State Machine
+async function syncChargingOnTripStop(
+  env: Env,
+  url: URL,
+  telem: ParsedCarTelemetry | null | undefined,
+  distanceKm: number,
+  tripVin?: string | null
+): Promise<void> {
+  if (!telem) return;
+  try {
+    const shouldSync =
+      telem.isCharging ||
+      (distanceKm >= 0.2 && Boolean(await d1GetActiveChargingSession(env, tripVin)));
+    if (shouldSync) {
+      await syncChargingSessionState(env, url, telem, 'trip_stop', tripVin);
+    }
+  } catch (_) {}
+}
+
 async function syncChargingSessionState(
   env: Env,
   url: URL,
@@ -2631,98 +2697,135 @@ async function syncChargingSessionState(
       return null;
     }
     if (!liveTelem.isCharging) {
-      // Missed Fast Charge Recovery: If the car is no longer actively charging when polled (or when the next trip starts),
-      // check if SOC jumped by >= 3% since the last completed trip at the same odometer without a recorded charging session.
-      const lastTrip = await d1GetLastCompletedTrip(env, v);
-      const lastSession = await d1GetLastCompletedChargingSession(env, v);
-      if (
-        lastTrip &&
-        lastTrip.end_timestamp &&
-        lastTrip.end_soc != null &&
-        Math.abs(liveTelem.odometer - (Number(lastTrip.end_odometer_km) || liveTelem.odometer)) < 0.5
-      ) {
-        const parkTime = Number(lastTrip.end_timestamp);
-        const parkSoc = Number(lastTrip.end_soc);
+      // Missed Fast Charge Recovery: check against whichever ended most recently at this parked
+      // odometer (last trip or prior completed session), including >= 2% top-ups to 99-100%.
+      const [lastTrip, lastSession] = await Promise.all([
+        d1GetLastCompletedTrip(env, v),
+        d1GetLastCompletedChargingSession(env, v),
+      ]);
+      const baseline = findMissedChargeBaseline({
+        liveOdometerKm: liveTelem.odometer,
+        liveSoc: liveTelem.soc,
+        nowSec,
+        lastTrip,
+        lastSession,
+      });
+      if (baseline) {
+        const parkTime = baseline.baselineTime;
+        const parkSoc = baseline.baselineSoc;
         const socGain = Math.max(0, liveTelem.soc - parkSoc);
-        const alreadyLogged =
-          lastSession && Number(lastSession.start_time) >= parkTime - 300;
-        if (socGain >= 3 && !alreadyLogged && nowSec > parkTime + 120) {
-          const bmsElapsed = Math.max(0, Math.min(86400, Number(liveTelem.chargeTimeElapsedSec) || 0));
-          const estStartTime = Math.min(nowSec - 60, parkTime + 120);
-          const estDurationSec =
-            bmsElapsed >= 120 && bmsElapsed <= nowSec - parkTime
-              ? bmsElapsed
-              : Math.max(60, nowSec - estStartTime);
-          const estEndTime = Math.min(nowSec, estStartTime + estDurationSec);
-          const kwhAdded = Number(((socGain / 100) * 38.0).toFixed(2));
-          const impliedKw = Number((kwhAdded / (estDurationSec / 3600)).toFixed(1));
-          const chargeType: 'AC' | 'DC' = impliedKw > 11 ? 'DC' : 'AC';
-          const effFactor = chargeType === 'DC' ? 0.94 : 0.88;
-          const grossEnergyUsed = Number((kwhAdded / effFactor).toFixed(2));
-          const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-          const peakKw = chargeType === 'DC' ? Math.max(30, impliedKw) : (impliedKw > 4.2 ? 7.4 : 3.3);
-          const recLat = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
-            ? liveTelem.lat
-            : (hasValidGpsCoords(lastTrip.end_lat, lastTrip.end_lng) ? lastTrip.end_lat : null);
-          const recLng = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
-            ? liveTelem.lng
-            : (hasValidGpsCoords(lastTrip.end_lat, lastTrip.end_lng) ? lastTrip.end_lng : null);
-          const recLocation = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
-            ? await resolveLocation(liveTelem.lat, liveTelem.lng)
-            : (lastTrip.end_location || (hasValidGpsCoords(recLat, recLng) ? await resolveLocation(recLat, recLng) : null));
-          const estStartRangeKm = Math.round((parkSoc / 100) * BMS_FULL_RANGE_KM);
-          const recEndRangeKm = resolveChargingEndRangeKm({
-            startRangeKm: estStartRangeKm,
-            liveRangeKm: liveTelem.rangeKm,
-            startSoc: parkSoc,
-            endSoc: liveTelem.soc,
-            isComplete: true,
-          });
-          const recoveredSession = {
-            id: 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-            vin: v || null,
-            status: 'completed',
-            start_time: estStartTime,
-            end_time: estEndTime,
-            start_soc: parkSoc,
-            end_soc: liveTelem.soc,
-            soc_added: socGain,
-            kwh_added: kwhAdded,
-            energy_used_kwh: grossEnergyUsed,
-            charging_loss_kwh: lossKwh,
-            charge_type: chargeType,
-            peak_power_kw: peakKw,
-            last_power_kw: 0,
-            start_odometer_km: liveTelem.odometer,
-            start_range_km: estStartRangeKm,
-            end_range_km: recEndRangeKm,
-            start_lat: recLat,
-            start_lng: recLng,
-            location: recLocation,
-            outage_count: 0,
-            paused_at: null,
-            active_duration_seconds: estDurationSec,
-            last_poll_time: nowSec,
-            date: istDateString(estStartTime),
-          };
-          await d1CreateChargingSession(env, recoveredSession);
-          const title = `🔋 Charging Completed (${liveTelem.soc}%)`;
-          const body = `Added +${socGain}% (+${kwhAdded} kWh ${chargeType}) • Used ${grossEnergyUsed} kWh • ${Math.round(estDurationSec / 60)}m`;
-          await dispatchTripNotification(url, title, body, 'battery,white_check_mark', env, v);
-          await d1InsertNotification(env, {
-            id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-            vin: v || null,
-            type: 'charge_end',
-            title,
-            message: body,
-            timestamp: nowSec,
-            date: istDateString(nowSec),
-            is_read: 0,
-            metadata: JSON.stringify(recoveredSession),
-          });
-          return recoveredSession;
+        const bmsElapsed = Math.max(0, Math.min(86400, Number(liveTelem.chargeTimeElapsedSec) || 0));
+        const bmsStart = Number(liveTelem.bmsStartTime) || 0;
+        const kwhAdded = Number(((socGain / 100) * 38.0).toFixed(2));
+        let estStartTime: number;
+        let estDurationSec: number;
+        let estEndTime: number;
+
+        if (bmsElapsed >= 120 && bmsElapsed <= nowSec - parkTime) {
+          estStartTime =
+            bmsStart > parkTime && bmsStart < nowSec
+              ? bmsStart
+              : Math.min(nowSec - 60, parkTime + 120);
+          estDurationSec = bmsElapsed;
+          estEndTime = Math.min(nowSec, estStartTime + estDurationSec);
+        } else if (baseline.fromPriorSession && nowSec - parkTime > 7200) {
+          // Overnight pause followed by a missed short top-up: estimate ~3.3 kW duration ending near now
+          const estAcSec = Math.max(300, Math.round((kwhAdded / (3.3 * 0.88)) * 3600));
+          estDurationSec = Math.min(nowSec - parkTime, estAcSec);
+          estEndTime = nowSec;
+          estStartTime = Math.max(parkTime + 60, nowSec - estDurationSec);
+        } else {
+          estStartTime = Math.min(nowSec - 60, parkTime + 120);
+          estDurationSec = Math.max(60, nowSec - estStartTime);
+          estEndTime = Math.min(nowSec, estStartTime + estDurationSec);
         }
+
+        const impliedKw = Number((kwhAdded / (estDurationSec / 3600)).toFixed(1));
+        const chargeType: 'AC' | 'DC' = impliedKw > 11 ? 'DC' : 'AC';
+        const effFactor = chargeType === 'DC' ? 0.94 : 0.88;
+        const grossEnergyUsed = Number((kwhAdded / effFactor).toFixed(2));
+        const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
+        const peakKw = chargeType === 'DC' ? Math.max(30, impliedKw) : (impliedKw > 4.2 ? 7.4 : 3.3);
+        const recLat = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+          ? liveTelem.lat
+          : baseline.lat;
+        const recLng = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+          ? liveTelem.lng
+          : baseline.lng;
+        const recLocation = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
+          ? await resolveLocation(liveTelem.lat, liveTelem.lng)
+          : (baseline.location || (hasValidGpsCoords(recLat, recLng) ? await resolveLocation(recLat, recLng) : null));
+        const estStartRangeKm = Math.round((parkSoc / 100) * BMS_FULL_RANGE_KM);
+        const recEndRangeKm = resolveChargingEndRangeKm({
+          startRangeKm: estStartRangeKm,
+          liveRangeKm: liveTelem.rangeKm,
+          startSoc: parkSoc,
+          endSoc: liveTelem.soc,
+          isComplete: true,
+        });
+        const recoveredSession = {
+          id: 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+          vin: v || null,
+          status: 'completed',
+          start_time: estStartTime,
+          end_time: estEndTime,
+          start_soc: parkSoc,
+          end_soc: liveTelem.soc,
+          soc_added: socGain,
+          kwh_added: kwhAdded,
+          energy_used_kwh: grossEnergyUsed,
+          charging_loss_kwh: lossKwh,
+          charge_type: chargeType,
+          peak_power_kw: peakKw,
+          last_power_kw: 0,
+          start_odometer_km: liveTelem.odometer,
+          start_range_km: estStartRangeKm,
+          end_range_km: recEndRangeKm,
+          start_lat: recLat,
+          start_lng: recLng,
+          location: recLocation,
+          outage_count: 0,
+          paused_at: null,
+          active_duration_seconds: estDurationSec,
+          last_poll_time: nowSec,
+          date: istDateString(estStartTime),
+        };
+        await d1CreateChargingSession(env, recoveredSession);
+        const title = `🔋 Charging Completed (${liveTelem.soc}%)`;
+        const body = `Added +${socGain}% (+${kwhAdded} kWh ${chargeType}) • Used ${grossEnergyUsed} kWh • ${Math.round(estDurationSec / 60)}m`;
+        await dispatchTripNotification(url, title, body, 'battery,white_check_mark', env, v);
+        await d1InsertNotification(env, {
+          id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+          vin: v || null,
+          type: 'charge_end',
+          title,
+          message: body,
+          timestamp: nowSec,
+          date: istDateString(nowSec),
+          is_read: 0,
+          metadata: JSON.stringify(recoveredSession),
+        });
+        return recoveredSession;
       }
+      return null;
+    }
+
+    const activeTrip =
+      triggerSource === 'cron_idle'
+        ? await d1GetActiveTrip(env, v).catch(() => null)
+        : null;
+    const hasFreshOngoingTrip = Boolean(
+      activeTrip &&
+      Number(activeTrip.start_timestamp) > 0 &&
+      nowSec - Number(activeTrip.start_timestamp) < 12 * 3600
+    );
+    if (
+      shouldBlockChargingSessionStart({
+        triggerSource,
+        liveTelem,
+        hasOngoingTrip: hasFreshOngoingTrip,
+      })
+    ) {
       return null;
     }
 
@@ -2731,7 +2834,7 @@ async function syncChargingSessionState(
     if (
       lastSession &&
       lastSession.end_time &&
-      (nowSec - Number(lastSession.end_time) < 21600) &&
+      (nowSec - Number(lastSession.end_time) < PAUSED_SESSION_TIMEOUT_SECONDS) &&
       (Math.abs(liveTelem.odometer - Number(lastSession.start_odometer_km)) < 0.2)
     ) {
       const resumedEndRange = resolveChargingEndRangeKm({
@@ -2744,6 +2847,7 @@ async function syncChargingSessionState(
       const updates: any = {
         status: 'ongoing',
         end_time: null,
+        outage_count: (Number(lastSession.outage_count) || 0) + 1,
         last_power_kw: liveTelem.powerKw,
         peak_power_kw: Math.max(Number(lastSession.peak_power_kw) || 0, liveTelem.powerKw),
         end_range_km: resumedEndRange ?? undefined,
@@ -2754,34 +2858,26 @@ async function syncChargingSessionState(
         updates.start_lng = liveTelem.lng;
         updates.location = await resolveLocation(liveTelem.lat, liveTelem.lng);
       }
-      await d1UpdateChargingSession(env, lastSession.id, updates);
+      await d1UpdateChargingSession(env, lastSession.id, updates, v);
       return { ...lastSession, ...updates };
     }
 
     // SCENARIO 1 & 2: Start brand new charging session
     // Backdate start_time and initialize active_duration_seconds from the vehicle BMS elapsed time
-    // (charge_time_elapsed_s / start_time) when discovered by the 30-min idle cron poll!
+    // (charge_time_elapsed_s / start_time) when discovered by the idle cron poll.
     const lastTrip = await d1GetLastCompletedTrip(env, v);
-    let startSoc = liveTelem.soc;
-    const isSameOdoAsLastTrip =
-      Boolean(
-        lastTrip &&
-        Math.abs(liveTelem.odometer - (Number(lastTrip.end_odometer_km) || liveTelem.odometer)) < 0.3
-      );
-    if (isSameOdoAsLastTrip && lastTrip.end_soc != null) {
-      startSoc = Math.min(liveTelem.soc, Number(lastTrip.end_soc));
-    }
+    const startAnchor = resolveNewSessionStartAnchor({
+      liveOdometerKm: liveTelem.odometer,
+      liveSoc: liveTelem.soc,
+      nowSec,
+      lastTrip,
+      lastSession,
+    });
+    let startSoc = startAnchor.startSoc;
 
     let bmsElapsedSec = Math.max(0, Math.min(86400, Number(liveTelem.chargeTimeElapsedSec) || 0));
-    if (
-      isSameOdoAsLastTrip &&
-      lastTrip.end_timestamp &&
-      Number(lastTrip.end_timestamp) <= nowSec
-    ) {
-      const maxSincePark = Math.max(0, nowSec - Number(lastTrip.end_timestamp));
-      if (bmsElapsedSec > maxSincePark) {
-        bmsElapsedSec = maxSincePark;
-      }
+    if (startAnchor.maxElapsedBoundSec != null && bmsElapsedSec > startAnchor.maxElapsedBoundSec) {
+      bmsElapsedSec = startAnchor.maxElapsedBoundSec;
     }
 
     const actualStartTime = nowSec - bmsElapsedSec;
@@ -2789,7 +2885,7 @@ async function syncChargingSessionState(
     const effFactor = chargeType === 'DC' ? 0.94 : 0.88;
     const prePollWallKwh = Number(((liveTelem.powerKw * (bmsElapsedSec / 3600))).toFixed(3));
 
-    // If startSoc wasn't anchored by a prior trip at the same odometer, back-calculate the SOC added during bmsElapsedSec
+    // If startSoc wasn't anchored by a prior trip/session at the same odometer, back-calculate the SOC added during bmsElapsedSec
     if (startSoc >= liveTelem.soc && bmsElapsedSec >= 120) {
       const estPackKwhAdded = prePollWallKwh * effFactor;
       const estSocAdded = Math.round((estPackKwhAdded / 38.0) * 100);
@@ -2805,13 +2901,13 @@ async function syncChargingSessionState(
 
     const startLat = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
       ? liveTelem.lat
-      : (isSameOdoAsLastTrip && hasValidGpsCoords(lastTrip?.end_lat, lastTrip?.end_lng) ? lastTrip.end_lat : null);
+      : startAnchor.fallbackLat;
     const startLng = hasValidGpsCoords(liveTelem.lat, liveTelem.lng)
       ? liveTelem.lng
-      : (isSameOdoAsLastTrip && hasValidGpsCoords(lastTrip?.end_lat, lastTrip?.end_lng) ? lastTrip.end_lng : null);
+      : startAnchor.fallbackLng;
     const chargeLocation = hasValidGpsCoords(startLat, startLng)
       ? await resolveLocation(startLat, startLng)
-      : (isSameOdoAsLastTrip && lastTrip?.end_location ? lastTrip.end_location : null);
+      : startAnchor.fallbackLocation;
 
     const newSession = {
       id: 'chg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -2876,27 +2972,31 @@ async function syncChargingSessionState(
   // SCENARIO 9: Cabin Pre-Cooling (preserve peak SoC)
   const currentSoc = Math.max(liveTelem.soc, Number(activeSession.end_soc) || startSoc);
 
-  // SCENARIO 5: Car drove away (live.odo > start_odo) OR CarPlay trip started OR test_end
-  if (odoDiff >= 0.2 || triggerSource === 'trip_start' || triggerSource === 'test_end') {
-    const wallDurationSec = Math.max(0, nowSec - (Number(activeSession.start_time) || nowSec));
-    const activeSec = Math.max(
-      Number(activeSession.active_duration_seconds) || 0,
-      (Number(activeSession.outage_count) || 0) === 0 ? wallDurationSec : 0
-    );
+  // SCENARIO 5: Car drove away (live.odo > start_odo) OR unplugged/moving trip_start OR test_end
+  if (shouldFinalizeOnMovement({ triggerSource, odoDiffKm: odoDiff, liveTelem })) {
+    const timing = resolveCompletedSessionTiming(activeSession, nowSec);
+    const activeSec = timing.activeDurationSec;
     const socAdded = Math.max(0, currentSoc - startSoc);
-
-    // SCENARIO 8: False Trigger / Brief Plug Test (< 1% added & active_duration < 180s)
-    if (triggerSource !== 'test_end' && socAdded <= 0 && activeSec < 180) {
-      await d1DeleteChargingSession(env, activeSession.id, v);
-      return null; // Suppress notification and remove noise row
-    }
 
     // Energy Calculation Engine
     const kwhAdded = Number(((socAdded / 100) * 38.0).toFixed(2));
     const effFactor = (activeSession.charge_type === 'DC' || Number(activeSession.peak_power_kw) > 11) ? 0.94 : 0.88;
     const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
     const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-    const durationMin = Math.round(activeSec / 60);
+    const durationMin = timing.durationMin;
+
+    // SCENARIO 8: False Trigger / Brief Plug Test (0% SoC gained with < 5 min or <= 0.1 kWh drawn)
+    if (
+      shouldDiscardZeroEnergySession({
+        triggerSource,
+        socAdded,
+        activeDurationSec: activeSec,
+        energyUsedKwh: grossEnergyUsed,
+      })
+    ) {
+      await d1DeleteChargingSession(env, activeSession.id, v);
+      return null; // Suppress notification and remove noise row
+    }
 
     const completedEndRangeKm = resolveChargingEndRangeKm({
       startRangeKm: activeSession.start_range_km,
@@ -2909,7 +3009,7 @@ async function syncChargingSessionState(
 
     const completedUpdates = {
       status: 'completed',
-      end_time: nowSec,
+      end_time: timing.endTimeSec,
       end_soc: currentSoc,
       soc_added: socAdded,
       kwh_added: kwhAdded,
@@ -2922,7 +3022,7 @@ async function syncChargingSessionState(
       active_duration_seconds: activeSec,
       last_poll_time: nowSec,
     };
-    await d1UpdateChargingSession(env, activeSession.id, completedUpdates);
+    await d1UpdateChargingSession(env, activeSession.id, completedUpdates, sessionVin);
 
     // NOTIFICATIONS ENGINE: Charging Completed
     const title = `🔋 Charging Completed (${currentSoc}%)`;
@@ -2952,18 +3052,15 @@ async function syncChargingSessionState(
 
   // SCENARIO 6: Full Charge Auto-Shutoff (100% or >=99% & charger stopped)
   if (decision.action === 'complete_full') {
-    const wallDurationSec = Math.max(0, nowSec - (Number(activeSession.start_time) || nowSec));
-    const activeSec = Math.max(
-      Number(activeSession.active_duration_seconds) || 0,
-      (Number(activeSession.outage_count) || 0) === 0 ? wallDurationSec : 0
-    );
+    const timing = resolveCompletedSessionTiming(activeSession, nowSec);
+    const activeSec = timing.activeDurationSec;
     const endSoc = 100;
     const socAdded = Math.max(0, endSoc - startSoc);
     const kwhAdded = Number(((socAdded / 100) * 38.0).toFixed(2));
     const effFactor = (activeSession.charge_type === 'DC' || Number(activeSession.peak_power_kw) > 11) ? 0.94 : 0.88;
     const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
     const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-    const durationMin = Math.round(activeSec / 60);
+    const durationMin = timing.durationMin;
     const fullEndRangeKm = resolveChargingEndRangeKm({
       startRangeKm: activeSession.start_range_km,
       storedEndRangeKm: activeSession.end_range_km,
@@ -2975,7 +3072,7 @@ async function syncChargingSessionState(
 
     const completedUpdates: any = {
       status: 'completed',
-      end_time: nowSec,
+      end_time: timing.endTimeSec,
       end_soc: endSoc,
       soc_added: socAdded,
       kwh_added: kwhAdded,
@@ -2993,7 +3090,7 @@ async function syncChargingSessionState(
       completedUpdates.start_lng = liveTelem.lng;
       completedUpdates.location = await resolveLocation(liveTelem.lat, liveTelem.lng);
     }
-    await d1UpdateChargingSession(env, activeSession.id, completedUpdates);
+    await d1UpdateChargingSession(env, activeSession.id, completedUpdates, sessionVin);
 
     // NOTIFICATIONS ENGINE: Full Charge (100%)
     const title = `🔋 Charging Complete (100%)`;
@@ -3021,7 +3118,7 @@ async function syncChargingSessionState(
       end_soc: currentSoc,
       last_poll_time: Number(activeSession.last_poll_time) || nowSec,
     };
-    await d1UpdateChargingSession(env, activeSession.id, pendingUpdates);
+    await d1UpdateChargingSession(env, activeSession.id, pendingUpdates, sessionVin);
     return { ...activeSession, ...pendingUpdates };
   }
 
@@ -3035,7 +3132,7 @@ async function syncChargingSessionState(
       last_power_kw: 0,
       last_poll_time: nowSec,
     };
-    await d1UpdateChargingSession(env, activeSession.id, updates);
+    await d1UpdateChargingSession(env, activeSession.id, updates, sessionVin);
 
     const pauseTitle = '⚠️ Charging Paused (Grid Outage / Breaker Cut)';
     const pauseBody = `Grid power dropped at ${currentSoc}%. Waiting for power to restore...`;
@@ -3057,7 +3154,8 @@ async function syncChargingSessionState(
 
   if (decision.action === 'stay_paused') {
     const pausedSec = nowSec - (Number(activeSession.paused_at) || nowSec);
-    if (pausedSec > 28800) { // Paused > 8 hours -> finalize
+    if (pausedSec > PAUSED_SESSION_TIMEOUT_SECONDS) { // Paused > 6 hours -> finalize at paused_at
+      const timing = resolveCompletedSessionTiming(activeSession, nowSec);
       const socAdded = Math.max(0, currentSoc - startSoc);
       const kwhAdded = Number(((socAdded / 100) * 38.0).toFixed(2));
       const effFactor = (activeSession.charge_type === 'DC') ? 0.94 : 0.88;
@@ -3073,17 +3171,19 @@ async function syncChargingSessionState(
       });
       const updates = {
         status: 'completed',
-        end_time: activeSession.paused_at || nowSec,
+        end_time: timing.endTimeSec,
         end_soc: currentSoc,
         soc_added: socAdded,
         kwh_added: kwhAdded,
         energy_used_kwh: grossEnergyUsed,
         charging_loss_kwh: lossKwh,
+        last_power_kw: 0,
         end_range_km: pausedTimeoutEndRangeKm,
         pause_pending_at: null,
+        active_duration_seconds: timing.activeDurationSec,
         last_poll_time: nowSec,
       };
-      await d1UpdateChargingSession(env, activeSession.id, updates);
+      await d1UpdateChargingSession(env, activeSession.id, updates, sessionVin);
       return { ...activeSession, ...updates };
     }
     return activeSession;
@@ -3163,7 +3263,7 @@ async function syncChargingSessionState(
       updates.start_time = updatedStartTime;
       updates.date = updatedDate;
     }
-    await d1UpdateChargingSession(env, activeSession.id, updates);
+    await d1UpdateChargingSession(env, activeSession.id, updates, sessionVin);
 
     if (wasPaused) {
       const resumeTitle = `⚡ Charging Resumed (${chargeType})`;
@@ -3890,6 +3990,10 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
         '🧹 Cancelled recording to keep your driving history clean.',
       ].join('\n');
 
+      // Unlocking the car and plugging in without driving still fires stationary trip_stop:
+      // start/sync the charging session right away so it doesn't wait up to 30m for idle cron.
+      await syncChargingOnTripStop(env, url, telem, distanceKm, tripVin);
+
       await dispatchTripNotification(url, idleTitle, idleText, 'information_source', env, tripVin);
       await d1InsertNotification(env, {
         id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -3944,12 +4048,8 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
     await d1UpdateTrip(env, ongoingTrip.id, updates);
 
-    // SCENARIO 1: Immediate Plug-In After Trip
-    if (telem?.isCharging) {
-      try {
-        await syncChargingSessionState(env, url, telem, 'trip_stop', tripVin);
-      } catch (_) {}
-    }
+    // SCENARIO 1: Immediate Plug-In After Trip (or close any leftover open charge session after driving)
+    await syncChargingOnTripStop(env, url, telem, distanceKm, tripVin);
 
     const title = '✅ MG Windsor EV • Trip Completed';
     const notificationText = [
@@ -4161,16 +4261,13 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     if (auth instanceof Response) return auth;
     const isRefresh = url.searchParams.get('refresh') === 'true';
     if (isRefresh) {
-      const activeSession = await d1GetActiveChargingSession(env, auth.vin);
-      if (activeSession) {
-        try {
-          const mg = await getMgClientForVin(env, auth.vin);
-          if (mg) {
-            const telem = await fetchCarTelemetry(mg.client, auth.vin);
-            await syncChargingSessionState(env, url, telem, 'user_refresh', auth.vin);
-          }
-        } catch (_) {}
-      }
+      try {
+        const mg = await getMgClientForVin(env, auth.vin);
+        if (mg) {
+          const telem = await fetchCarTelemetry(mg.client, auth.vin);
+          await syncChargingSessionState(env, url, telem, 'user_refresh', auth.vin);
+        }
+      } catch (_) {}
     }
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
     const sessions = await d1GetChargingHistory(env, limit, auth.vin);
@@ -4192,6 +4289,25 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     if (auth instanceof Response) return auth;
     const active = await d1GetActiveChargingSession(env, auth.vin);
     return json({ success: true, activeSession: active });
+  }
+
+  // Sync a live vehicle status snapshot from the PWA directly into D1 charging state machine
+  // (avoids redundant MG TAP wakes while ensuring any charge shown in UI is persisted in D1)
+  if (path === '/api/charging/sync' && request.method === 'POST') {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    if (!body?.status || typeof body.status !== 'object') {
+      return json({ success: false, error: 'Missing telemetry status payload' }, 400);
+    }
+    try {
+      const telem = parseTelemetryFromStatus(body.status);
+      const session = await syncChargingSessionState(env, url, telem, 'app_snapshot', auth.vin);
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+      const sessions = await d1GetChargingHistory(env, limit, auth.vin);
+      return json({ success: true, session: session || null, sessions, charges: sessions });
+    } catch (e: any) {
+      return json({ success: false, error: e?.message || 'Charging sync failed' }, 500);
+    }
   }
 
   // TEST ENDPOINT: Start simulated charging session in D1
@@ -4771,8 +4887,8 @@ async function runCron(env: Env): Promise<void> {
       const hoursSincePark = minutesSincePark / 60;
       const lastSoc = Number(lastTrip.end_soc) || 100;
       const isPostParkFastWindow = minutesSincePark >= 0 && minutesSincePark <= 20 && min % 3 === 0;
-      const isHalfHourIdleCheck = min === 0 || min === 30;
-      if (hoursSincePark < 14 && lastSoc < 100 && (isPostParkFastWindow || isHalfHourIdleCheck)) {
+      const isIdleQuarterHourCheck = min % 15 === 0;
+      if (hoursSincePark < 14 && lastSoc < 100 && (isPostParkFastWindow || isIdleQuarterHourCheck)) {
         try {
           const mg = await getMgClientForVin(env, tVin);
           if (!mg) continue;

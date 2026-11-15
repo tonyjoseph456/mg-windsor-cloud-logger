@@ -1300,6 +1300,31 @@ export async function fetchChargingHistory(refresh = false, vinOverride?: string
   return [];
 }
 
+export async function syncChargingTelemetrySnapshot(
+  status: any,
+  vinOverride?: string
+): Promise<{ success: boolean; session: ChargingSessionRecord | null; sessions: ChargingSessionRecord[] }> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/charging/sync${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      method: 'POST',
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }),
+      body: JSON.stringify({ vin: vin || undefined, status }),
+    });
+    if (!res.ok) return { success: false, session: null, sessions: [] };
+    const data = await res.json();
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    return {
+      success: Boolean(data.success),
+      session: data.session ?? null,
+      sessions,
+    };
+  } catch (err) {
+    console.warn('syncChargingTelemetrySnapshot error:', err);
+    return { success: false, session: null, sessions: [] };
+  }
+}
+
 export async function clearChargingHistory(vinOverride?: string): Promise<boolean> {
   try {
     const vin = (vinOverride || _activeD1Vin || '').trim();
