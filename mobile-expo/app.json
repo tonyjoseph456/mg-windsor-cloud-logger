@@ -4,7 +4,7 @@
                  "slug":  "mg-ismart-india",
                  "scheme":  "mgismart",
                  "version":  "1.0.0",
-                 "orientation":  "portrait",
+                 "orientation":  "default",
                  "userInterfaceStyle":  "dark",
                  "ios":  {
                              "supportsTablet":  true,
@@ -14,7 +14,13 @@
                                  "expo-status-bar",
                                  "expo-secure-store",
                                  "expo-sharing",
-                                 "expo-web-browser"
+                                 "expo-web-browser",
+                                 [
+                                     "expo-screen-orientation",
+                                     {
+                                         "initialOrientation":  "PORTRAIT_UP"
+                                     }
+                                 ]
                              ],
                  "extra":  {
                                "eas":  {

@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Dimensions,
   Easing,
   Image,
   Linking,
@@ -18,6 +17,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   Vibration,
   View,
 } from 'react-native';
@@ -120,6 +120,12 @@ import {
   resolveWindsorSunroofState,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
+import { SwipeableDeleteRow } from './src/SwipeableDeleteRow';
+import {
+  applyScreenOrientationPolicy,
+  detectRuntimeIsTablet,
+  resolveDesiredOrientationPolicy,
+} from './src/screenOrientation';
 import {
   LiquidGlassTabBar,
   LiquidGlassTabItem,
@@ -143,6 +149,7 @@ const GOOGLE_SYNC_KEY = 'mg_ismart_google_sync_v1';
 const BACKEND_KEY = 'mg_ismart_backend_v1';
 const GOOGLE_CLIENT_ID_KEY = 'mg_ismart_google_client_id_v1';
 const FONT_SCALE_KEY = 'mg_ismart_font_scale_v1';
+const TABLET_LANDSCAPE_KEY = 'mg_ismart_tablet_landscape_v1';
 const GOOGLE_MAPS_API_KEY_KEY = 'mg_ismart_google_maps_api_key_v1';
 const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const VARIANT_OVERRIDE_KEY = 'mg_windsor_selected_variant_v1';
@@ -2359,6 +2366,7 @@ function normalizeVehicleDisplayName(rawName?: string | null, series?: string | 
 }
 
 export default function App() {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [booting, setBooting] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [tab, setTab] = useState<TabId>('home');
@@ -2366,12 +2374,37 @@ export default function App() {
   // Global Font Scale for Small Mobile Screens & Accessibility (80% - 125%)
   const [fontScale, setFontScale] = useState<number>(() => getGlobalFontScale());
 
+  // Orientation lock policy: phones always portrait; tablets default portrait with Profile toggle
+  const isTabletDevice = useMemo(
+    () => detectRuntimeIsTablet(windowWidth, windowHeight),
+    [windowWidth, windowHeight]
+  );
+  const [tabletLandscapeEnabled, setTabletLandscapeEnabled] = useState<boolean>(false);
+  const [openTripSwipeId, setOpenTripSwipeId] = useState<string | null>(null);
+  const [openChargeSwipeId, setOpenChargeSwipeId] = useState<string | null>(null);
+  const recentlyDeletedIdsRef = useRef<Set<string>>(new Set());
+  const handleDeleteTripRef = useRef<(trip: TripRecord) => void>(() => {});
+
   const handleFontScaleChange = useCallback(async (val: number) => {
     const clamped = Math.max(0.75, Math.min(1.3, Number(val.toFixed(2))));
     setFontScale(clamped);
     setGlobalFontScale(clamped);
     await SecureStore.setItemAsync(FONT_SCALE_KEY, String(clamped));
   }, []);
+
+  const handleToggleTabletLandscape = useCallback(async () => {
+    const next = !tabletLandscapeEnabled;
+    setTabletLandscapeEnabled(next);
+    await SecureStore.setItemAsync(TABLET_LANDSCAPE_KEY, next ? 'true' : 'false').catch(() => {});
+  }, [tabletLandscapeEnabled]);
+
+  useEffect(() => {
+    const policy = resolveDesiredOrientationPolicy({
+      isTablet: isTabletDevice,
+      tabletLandscapeEnabled,
+    });
+    applyScreenOrientationPolicy(policy);
+  }, [isTabletDevice, tabletLandscapeEnabled]);
 
   // Credentials & Session
   const [phone, setPhone] = useState('');
@@ -3490,19 +3523,31 @@ export default function App() {
         setTempMapsApiKey(k);
       }
     }).catch(() => {});
+
+    SecureStore.getItemAsync(TABLET_LANDSCAPE_KEY).then((v) => {
+      if (v === 'true') {
+        setTabletLandscapeEnabled(true);
+      }
+    }).catch(() => {});
   }, []);
 
   // Trip History Date Filter & Calendar State
   const [selectedTripDate, setSelectedTripDate] = useState<string>(() => getTodayDateKey());
   const [showTripCalendar, setShowTripCalendar] = useState<boolean>(false);
 
-  // Revert trip and charging filters to current day whenever user changes tabs
+  // Revert trip and charging filters and close swiped rows whenever user changes tabs
   useEffect(() => {
     setSelectedTripDate(getTodayDateKey());
     setShowTripCalendar(false);
     setSelectedChargeDate(getTodayDateKey());
     setShowChargeCalendar(false);
+    setOpenTripSwipeId(null);
+    setOpenChargeSwipeId(null);
   }, [tab]);
+
+  useEffect(() => {
+    setOpenTripSwipeId(null);
+  }, [selectedTripDate]);
 
   const todayKey = getTodayDateKey();
 
@@ -3519,13 +3564,14 @@ export default function App() {
   useEffect(() => {
     if ((tab === 'trips' || tab === 'account') && (apiToken || licenseToken)) {
       fetchD1TripDates().then((dates) => {
-        if (dates && dates.length > 0) setD1TripDates(dates);
+        if (Array.isArray(dates)) setD1TripDates(dates);
       }).catch(() => {});
 
       // Fetch all trips from Cloudflare D1
       fetchD1Trips('all').then((d1Trips) => {
         if (Array.isArray(d1Trips)) {
-          const merged = mergeD1TripsWithLocalRichData(d1Trips, tripsRef.current, snapshot?.status);
+          const filtered = d1Trips.filter((t) => !recentlyDeletedIdsRef.current.has(`trip:${t.id}`));
+          const merged = mergeD1TripsWithLocalRichData(filtered, tripsRef.current, snapshot?.status);
           setTrips(merged);
           tripsRef.current = merged;
           SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
@@ -3618,11 +3664,16 @@ export default function App() {
         }
 
         children.push(
-          <TouchableOpacity
-            key={trip.id}
-            style={[styles.tripsListItem, isLast && { borderBottomWidth: 0 }]}
+          <SwipeableDeleteRow
+            key={String(trip.id)}
+            rowId={String(trip.id)}
+            openRowId={openTripSwipeId}
+            onOpenRowChange={setOpenTripSwipeId}
+            rowStyle={[styles.tripsListItem, isLast && { borderBottomWidth: 0 }]}
             onPress={() => handleOpenTripDetail(trip)}
-            activeOpacity={0.7}
+            onPressDelete={() => handleDeleteTripRef.current(trip)}
+            accessibilityLabel={`Trip ${startPlace} to ${endPlace}`}
+            deleteAccessibilityLabel="Delete trip"
           >
             <View style={styles.tripsListItemMain}>
               {/* Line 1: Start Location (Left, aligned with text below) and Distance (Right) */}
@@ -3661,13 +3712,13 @@ export default function App() {
                 {subStr}
               </Text>
             </View>
-          </TouchableOpacity>
+          </SwipeableDeleteRow>
         );
       });
     });
 
     return { scrollChildren: children, stickyIndices: indices };
-  }, [groupedTrips, handleOpenTripDetail]);
+  }, [groupedTrips, handleOpenTripDetail, openTripSwipeId]);
 
   const [chargeLogs, setChargeLogs] = useState<ChargeLogRecord[]>([]);
   const [activeCharge, setActiveCharge] = useState<ChargeLogRecord | null>(null);
@@ -3676,19 +3727,24 @@ export default function App() {
   const [selectedChargeDate, setSelectedChargeDate] = useState<string>(() => getTodayDateKey());
   const [showChargeCalendar, setShowChargeCalendar] = useState<boolean>(false);
 
+  useEffect(() => {
+    setOpenChargeSwipeId(null);
+  }, [selectedChargeDate]);
+
   // Query D1 charges and distinct dates whenever Charge or Account tab is opened
   useEffect(() => {
     if ((tab === 'charge' || tab === 'account') && (apiToken || licenseToken)) {
       fetchD1ChargeDates().then((dates) => {
-        if (dates && dates.length > 0) setD1ChargeDates(dates);
+        if (Array.isArray(dates)) setD1ChargeDates(dates);
       }).catch(() => {});
 
       // Fetch all charges from Cloudflare D1
       fetchD1Charges('all').then((d1Charges) => {
         if (Array.isArray(d1Charges)) {
-          setChargeLogs(d1Charges);
-          chargeLogsRef.current = d1Charges;
-          SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(d1Charges)).catch(() => {});
+          const filtered = d1Charges.filter((c) => !recentlyDeletedIdsRef.current.has(`charge:${c.id}`));
+          setChargeLogs(filtered);
+          chargeLogsRef.current = filtered;
+          SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(filtered)).catch(() => {});
         }
       }).catch(() => {});
     }
@@ -4080,8 +4136,9 @@ export default function App() {
         await refreshD1ChargingHistory(true).catch(() => {});
         const d1Charges = await fetchD1Charges('all').catch(() => null);
         if (Array.isArray(d1Charges)) {
-          setChargeLogs(d1Charges);
-          chargeLogsRef.current = d1Charges;
+          const filtered = d1Charges.filter((c) => !recentlyDeletedIdsRef.current.has(`charge:${c.id}`));
+          setChargeLogs(filtered);
+          chargeLogsRef.current = filtered;
         }
       } finally {
         liveSyncInFlight = false;
@@ -4670,14 +4727,14 @@ export default function App() {
       setIsD1Syncing(true);
       const refreshed = await fetchD1Trips('all');
       if (Array.isArray(refreshed)) {
-        const merged = mergeD1TripsWithLocalRichData(refreshed, tripsRef.current, snapshot?.status);
+        const filtered = refreshed.filter((t) => !recentlyDeletedIdsRef.current.has(`trip:${t.id}`));
+        const merged = mergeD1TripsWithLocalRichData(filtered, tripsRef.current, snapshot?.status);
         setTrips(merged);
         tripsRef.current = merged;
         SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(merged)).catch(() => {});
       }
       const dates = await fetchD1TripDates();
-      if (dates && dates.length > 0) setD1TripDates(dates);
-      else if (Array.isArray(refreshed) && refreshed.length === 0) setD1TripDates([]);
+      if (Array.isArray(dates)) setD1TripDates(dates);
       Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded ${refreshed?.length || 0} trip(s) from Cloudflare D1.`);
       showBanner('ok', `Refreshed ${refreshed?.length || 0} trip(s) from D1`);
     } catch (e: any) {
@@ -4792,13 +4849,13 @@ export default function App() {
       await refreshD1ChargingHistory(true);
       const refreshed = await fetchD1Charges('all');
       if (Array.isArray(refreshed)) {
-        setChargeLogs(refreshed);
-        chargeLogsRef.current = refreshed;
-        SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(refreshed)).catch(() => {});
+        const filtered = refreshed.filter((c) => !recentlyDeletedIdsRef.current.has(`charge:${c.id}`));
+        setChargeLogs(filtered);
+        chargeLogsRef.current = filtered;
+        SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(filtered)).catch(() => {});
       }
       const dates = await fetchD1ChargeDates();
-      if (dates && dates.length > 0) setD1ChargeDates(dates);
-      else if (Array.isArray(refreshed) && refreshed.length === 0) setD1ChargeDates([]);
+      if (Array.isArray(dates)) setD1ChargeDates(dates);
       Alert.alert('Cloudflare D1 Refreshed 🔄', `Loaded fresh charging history from Cloudflare D1.`);
       showBanner('ok', `Refreshed D1 charging history`);
     } catch (e: any) {
@@ -4885,6 +4942,144 @@ export default function App() {
 
   const handleSyncAllToBackendSheets = handleSyncTripsToD1;
   const handleCleanAndDeduplicateSheets = handleCleanAndDeduplicateD1;
+
+  const confirmAndDeleteHistoryEntry = useCallback(
+    (params: {
+      title: string;
+      message: string;
+      deleteRemote: (activeVin?: string) => Promise<boolean>;
+      applyLocalDelete: (activeVin?: string) => Promise<void>;
+      closeDetailIfOpen: () => void;
+      successBannerText: string;
+    }) => {
+      Alert.alert(params.title, params.message, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            const activeVin = (vin || snapshot?.vehicle?.vin || '').trim() || undefined;
+            const hasCloudAuth = Boolean(
+              apiTokenRef.current || licenseTokenRef.current || apiToken || licenseToken
+            );
+            try {
+              setIsD1Syncing(true);
+              if (hasCloudAuth) {
+                const ok = await params.deleteRemote(activeVin);
+                if (!ok) {
+                  Alert.alert(
+                    'Delete Failed',
+                    'Could not delete this entry from Cloudflare D1. Please check your connection and try again.'
+                  );
+                  showBanner('err', 'Failed to delete entry from Cloudflare D1');
+                  return;
+                }
+              }
+              await params.applyLocalDelete(activeVin);
+              params.closeDetailIfOpen();
+              showBanner('ok', params.successBannerText);
+            } catch (err: any) {
+              Alert.alert('Delete Error', err?.message || 'Failed to delete entry');
+              showBanner('err', `Delete error: ${err?.message || err}`);
+            } finally {
+              setIsD1Syncing(false);
+            }
+          },
+        },
+      ]);
+    },
+    [apiToken, licenseToken, snapshot?.vehicle?.vin, vin]
+  );
+
+  const handleDeleteTripEntry = useCallback(
+    (trip: TripRecord, options?: { closeDetail?: boolean }) => {
+      const deletedId = String(trip.id);
+      const startPlace = cleanLocationSummary(trip.startLocation) || 'Starting point';
+      const endPlace = cleanLocationSummary(trip.endLocation) || 'Destination point';
+      confirmAndDeleteHistoryEntry({
+        title: 'Delete Trip?',
+        message: `Permanently delete this trip (${startPlace} → ${endPlace}, ${formatTripDistDisplay(trip)}) from Cloudflare D1 and Analytics?`,
+        deleteRemote: (activeVin) => deleteD1Trip(deletedId, activeVin),
+        applyLocalDelete: async (activeVin) => {
+          recentlyDeletedIdsRef.current.add(`trip:${deletedId}`);
+          const nextTrips = tripsRef.current.filter((t) => String(t.id) !== deletedId);
+          setTrips(nextTrips);
+          tripsRef.current = nextTrips;
+          await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips)).catch(() => {});
+
+          if (String(activeTripRef.current?.id || '') === deletedId) {
+            setActiveTrip(null);
+            activeTripRef.current = null;
+            setLiveTripTracking(false);
+            await SecureStore.deleteItemAsync(ACTIVE_TRIP_KEY).catch(() => {});
+          }
+
+          setOpenTripSwipeId((prev) => (prev === deletedId ? null : prev));
+          const remainingDates = new Set(nextTrips.map((t) => getTripDateKey(t)).filter(Boolean));
+          setD1TripDates((prev) => prev.filter((d) => remainingDates.has(d)));
+
+          if (apiTokenRef.current || licenseTokenRef.current || apiToken || licenseToken) {
+            const dates = await fetchD1TripDates(activeVin).catch(() => null);
+            if (Array.isArray(dates)) setD1TripDates(dates);
+          }
+        },
+        closeDetailIfOpen: () => {
+          if (options?.closeDetail || String(selectedTripForDetail?.id || '') === deletedId) {
+            handleCloseTripDetail();
+          }
+        },
+        successBannerText: 'Trip deleted from D1 & Analytics',
+      });
+    },
+    [apiToken, confirmAndDeleteHistoryEntry, licenseToken, selectedTripForDetail]
+  );
+
+  const handleDeleteChargeEntry = useCallback(
+    (session: ChargeLogRecord, options?: { closeDetail?: boolean }) => {
+      const deletedId = String(session.id);
+      const addedKwh =
+        Number(session.energyAddedToPackKwh) > 0
+          ? Number(session.energyAddedToPackKwh)
+          : Math.max(0, ((Number(session.endSoc) - Number(session.startSoc)) / 100) * 38.0);
+      confirmAndDeleteHistoryEntry({
+        title: 'Delete Charging Session?',
+        message: `Permanently delete this charging session (+${addedKwh.toFixed(1)} kWh, ${Math.round(Number(session.startSoc) || 0)}% → ${Math.round(Number(session.endSoc) || 0)}%) from Cloudflare D1 and Analytics?`,
+        deleteRemote: (activeVin) => deleteD1Charge(deletedId, activeVin),
+        applyLocalDelete: async (activeVin) => {
+          recentlyDeletedIdsRef.current.add(`charge:${deletedId}`);
+          const nextLogs = chargeLogsRef.current.filter((c) => String(c.id) !== deletedId);
+          setChargeLogs(nextLogs);
+          chargeLogsRef.current = nextLogs;
+          setD1ChargingSessions((prev) => prev.filter((s) => String(s.id) !== deletedId));
+          await SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(nextLogs)).catch(() => {});
+
+          if (String(activeChargeRef.current?.id || '') === deletedId) {
+            setActiveCharge(null);
+            activeChargeRef.current = null;
+            await SecureStore.deleteItemAsync(ACTIVE_CHARGE_KEY).catch(() => {});
+          }
+
+          setOpenChargeSwipeId((prev) => (prev === deletedId ? null : prev));
+          const remainingDates = new Set(nextLogs.map((c) => getChargeDateKey(c)).filter(Boolean));
+          setD1ChargeDates((prev) => prev.filter((d) => remainingDates.has(d)));
+
+          if (apiTokenRef.current || licenseTokenRef.current || apiToken || licenseToken) {
+            const dates = await fetchD1ChargeDates(activeVin).catch(() => null);
+            if (Array.isArray(dates)) setD1ChargeDates(dates);
+          }
+        },
+        closeDetailIfOpen: () => {
+          if (options?.closeDetail || String(selectedChargeForDetail?.id || '') === deletedId) {
+            handleCloseChargeDetail();
+          }
+        },
+        successBannerText: 'Charging session deleted from D1 & Analytics',
+      });
+    },
+    [apiToken, confirmAndDeleteHistoryEntry, licenseToken, selectedChargeForDetail]
+  );
+
+  handleDeleteTripRef.current = (t) => handleDeleteTripEntry(t);
 
   const refreshVehicleTelemetry = async (
     existingClient?: MgIndiaClient,
@@ -5981,7 +6176,7 @@ export default function App() {
   isBackGestureBlockedRef.current = booting || !isAuthenticated || isModalOverlayOpen;
 
   const swipeScreenWidthRef = useRef<number>(500);
-  swipeScreenWidthRef.current = Math.max(Dimensions.get('window').width || 420, 500);
+  swipeScreenWidthRef.current = Math.max(windowWidth || 420, 500);
 
   const dismissingBackKeyRef = useRef<string | null>(null);
   useEffect(() => {
@@ -6628,7 +6823,7 @@ export default function App() {
   };
 
   // Screen Width for Horizontal Tween Animations between Home, Tyres, Location, and Remote Commands
-  const screenWidth = Math.max(Dimensions.get('window').width || 420, 500);
+  const screenWidth = Math.max(windowWidth || 420, 500);
 
   const activeSlideAnim = Animated.add(
     tyreSlideAnim,
@@ -8238,12 +8433,16 @@ export default function App() {
 
                   return (
                     <View key={session.id || idx}>
-                      <TouchableOpacity
-                        style={styles.chargeSessionItemRow}
+                      <SwipeableDeleteRow
+                        rowId={String(session.id || idx)}
+                        openRowId={openChargeSwipeId}
+                        onOpenRowChange={setOpenChargeSwipeId}
+                        rowStyle={styles.chargeSessionItemRow}
                         onPress={() => handleOpenChargeDetail(session)}
-                        activeOpacity={0.7}
+                        onPressDelete={() => handleDeleteChargeEntry(session)}
+                        disabled={isD1Syncing}
                         accessibilityLabel={`Charging session ${timeRangeStr}`}
-                        accessibilityRole="button"
+                        deleteAccessibilityLabel="Delete charging session"
                       >
                         <View style={{ flex: 1, paddingRight: 12 }}>
                           <Text style={styles.chargeSessionTimeText}>{timeRangeStr}</Text>
@@ -8263,7 +8462,7 @@ export default function App() {
                           </Text>
                         </View>
                         <Text style={styles.chargeSessionChevron}>›</Text>
-                      </TouchableOpacity>
+                      </SwipeableDeleteRow>
                       {idx < displayedCharges.length - 1 && (
                         <View style={styles.chargeSessionItemDivider} />
                       )}
@@ -8330,11 +8529,12 @@ export default function App() {
         {tab === 'account' && (() => {
           const now = new Date();
           const currentMonthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-          const currentMonthTrips = trips.filter(
-            (t) => getTripDateKey(t).startsWith('2026-11') || getTripDateKey(t).startsWith(currentMonthPrefix)
+          const currentMonthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+          const currentMonthTrips = trips.filter((t) =>
+            getTripDateKey(t).startsWith(currentMonthPrefix)
           );
-          const currentMonthCharges = chargeLogs.filter(
-            (c) => getChargeDateKey(c).startsWith('2026-11') || getChargeDateKey(c).startsWith(currentMonthPrefix)
+          const currentMonthCharges = chargeLogs.filter((c) =>
+            getChargeDateKey(c).startsWith(currentMonthPrefix)
           );
 
           const calcDrivenKm = Number(
@@ -8364,10 +8564,10 @@ export default function App() {
               .toFixed(1)
           );
 
-          const monthDrivenKm = calcDrivenKm > 0 ? calcDrivenKm : 478.3;
-          const monthUsedKwh = calcUsedKwh > 0 ? calcUsedKwh : 63.84;
-          const monthChargedKwh = calcChargedKwh > 0 ? calcChargedKwh : 55.1;
-          const monthChargeCount = currentMonthCharges.length > 0 ? currentMonthCharges.length : 3;
+          const monthDrivenKm = calcDrivenKm;
+          const monthUsedKwh = calcUsedKwh;
+          const monthChargedKwh = calcChargedKwh;
+          const monthChargeCount = currentMonthCharges.length;
           const vinLast8 = displayVin ? displayVin.slice(-8) : '8H014788';
 
           return (
@@ -8456,7 +8656,7 @@ export default function App() {
                 onPress={handleOpenAnalyticsScreen}
                 activeOpacity={0.7}
               >
-                <Text style={styles.profileMonthlyHeader}>November 2026</Text>
+                <Text style={styles.profileMonthlyHeader}>{currentMonthLabel}</Text>
                 <View style={styles.profileMonthlyCols}>
                   <View style={styles.profileMonthlyCol}>
                     <Text style={styles.profileMonthlyLabel}>Driven</Text>
@@ -8559,6 +8759,44 @@ export default function App() {
                     </Text>
                     <Text style={styles.profileRowChevron}>›</Text>
                   </TouchableOpacity>
+
+                  {isTabletDevice && (
+                    <>
+                      <View style={styles.profileRowDivider} />
+                      <TouchableOpacity
+                        style={styles.profileRowItem}
+                        onPress={handleToggleTabletLandscape}
+                        activeOpacity={0.7}
+                        accessibilityRole="switch"
+                        accessibilityLabel="Landscape orientation on tablet"
+                        accessibilityState={{ checked: tabletLandscapeEnabled }}
+                      >
+                        <View style={styles.profileRowIconWrap}>
+                          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2}>
+                            <Rect x="2" y="5" width="20" height="14" rx="2" />
+                            <Line x1="6" y1="9" x2="6" y2="15" strokeLinecap="round" />
+                          </Svg>
+                        </View>
+                        <View style={{ flex: 1, marginRight: 10 }}>
+                          <Text style={styles.profileRowTitleFlexReset}>Landscape orientation</Text>
+                          <Text style={styles.profileRowSub}>Allow rotation on tablet (portrait default)</Text>
+                        </View>
+                        <View
+                          style={[
+                            styles.chargeToggleTrack,
+                            tabletLandscapeEnabled && styles.chargeToggleTrackActive,
+                          ]}
+                        >
+                          <View
+                            style={[
+                              styles.chargeToggleThumb,
+                              tabletLandscapeEnabled && styles.chargeToggleThumbActive,
+                            ]}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    </>
+                  )}
                 </View>
               </View>
 
@@ -11123,6 +11361,36 @@ export default function App() {
                     </View>
                   );
                 })()}
+
+                {/* Bottom Share as Image & Delete Trip Buttons */}
+                <TouchableOpacity
+                  style={[styles.chargeDetailShareButton, { marginTop: 18, marginBottom: 12 }]}
+                  onPress={() => handleShareTripRecord(selectedTripForDetail)}
+                  activeOpacity={0.8}
+                >
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#0A0E17" strokeWidth={2.4}>
+                    <Path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                    <Polyline points="16 6 12 2 8 6" />
+                    <Line x1="12" y1="2" x2="12" y2="15" />
+                  </Svg>
+                  <Text style={styles.chargeDetailShareButtonText}>Share as image</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.detailDeleteButton, isD1Syncing && { opacity: 0.6 }]}
+                  onPress={() => handleDeleteTripEntry(selectedTripForDetail, { closeDetail: true })}
+                  activeOpacity={0.8}
+                  disabled={isD1Syncing}
+                  accessibilityRole="button"
+                  accessibilityLabel="Delete trip"
+                >
+                  <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth={2.2}>
+                    <Path d="M3 6h18" strokeLinecap="round" strokeLinejoin="round" />
+                    <Path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
+                    <Path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                  <Text style={styles.detailDeleteButtonText}>Delete trip</Text>
+                </TouchableOpacity>
               </ScrollView>
             </SafeAreaView>
           </Animated.View>
@@ -11480,7 +11748,7 @@ export default function App() {
 
                 {/* 7. Bottom Share Button */}
                 <TouchableOpacity
-                  style={styles.chargeDetailShareButton}
+                  style={[styles.chargeDetailShareButton, { marginBottom: 12 }]}
                   onPress={() => handleShareChargeRecord(session)}
                   activeOpacity={0.8}
                 >
@@ -11490,6 +11758,23 @@ export default function App() {
                     <Line x1="12" y1="2" x2="12" y2="15" />
                   </Svg>
                   <Text style={styles.chargeDetailShareButtonText}>Share as image</Text>
+                </TouchableOpacity>
+
+                {/* 8. Bottom Delete Button */}
+                <TouchableOpacity
+                  style={[styles.detailDeleteButton, isD1Syncing && { opacity: 0.6 }]}
+                  onPress={() => handleDeleteChargeEntry(session, { closeDetail: true })}
+                  activeOpacity={0.8}
+                  disabled={isD1Syncing}
+                  accessibilityRole="button"
+                  accessibilityLabel="Delete charging session"
+                >
+                  <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke="#F87171" strokeWidth={2.2}>
+                    <Path d="M3 6h18" strokeLinecap="round" strokeLinejoin="round" />
+                    <Path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" strokeLinecap="round" strokeLinejoin="round" />
+                    <Path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" strokeLinecap="round" strokeLinejoin="round" />
+                  </Svg>
+                  <Text style={styles.detailDeleteButtonText}>Delete session</Text>
                 </TouchableOpacity>
               </ScrollView>
             </SafeAreaView>
@@ -12174,21 +12459,19 @@ export default function App() {
             : `${selectedMonthObj?.full || ''} ${analyticsYear}`;
 
         const rawStats = computeStatsForFilter(selectedPrefix);
-        const isCurrentNov2026 = analyticsYear === 2026 && analyticsMonth === '11';
 
-        // Display numbers with fallback to mockup values when no live records exist yet for Nov 2026
-        const displayTripCount = rawStats.tripCount > 0 ? rawStats.tripCount : (isCurrentNov2026 ? 33 : rawStats.tripCount);
-        const displayDrivenKm = rawStats.totalDistKm > 0 ? rawStats.totalDistKm : (isCurrentNov2026 ? 478.3 : 0);
-        const displayDriveEnergy = rawStats.totalDriveEnergyKwh > 0 ? rawStats.totalDriveEnergyKwh : (isCurrentNov2026 ? 63.84 : 0);
-        const displayDriveDur = rawStats.totalDriveDurSec > 0 ? formatDurationHm(rawStats.totalDriveDurSec) : (isCurrentNov2026 ? '16h 34m' : '0m');
-        const displayEff = rawStats.avgDriveEff > 0 ? rawStats.avgDriveEff : (displayDrivenKm > 0 && displayDriveEnergy > 0 ? Number((displayDrivenKm / displayDriveEnergy).toFixed(2)) : (isCurrentNov2026 ? 7.49 : 0));
+        const displayTripCount = rawStats.tripCount;
+        const displayDrivenKm = rawStats.totalDistKm;
+        const displayDriveEnergy = rawStats.totalDriveEnergyKwh;
+        const displayDriveDur = formatDurationHm(rawStats.totalDriveDurSec);
+        const displayEff = rawStats.avgDriveEff;
 
-        const displayChargeCount = rawStats.totalChargeCount > 0 ? rawStats.totalChargeCount : (isCurrentNov2026 ? 3 : rawStats.totalChargeCount);
-        const displayPackKwh = rawStats.totalPackKwh > 0 ? rawStats.totalPackKwh : (isCurrentNov2026 ? 55.1 : 0);
-        const displayWallKwh = rawStats.totalWallKwh > 0 ? rawStats.totalWallKwh : (isCurrentNov2026 ? 60.28 : 0);
-        const displayLossKwh = rawStats.totalLossKwh > 0 ? rawStats.totalLossKwh : (isCurrentNov2026 ? 5.18 : 0);
+        const displayChargeCount = rawStats.totalChargeCount;
+        const displayPackKwh = rawStats.totalPackKwh;
+        const displayWallKwh = rawStats.totalWallKwh;
+        const displayLossKwh = rawStats.totalLossKwh;
 
-        const displayCount33 = rawStats.count33 > 0 ? rawStats.count33 : (isCurrentNov2026 ? 3 : 0);
+        const displayCount33 = rawStats.count33;
         const displayCount74 = rawStats.count74;
         const displayCountDc = rawStats.countDc;
 
@@ -12299,9 +12582,7 @@ export default function App() {
                 <View style={styles.analyticsMonthGrid}>
                   {monthlyBreakdown.map((m) => {
                     const isSel = analyticsMonth === m.num;
-                    const mDist = m.data.totalDistKm > 0
-                      ? m.data.totalDistKm
-                      : (analyticsYear === 2026 && m.num === '11' ? 478 : 0);
+                    const mDist = m.data.totalDistKm;
 
                     return (
                       <TouchableOpacity
@@ -20446,6 +20727,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
+  detailDeleteButton: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.42)',
+    borderRadius: 28,
+    height: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 24,
+    gap: 8,
+  },
+  detailDeleteButtonText: {
+    color: '#F87171',
+    fontSize: 15,
+    fontWeight: '700',
+  },
 
   // Profile Screen Styles (Matching Mockup)
   profileMainContainer: {
@@ -20600,6 +20898,17 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 15,
     fontWeight: '600',
+  },
+  profileRowTitleFlexReset: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  profileRowSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '400',
+    marginTop: 2,
   },
   profileRowVal: {
     color: '#94A3B8',

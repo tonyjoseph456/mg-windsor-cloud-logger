@@ -12922,8 +12922,12 @@ async function d1DeleteTrip(env, tripId, vin) {
       const trips = await env.TRIP_KV.get("d1_fallback:trips", "json") || [];
       await env.TRIP_KV.put(
         "d1_fallback:trips",
-        JSON.stringify(trips.filter((t) => !(t.id === tripId && normVin(t.vin) === v)))
+        JSON.stringify(trips.filter((t) => !(String(t.id) === String(tripId) && normVin(t.vin) === v)))
       );
+      const activeTrip = await env.TRIP_KV.get(`d1_fallback:active_trip:${v}`, "json");
+      if (activeTrip && String(activeTrip.id) === String(tripId)) {
+        await env.TRIP_KV.delete(`d1_fallback:active_trip:${v}`);
+      }
     } catch (_) {
     }
   }
@@ -13327,8 +13331,16 @@ async function d1DeleteCharge(env, chargeId, vin) {
       const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
       await env.TRIP_KV.put(
         "d1_fallback:charges",
-        JSON.stringify(charges.filter((c) => !(c.id === chargeId && normVin(c.vin) === v)))
+        JSON.stringify(charges.filter((c) => !(String(c.id) === String(chargeId) && normVin(c.vin) === v)))
       );
+      const activeCharge = await env.TRIP_KV.get(`d1_fallback:active_charge:${v}`, "json");
+      if (activeCharge && String(activeCharge.id) === String(chargeId)) {
+        await env.TRIP_KV.delete(`d1_fallback:active_charge:${v}`);
+      }
+      const activeSession = await env.TRIP_KV.get(`d1_fallback:active_charging_session:${v}`, "json");
+      if (activeSession && String(activeSession.id) === String(chargeId)) {
+        await env.TRIP_KV.delete(`d1_fallback:active_charging_session:${v}`);
+      }
     } catch (_) {
     }
   }
