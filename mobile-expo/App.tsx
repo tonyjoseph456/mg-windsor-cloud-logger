@@ -8580,7 +8580,7 @@ export default function App() {
                       </Svg>
                     </View>
                     <Text style={styles.profileRowTitle}>Siri, widgets &amp; CarPlay</Text>
-                    <Text style={styles.profileRowVal}>6 links</Text>
+                    <Text style={styles.profileRowVal}>7 links</Text>
                     <Text style={styles.profileRowChevron}>›</Text>
                   </TouchableOpacity>
                 </View>
@@ -13379,7 +13379,7 @@ export default function App() {
 
         const buildCommandUrl = (action: string, keyVal: string) =>
           `${BACKEND_URL}/api/command/${action}?key=${encodeURIComponent(keyVal)}&pin=${encodeURIComponent(cleanPin)}`;
-        const buildTripUrl = (action: 'start' | 'stop', keyVal: string) =>
+        const buildTripUrl = (action: 'start' | 'stop' | 'toggle', keyVal: string) =>
           `${BACKEND_URL}/api/trip/${action}?key=${encodeURIComponent(keyVal)}&format=text`;
 
         const renderSnowflakeIcon = (color: string) => (
@@ -13457,6 +13457,22 @@ export default function App() {
             requiresPin: false,
             buildUrl: (k: string) => buildTripUrl('stop', k),
             icon: <View style={[styles.autoDot, { backgroundColor: '#F87171' }]} />,
+          },
+          {
+            key: 'nfc-trip-toggle',
+            title: 'NFC sticker tap',
+            subtitle: 'Starts trip if idle, stops if ongoing',
+            label: 'NFC Trip Toggle',
+            requiresPin: false,
+            buildUrl: (k: string) => buildTripUrl('toggle', k),
+            icon: (
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#38BDF8" strokeWidth={2}>
+                <Path d="M6 8.32a7.43 7.43 0 0 1 0 7.36" strokeLinecap="round" />
+                <Path d="M9.46 6.21a11.76 11.76 0 0 1 0 11.58" strokeLinecap="round" />
+                <Path d="M12.91 4.1a15.91 15.91 0 0 1 .01 15.8" strokeLinecap="round" />
+                <Path d="M16.37 2a20.16 20.16 0 0 1 0 20" strokeLinecap="round" />
+              </Svg>
+            ),
           },
         ];
 
@@ -13555,6 +13571,21 @@ export default function App() {
           </>,
         ];
 
+        const nfcSteps: React.ReactNode[] = [
+          <>
+            <Text style={styles.gmkStepBoldWhite}>Automation › + › NFC</Text> › scan your car NFC sticker.
+          </>,
+          <>
+            Choose <Text style={styles.gmkStepBoldWhite}>Run Immediately</Text> and turn{' '}
+            <Text style={styles.gmkStepBoldWhite}>Notify When Run</Text> off.
+          </>,
+          <>
+            Add <Text style={styles.gmkStepBoldWhite}>Get Contents of URL</Text>, paste the{' '}
+            <Text style={styles.gmkStepBoldWhite}>NFC sticker tap</Text> link, then add{' '}
+            <Text style={styles.gmkStepBoldWhite}>Show Notification</Text> with &ldquo;Contents of URL&rdquo;.
+          </>,
+        ];
+
         const renderStepList = (steps: React.ReactNode[]) =>
           steps.map((stepContent, idx) => (
             <View
@@ -13605,7 +13636,7 @@ export default function App() {
                     </Text>
                   </View>
                   <View style={[styles.accountConnectedBadge, { marginTop: 8 }]}>
-                    <Text style={styles.accountConnectedBadgeText}>6 links</Text>
+                    <Text style={styles.accountConnectedBadgeText}>7 links</Text>
                   </View>
                 </View>
 
@@ -13638,8 +13669,8 @@ export default function App() {
                 )}
                 <View style={styles.autoCard}>{renderLinkRows(carCommandLinks)}</View>
 
-                {/* 5. CARPLAY TRIPS */}
-                <Text style={styles.autoSectionHeader}>CARPLAY TRIPS</Text>
+                {/* 5. CARPLAY & NFC TRIPS */}
+                <Text style={styles.autoSectionHeader}>CARPLAY &amp; NFC TRIPS</Text>
                 <View style={styles.autoCard}>{renderLinkRows(carplayTripLinks)}</View>
 
                 {/* 5b. Private Links Security Card */}
@@ -13671,6 +13702,9 @@ export default function App() {
 
                   <Text style={[styles.autoSetupSubheader, { marginTop: 14 }]}>CARPLAY TRIPS</Text>
                   {renderStepList(carplaySteps)}
+
+                  <Text style={[styles.autoSetupSubheader, { marginTop: 14 }]}>NFC STICKER TOGGLE</Text>
+                  {renderStepList(nfcSteps)}
                 </View>
               </ScrollView>
             </SafeAreaView>

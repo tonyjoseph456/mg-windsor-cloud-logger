@@ -57,6 +57,11 @@ import {
   revokeTokensForVin,
   verifyCarRegistrationCaller,
 } from './multi-user-auth';
+import {
+  TripToggleLockState,
+  buildTripToggleCooldownPayload,
+  evaluateTripToggleDecision,
+} from './trip-toggle';
 
 interface Env {
   DB?: any;
@@ -3396,6 +3401,371 @@ async function handleCarCommand(
   }
 }
 
+/** Formats trip webhook responses as JSON when `?format=json`, or UTF-8 plain text for iOS Shortcuts. */
+function formatTripWebhookResponse(
+  url: URL,
+  jsonPayload: Record<string, any>,
+  textBody: string,
+  status = 200
+): Response {
+  if (url.searchParams.get('format') === 'json') {
+    return json(jsonPayload, status);
+  }
+  return new Response(textBody, {
+    status,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
+  });
+}
+
+async function resolveTripWebhookCaller(
+  env: Env,
+  request: Request,
+  url: URL,
+  body: any
+): Promise<{ ok: true; vin: string } | { ok: false; response: Response }> {
+  const { store, db, isMaster } = workerAuthDeps(env);
+  const hookAuth = await resolveWebhookAuth(store, db, isMaster, request, url, body);
+  if (!hookAuth.ok) {
+    return {
+      ok: false,
+      response: formatTripWebhookResponse(
+        url,
+        { success: false, error: hookAuth.error },
+        `❌ ${hookAuth.error}`,
+        hookAuth.status
+      ),
+    };
+  }
+  return { ok: true, vin: hookAuth.vin };
+}
+
+/** Shared trip-start execution for `/api/trip/start` and idle `/api/trip/toggle`. */
+async function executeStartTripWebhook(
+  env: Env,
+  url: URL,
+  activeVin: string,
+  mg: { client: any; vin: string } | null,
+  options?: { message?: string; extraJson?: Record<string, any> }
+): Promise<{ ok: boolean; response: Response }> {
+  if (!mg) {
+    const msg = 'MG vehicle session not found. Please open the MG Windsor app once to connect.';
+    return {
+      ok: false,
+      response: formatTripWebhookResponse(url, { success: false, error: msg }, `❌ ${msg}`, 401),
+    };
+  }
+  try {
+    const telem = await fetchCarTelemetry(mg.client, activeVin);
+    const startLocation = await resolveLocation(telem.lat, telem.lng);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tripId = 'trip_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+    const dateStr = istDateString(nowSec);
+
+    const trip = {
+      id: tripId,
+      vin: activeVin,
+      date: dateStr,
+      start_timestamp: nowSec,
+      start_odometer_km: telem.odometer,
+      start_soc: telem.soc,
+      start_location: startLocation,
+      start_lat: telem.lat,
+      start_lng: telem.lng,
+      start_cabin_temp_c: telem.cabinTempC,
+      start_exterior_temp_c: telem.exteriorTempC,
+      max_speed_kmh: null,
+      status: 'ongoing',
+    };
+
+    await d1InsertTrip(env, trip);
+
+    // SCENARIO 5: Car unplugged early and driven away -> finalize any ongoing/paused charging session
+    try {
+      await syncChargingSessionState(env, url, telem, 'trip_start', activeVin);
+    } catch (_) {}
+
+    const title = '🚗 MG Windsor EV • Trip Started';
+    const notificationText = [
+      '🟢 Trip recording actively started in Cloudflare D1.',
+      `⏱️ Started: ${formatClockTime(nowSec)}`,
+      `🔋 Battery: ${trip.start_soc}% SOC`,
+      `🛣️ Start Odometer: ${trip.start_odometer_km.toLocaleString()} km`,
+      trip.start_location && trip.start_location !== 'Unknown Location' ? `📍 Start: ${trip.start_location}` : null,
+    ].filter(Boolean).join('\n');
+
+    await dispatchTripNotification(url, title, notificationText, 'car,electric_plug', env, activeVin);
+    await d1InsertNotification(env, {
+      id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: activeVin,
+      type: 'trip_start',
+      title,
+      message: notificationText,
+      timestamp: nowSec,
+      date: dateStr,
+      metadata: JSON.stringify(trip),
+    });
+
+    return {
+      ok: true,
+      response: formatTripWebhookResponse(
+        url,
+        {
+          success: true,
+          ...(options?.extraJson || {}),
+          title,
+          notification: notificationText,
+          message: options?.message || 'Trip started successfully via CarPlay connection',
+          trip,
+        },
+        `${title}\n\n${notificationText}`
+      ),
+    };
+  } catch (err) {
+    const errMsg = `❌ Trip Start Error: ${(err as Error).message}`;
+    if (url.searchParams.get('format') === 'json') {
+      return { ok: false, response: json({ success: false, error: (err as Error).message }, 500) };
+    }
+    return {
+      ok: false,
+      response: new Response(errMsg, { headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS }, status: 200 }),
+    };
+  }
+}
+
+/** Shared trip-stop execution for `/api/trip/stop` and active `/api/trip/toggle`. */
+async function executeStopTripWebhook(
+  env: Env,
+  url: URL,
+  activeVin: string,
+  mg: { client: any; vin: string } | null,
+  ongoingTrip: any,
+  extraJson?: Record<string, any>
+): Promise<{ ok: boolean; cancelled: boolean; response: Response }> {
+  const tripVin = normVin(ongoingTrip.vin) || activeVin;
+  let telem: any = null;
+  if (mg) {
+    telem = await fetchCarTelemetry(mg.client, tripVin).catch(() => null);
+  }
+
+  const startOdo = Number(ongoingTrip.start_odometer_km) || 0;
+  let finalOdo = Number(telem?.odometer) || startOdo;
+  const startTimestamp = Number(ongoingTrip.start_timestamp) || Math.floor(Date.now() / 1000);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const durationSec = Math.max(0, nowSec - startTimestamp);
+
+  // Buffer check: If finalOdo < startOdo or (finalOdo == startOdo and duration > 60s), wait 2.5s and re-fetch once
+  if (mg && (finalOdo < startOdo || (finalOdo === startOdo && durationSec > 60))) {
+    await new Promise((r) => setTimeout(r, 2500));
+    try {
+      const refreshed = await fetchCarTelemetry(mg.client, tripVin || mg.vin);
+      if (refreshed && Number(refreshed.odometer) >= startOdo) {
+        telem = refreshed;
+        finalOdo = Number(refreshed.odometer);
+      }
+    } catch (_) {}
+  }
+
+  if (finalOdo < startOdo) {
+    finalOdo = startOdo;
+  }
+
+  const distanceKm = Math.max(0, Number((finalOdo - startOdo).toFixed(1)));
+  const endSoc = telem?.soc != null ? Number(telem.soc) : (Number(ongoingTrip.start_soc) || 0);
+  const startSoc = Number(ongoingTrip.start_soc) || endSoc;
+  const socDiff = Math.max(0, startSoc - endSoc);
+
+  // Stationary / Idle Session Detection:
+  if (distanceKm < 0.2) {
+    if (env.DB) {
+      await env.DB.prepare('DELETE FROM trips WHERE id = ? AND vin = ?').bind(ongoingTrip.id, tripVin).run().catch(() => {});
+    }
+    if (env.TRIP_KV) {
+      if (tripVin) await env.TRIP_KV.delete(`d1_fallback:active_trip:${tripVin}`).catch(() => {});
+      try {
+        const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
+        await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips.filter((t: any) => !(t.id === ongoingTrip.id && normVin(t.vin) === tripVin))));
+      } catch (_) {}
+    }
+
+    const idleTitle = 'ℹ️ MG Windsor EV • Stationary (No Trip Logged)';
+    const idleText = [
+      'ℹ️ Vehicle was stationary (0.0 km driven).',
+      `⏱️ Time in car: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} → ${formatClockTime(nowSec)})`,
+      `🔋 Battery: ${startSoc}% → ${endSoc}%`,
+      '🧹 Cancelled recording to keep your driving history clean.',
+    ].join('\n');
+
+    // Unlocking the car and plugging in without driving still fires stationary trip_stop:
+    // start/sync the charging session right away so it doesn't wait up to 30m for idle cron.
+    await syncChargingOnTripStop(env, url, telem, distanceKm, tripVin);
+
+    await dispatchTripNotification(url, idleTitle, idleText, 'information_source', env, tripVin);
+    await d1InsertNotification(env, {
+      id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      vin: tripVin,
+      type: 'trip_idle',
+      title: idleTitle,
+      message: idleText,
+      timestamp: nowSec,
+      date: istDateString(nowSec),
+      metadata: JSON.stringify({ durationSec, startSoc, endSoc }),
+    });
+
+    return {
+      ok: true,
+      cancelled: true,
+      response: formatTripWebhookResponse(
+        url,
+        {
+          success: true,
+          ...(extraJson || {}),
+          title: idleTitle,
+          notification: idleText,
+          message: 'No drive detected (0.0 km). Stationary session cancelled.',
+          cancelled: true,
+        },
+        `${idleTitle}\n\n${idleText}`
+      ),
+    };
+  }
+
+  const energyUsedKwh = Number(((socDiff / 100) * 38).toFixed(2));
+  const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
+  const endLocation = await resolveLocation(telem?.lat, telem?.lng);
+  const avgSpeedKmh = durationSec > 0 && distanceKm > 0 ? Number(((distanceKm / (durationSec / 3600))).toFixed(1)) : 0;
+
+  const updates = {
+    end_timestamp: nowSec,
+    duration_seconds: durationSec,
+    distance_km: distanceKm,
+    end_odometer_km: finalOdo,
+    end_soc: endSoc,
+    energy_used_kwh: energyUsedKwh,
+    efficiency_km_per_kwh: efficiencyKmPerKwh,
+    end_location: endLocation,
+    avg_speed_kmh: avgSpeedKmh,
+    max_speed_kmh: null,
+    end_lat: telem?.lat ?? null,
+    end_lng: telem?.lng ?? null,
+    end_cabin_temp_c: telem?.cabinTempC ?? ongoingTrip.start_cabin_temp_c ?? null,
+    end_exterior_temp_c: telem?.exteriorTempC ?? ongoingTrip.start_exterior_temp_c ?? null,
+    status: 'completed',
+  };
+
+  await d1UpdateTrip(env, ongoingTrip.id, updates);
+
+  // SCENARIO 1: Immediate Plug-In After Trip (or close any leftover open charge session after driving)
+  await syncChargingOnTripStop(env, url, telem, distanceKm, tripVin);
+
+  const title = '✅ MG Windsor EV • Trip Completed';
+  const notificationText = [
+    '✅ Trip completed & safely logged in Cloudflare D1.',
+    '',
+    `🛣️ Distance Travelled: ${distanceKm} km`,
+    `⏱️ Time Taken: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} → ${formatClockTime(nowSec)})`,
+    `🔋 Battery: ${startSoc}% → ${endSoc}% (${socDiff > 0 ? `-${socDiff}%` : '0%'})`,
+    `⚡ Energy Used: ${energyUsedKwh} kWh`,
+    `🌱 Efficiency: ${efficiencyKmPerKwh > 0 ? `${efficiencyKmPerKwh} km/kWh` : 'N/A'}`,
+    ongoingTrip.start_location && endLocation && ongoingTrip.start_location !== 'Unknown Location'
+      ? `📍 Route: ${ongoingTrip.start_location} → ${endLocation}`
+      : (endLocation && endLocation !== 'Unknown Location' ? `📍 Destination: ${endLocation}` : null),
+    `🏁 Final Odometer: ${finalOdo.toLocaleString()} km`,
+  ].filter(Boolean).join('\n');
+
+  await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy', env, tripVin);
+  await d1InsertNotification(env, {
+    id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    vin: tripVin,
+    type: 'trip_stop',
+    title,
+    message: notificationText,
+    timestamp: nowSec,
+    date: istDateString(nowSec),
+    metadata: JSON.stringify(updates),
+  });
+
+  return {
+    ok: true,
+    cancelled: false,
+    response: formatTripWebhookResponse(
+      url,
+      {
+        success: true,
+        ...(extraJson || {}),
+        title,
+        notification: notificationText,
+        message: 'Trip stopped and logged into Cloudflare D1',
+        trip: { ...ongoingTrip, ...updates },
+      },
+      `${title}\n\n${notificationText}`
+    ),
+  };
+}
+
+/**
+ * Single-URL NFC / fallback toggle handler: starts a trip when idle, stops the ongoing trip when active,
+ * and applies an in-flight/recent-tap cooldown guard so iOS NFC double-reads do not reverse an action.
+ */
+async function handleTripToggleWebhook(
+  env: Env,
+  request: Request,
+  url: URL,
+  body: any
+): Promise<Response> {
+  const caller = await resolveTripWebhookCaller(env, request, url, body);
+  if (!caller.ok) return caller.response;
+
+  const activeVin = caller.vin;
+  const toggleKey = `trip_toggle_state:${activeVin}`;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const [ongoingTrip, lockState] = await Promise.all([
+    d1GetActiveTrip(env, activeVin),
+    d1KvGet(env, toggleKey) as Promise<TripToggleLockState | null>,
+  ]);
+
+  const decision = evaluateTripToggleDecision({ ongoingTrip, lockState, nowSec });
+  if (decision.action === 'cooldown') {
+    const payload = buildTripToggleCooldownPayload(decision);
+    return formatTripWebhookResponse(
+      url,
+      payload,
+      `${payload.title}\n\n${payload.message}`,
+      200
+    );
+  }
+
+  await d1KvPut(env, toggleKey, {
+    status: 'in_flight',
+    ts: nowSec,
+    action: decision.action,
+  } satisfies TripToggleLockState);
+
+  try {
+    const mg = await getMgClientForVin(env, activeVin);
+    const result =
+      decision.action === 'stop'
+        ? await executeStopTripWebhook(env, url, activeVin, mg, decision.trip, { action: 'stop' })
+        : await executeStartTripWebhook(env, url, activeVin, mg, {
+            message: 'Trip started successfully via single-tap toggle',
+            extraJson: { action: 'start' },
+          });
+
+    if (result.ok) {
+      await d1KvPut(env, toggleKey, {
+        status: 'done',
+        ts: Math.floor(Date.now() / 1000),
+        action: decision.action,
+      } satisfies TripToggleLockState);
+    } else {
+      await d1KvDelete(env, toggleKey);
+    }
+    return result.response;
+  } catch (err) {
+    await d1KvDelete(env, toggleKey).catch(() => {});
+    throw err;
+  }
+}
+
 async function handleApi(env: Env, request: Request, url: URL): Promise<Response> {
   const path = url.pathname;
   if (path === '/api/push-vapid-public-key') {
@@ -3813,282 +4183,37 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   // ----------------------------------------------------------- Apple CarPlay & Cloudflare D1 Endpoints
   // Start Trip (CarPlay Connects trigger - authenticated via opaque ?key=wk_...)
   if (path === '/api/trip/start') {
-    const { store, db, isMaster } = workerAuthDeps(env);
-    const hookAuth = await resolveWebhookAuth(store, db, isMaster, request, url, body);
-    if (!hookAuth.ok) {
-      if (url.searchParams.get('format') === 'json') {
-        return json({ success: false, error: hookAuth.error }, hookAuth.status);
-      }
-      return new Response(`❌ ${hookAuth.error}`, {
-        status: hookAuth.status,
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
-      });
-    }
-
-    const activeVin = hookAuth.vin;
-    const mg = await getMgClientForVin(env, activeVin);
-    if (!mg) {
-      const msg = 'MG vehicle session not found. Please open the MG Windsor app once to connect.';
-      if (url.searchParams.get('format') === 'json') {
-        return json({ success: false, error: msg }, 401);
-      }
-      return new Response(`❌ ${msg}`, {
-        status: 401,
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
-      });
-    }
-    try {
-      const telem = await fetchCarTelemetry(mg.client, activeVin);
-      const startLocation = await resolveLocation(telem.lat, telem.lng);
-      const nowSec = Math.floor(Date.now() / 1000);
-      const tripId = 'trip_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
-      const dateStr = istDateString(nowSec);
-
-      const trip = {
-        id: tripId,
-        vin: activeVin,
-        date: dateStr,
-        start_timestamp: nowSec,
-        start_odometer_km: telem.odometer,
-        start_soc: telem.soc,
-        start_location: startLocation,
-        start_lat: telem.lat,
-        start_lng: telem.lng,
-        start_cabin_temp_c: telem.cabinTempC,
-        start_exterior_temp_c: telem.exteriorTempC,
-        max_speed_kmh: null,
-        status: 'ongoing',
-      };
-
-      await d1InsertTrip(env, trip);
-
-      // SCENARIO 5: Car unplugged early and driven away -> finalize any ongoing/paused charging session
-      try {
-        await syncChargingSessionState(env, url, telem, 'trip_start', activeVin);
-      } catch (_) {}
-
-      const title = '🚗 MG Windsor EV • Trip Started';
-      const notificationText = [
-        '🟢 Trip recording actively started in Cloudflare D1.',
-        `⏱️ Started: ${formatClockTime(nowSec)}`,
-        `🔋 Battery: ${trip.start_soc}% SOC`,
-        `🛣️ Start Odometer: ${trip.start_odometer_km.toLocaleString()} km`,
-        trip.start_location && trip.start_location !== 'Unknown Location' ? `📍 Start: ${trip.start_location}` : null,
-      ].filter(Boolean).join('\n');
-
-      await dispatchTripNotification(url, title, notificationText, 'car,electric_plug', env, activeVin);
-      await d1InsertNotification(env, {
-        id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        vin: activeVin,
-        type: 'trip_start',
-        title,
-        message: notificationText,
-        timestamp: nowSec,
-        date: dateStr,
-        metadata: JSON.stringify(trip),
-      });
-
-      if (url.searchParams.get('format') === 'json') {
-        return json({
-          success: true,
-          title,
-          notification: notificationText,
-          message: 'Trip started successfully via CarPlay connection',
-          trip,
-        });
-      }
-
-      return new Response(`${title}\n\n${notificationText}`, {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
-      });
-    } catch (err) {
-      const errMsg = `❌ Trip Start Error: ${(err as Error).message}`;
-      if (url.searchParams.get('format') === 'json') {
-        return json({ success: false, error: (err as Error).message }, 500);
-      }
-      return new Response(errMsg, { headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS }, status: 200 });
-    }
+    const caller = await resolveTripWebhookCaller(env, request, url, body);
+    if (!caller.ok) return caller.response;
+    const mg = await getMgClientForVin(env, caller.vin);
+    const result = await executeStartTripWebhook(env, url, caller.vin, mg);
+    return result.response;
   }
 
   // Stop Trip (CarPlay Disconnects trigger - authenticated via opaque ?key=wk_...)
   if (path === '/api/trip/stop') {
-    const { store, db, isMaster } = workerAuthDeps(env);
-    const hookAuth = await resolveWebhookAuth(store, db, isMaster, request, url, body);
-    if (!hookAuth.ok) {
-      if (url.searchParams.get('format') === 'json') {
-        return json({ success: false, error: hookAuth.error }, hookAuth.status);
-      }
-      return new Response(`❌ ${hookAuth.error}`, {
-        status: hookAuth.status,
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
-      });
-    }
-
-    const activeVin = hookAuth.vin;
+    const caller = await resolveTripWebhookCaller(env, request, url, body);
+    if (!caller.ok) return caller.response;
+    const activeVin = caller.vin;
     const mg = await getMgClientForVin(env, activeVin);
     const ongoingTrip = await d1GetActiveTrip(env, activeVin);
     if (!ongoingTrip) {
       const emptyTitle = 'ℹ️ MG Windsor EV • No Active Trip';
       const emptyMsg = 'No ongoing trip was recorded in Cloudflare D1 to stop.\n(Make sure CarPlay Connects ran first, and D1 database is bound).';
-      if (url.searchParams.get('format') === 'json') {
-        return json({ success: false, title: emptyTitle, notification: emptyMsg, message: emptyMsg }, 200);
-      }
-      return new Response(`${emptyTitle}\n\n${emptyMsg}`, { headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS }, status: 200 });
+      return formatTripWebhookResponse(
+        url,
+        { success: false, title: emptyTitle, notification: emptyMsg, message: emptyMsg },
+        `${emptyTitle}\n\n${emptyMsg}`,
+        200
+      );
     }
+    const result = await executeStopTripWebhook(env, url, activeVin, mg, ongoingTrip);
+    return result.response;
+  }
 
-    const tripVin = normVin(ongoingTrip.vin) || activeVin;
-    let telem: any = null;
-    if (mg) {
-      telem = await fetchCarTelemetry(mg.client, tripVin).catch(() => null);
-    }
-
-    const startOdo = Number(ongoingTrip.start_odometer_km) || 0;
-    let finalOdo = Number(telem?.odometer) || startOdo;
-    const startTimestamp = Number(ongoingTrip.start_timestamp) || Math.floor(Date.now() / 1000);
-    const nowSec = Math.floor(Date.now() / 1000);
-    const durationSec = Math.max(0, nowSec - startTimestamp);
-
-    // Buffer check: If finalOdo < startOdo or (finalOdo == startOdo and duration > 60s), wait 2.5s and re-fetch once
-    if (mg && (finalOdo < startOdo || (finalOdo === startOdo && durationSec > 60))) {
-      await new Promise((r) => setTimeout(r, 2500));
-      try {
-        const refreshed = await fetchCarTelemetry(mg.client, tripVin || mg.vin);
-        if (refreshed && Number(refreshed.odometer) >= startOdo) {
-          telem = refreshed;
-          finalOdo = Number(refreshed.odometer);
-        }
-      } catch (_) {}
-    }
-
-    if (finalOdo < startOdo) {
-      finalOdo = startOdo;
-    }
-
-    const distanceKm = Math.max(0, Number((finalOdo - startOdo).toFixed(1)));
-    const endSoc = telem?.soc != null ? Number(telem.soc) : (Number(ongoingTrip.start_soc) || 0);
-    const startSoc = Number(ongoingTrip.start_soc) || endSoc;
-    const socDiff = Math.max(0, startSoc - endSoc);
-
-    // Stationary / Idle Session Detection:
-    if (distanceKm < 0.2) {
-      if (env.DB) {
-        await env.DB.prepare('DELETE FROM trips WHERE id = ? AND vin = ?').bind(ongoingTrip.id, tripVin).run().catch(() => {});
-      }
-      if (env.TRIP_KV) {
-        if (tripVin) await env.TRIP_KV.delete(`d1_fallback:active_trip:${tripVin}`).catch(() => {});
-        try {
-          const trips = (await env.TRIP_KV.get('d1_fallback:trips', 'json')) || [];
-          await env.TRIP_KV.put('d1_fallback:trips', JSON.stringify(trips.filter((t: any) => !(t.id === ongoingTrip.id && normVin(t.vin) === tripVin))));
-        } catch (_) {}
-      }
-
-      const idleTitle = 'ℹ️ MG Windsor EV • Stationary (No Trip Logged)';
-      const idleText = [
-        'ℹ️ Vehicle was stationary (0.0 km driven).',
-        `⏱️ Time in car: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} → ${formatClockTime(nowSec)})`,
-        `🔋 Battery: ${startSoc}% → ${endSoc}%`,
-        '🧹 Cancelled recording to keep your driving history clean.',
-      ].join('\n');
-
-      // Unlocking the car and plugging in without driving still fires stationary trip_stop:
-      // start/sync the charging session right away so it doesn't wait up to 30m for idle cron.
-      await syncChargingOnTripStop(env, url, telem, distanceKm, tripVin);
-
-      await dispatchTripNotification(url, idleTitle, idleText, 'information_source', env, tripVin);
-      await d1InsertNotification(env, {
-        id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        vin: tripVin,
-        type: 'trip_idle',
-        title: idleTitle,
-        message: idleText,
-        timestamp: nowSec,
-        date: istDateString(nowSec),
-        metadata: JSON.stringify({ durationSec, startSoc, endSoc }),
-      });
-
-      if (url.searchParams.get('format') === 'json') {
-        return json({
-          success: true,
-          title: idleTitle,
-          notification: idleText,
-          message: 'No drive detected (0.0 km). Stationary session cancelled.',
-          cancelled: true,
-        });
-      }
-
-      return new Response(`${idleTitle}\n\n${idleText}`, {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
-      });
-    }
-
-    const energyUsedKwh = Number(((socDiff / 100) * 38).toFixed(2));
-    const efficiencyKmPerKwh = energyUsedKwh > 0 && distanceKm > 0 ? Number((distanceKm / energyUsedKwh).toFixed(2)) : 0;
-    const endLocation = await resolveLocation(telem?.lat, telem?.lng);
-    const avgSpeedKmh = durationSec > 0 && distanceKm > 0 ? Number(((distanceKm / (durationSec / 3600))).toFixed(1)) : 0;
-
-    const updates = {
-      end_timestamp: nowSec,
-      duration_seconds: durationSec,
-      distance_km: distanceKm,
-      end_odometer_km: finalOdo,
-      end_soc: endSoc,
-      energy_used_kwh: energyUsedKwh,
-      efficiency_km_per_kwh: efficiencyKmPerKwh,
-      end_location: endLocation,
-      avg_speed_kmh: avgSpeedKmh,
-      max_speed_kmh: null,
-      end_lat: telem?.lat ?? null,
-      end_lng: telem?.lng ?? null,
-      end_cabin_temp_c: telem?.cabinTempC ?? ongoingTrip.start_cabin_temp_c ?? null,
-      end_exterior_temp_c: telem?.exteriorTempC ?? ongoingTrip.start_exterior_temp_c ?? null,
-      status: 'completed',
-    };
-
-    await d1UpdateTrip(env, ongoingTrip.id, updates);
-
-    // SCENARIO 1: Immediate Plug-In After Trip (or close any leftover open charge session after driving)
-    await syncChargingOnTripStop(env, url, telem, distanceKm, tripVin);
-
-    const title = '✅ MG Windsor EV • Trip Completed';
-    const notificationText = [
-      '✅ Trip completed & safely logged in Cloudflare D1.',
-      '',
-      `🛣️ Distance Travelled: ${distanceKm} km`,
-      `⏱️ Time Taken: ${formatDurationSec(durationSec)} (${formatClockTime(startTimestamp)} → ${formatClockTime(nowSec)})`,
-      `🔋 Battery: ${startSoc}% → ${endSoc}% (${socDiff > 0 ? `-${socDiff}%` : '0%'})`,
-      `⚡ Energy Used: ${energyUsedKwh} kWh`,
-      `🌱 Efficiency: ${efficiencyKmPerKwh > 0 ? `${efficiencyKmPerKwh} km/kWh` : 'N/A'}`,
-      ongoingTrip.start_location && endLocation && ongoingTrip.start_location !== 'Unknown Location'
-        ? `📍 Route: ${ongoingTrip.start_location} → ${endLocation}`
-        : (endLocation && endLocation !== 'Unknown Location' ? `📍 Destination: ${endLocation}` : null),
-      `🏁 Final Odometer: ${finalOdo.toLocaleString()} km`,
-    ].filter(Boolean).join('\n');
-
-    await dispatchTripNotification(url, title, notificationText, 'white_check_mark,trophy', env, tripVin);
-    await d1InsertNotification(env, {
-      id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-      vin: tripVin,
-      type: 'trip_stop',
-      title,
-      message: notificationText,
-      timestamp: nowSec,
-      date: istDateString(nowSec),
-      metadata: JSON.stringify(updates),
-    });
-
-    if (url.searchParams.get('format') === 'json') {
-      return json({
-        success: true,
-        title,
-        notification: notificationText,
-        message: 'Trip stopped and logged into Cloudflare D1',
-        trip: { ...ongoingTrip, ...updates },
-      });
-    }
-
-    return new Response(`${title}\n\n${notificationText}`, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
-    });
+  // Single-URL NFC / Fallback Toggle Trip (starts if idle, stops if ongoing)
+  if (path === '/api/trip/toggle') {
+    return await handleTripToggleWebhook(env, request, url, body);
   }
 
   // Get Trips for UI (strictly scoped to authenticated user's VIN)
