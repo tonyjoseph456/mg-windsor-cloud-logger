@@ -8580,7 +8580,7 @@ export default function App() {
                       </Svg>
                     </View>
                     <Text style={styles.profileRowTitle}>Siri, widgets &amp; CarPlay</Text>
-                    <Text style={styles.profileRowVal}>7 links</Text>
+                    <Text style={styles.profileRowVal}>8 links</Text>
                     <Text style={styles.profileRowChevron}>›</Text>
                   </TouchableOpacity>
                 </View>
@@ -13381,6 +13381,8 @@ export default function App() {
           `${BACKEND_URL}/api/command/${action}?key=${encodeURIComponent(keyVal)}&pin=${encodeURIComponent(cleanPin)}`;
         const buildTripUrl = (action: 'start' | 'stop' | 'toggle', keyVal: string) =>
           `${BACKEND_URL}/api/trip/${action}?key=${encodeURIComponent(keyVal)}&format=text`;
+        const buildChargingToggleUrl = (keyVal: string) =>
+          `${BACKEND_URL}/api/charging/toggle?key=${encodeURIComponent(keyVal)}&format=text`;
 
         const renderSnowflakeIcon = (color: string) => (
           <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.2}>
@@ -13471,6 +13473,22 @@ export default function App() {
                 <Path d="M9.46 6.21a11.76 11.76 0 0 1 0 11.58" strokeLinecap="round" />
                 <Path d="M12.91 4.1a15.91 15.91 0 0 1 .01 15.8" strokeLinecap="round" />
                 <Path d="M16.37 2a20.16 20.16 0 0 1 0 20" strokeLinecap="round" />
+              </Svg>
+            ),
+          },
+        ];
+
+        const nfcChargingLinks = [
+          {
+            key: 'nfc-charging-toggle',
+            title: 'NFC charging tap',
+            subtitle: 'Starts on plug-in, ends when unplugged/off',
+            label: 'NFC Charging Toggle',
+            requiresPin: false,
+            buildUrl: (k: string) => buildChargingToggleUrl(k),
+            icon: (
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth={2}>
+                <Path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" strokeLinecap="round" strokeLinejoin="round" />
               </Svg>
             ),
           },
@@ -13573,7 +13591,7 @@ export default function App() {
 
         const nfcSteps: React.ReactNode[] = [
           <>
-            <Text style={styles.gmkStepBoldWhite}>Automation › + › NFC</Text> › scan your car NFC sticker.
+            <Text style={styles.gmkStepBoldWhite}>Automation › + › NFC</Text> › scan your car or charger NFC sticker.
           </>,
           <>
             Choose <Text style={styles.gmkStepBoldWhite}>Run Immediately</Text> and turn{' '}
@@ -13581,7 +13599,8 @@ export default function App() {
           </>,
           <>
             Add <Text style={styles.gmkStepBoldWhite}>Get Contents of URL</Text>, paste the{' '}
-            <Text style={styles.gmkStepBoldWhite}>NFC sticker tap</Text> link, then add{' '}
+            <Text style={styles.gmkStepBoldWhite}>NFC sticker tap</Text> or{' '}
+            <Text style={styles.gmkStepBoldWhite}>NFC charging tap</Text> link, then add{' '}
             <Text style={styles.gmkStepBoldWhite}>Show Notification</Text> with &ldquo;Contents of URL&rdquo;.
           </>,
         ];
@@ -13636,7 +13655,7 @@ export default function App() {
                     </Text>
                   </View>
                   <View style={[styles.accountConnectedBadge, { marginTop: 8 }]}>
-                    <Text style={styles.accountConnectedBadgeText}>7 links</Text>
+                    <Text style={styles.accountConnectedBadgeText}>8 links</Text>
                   </View>
                 </View>
 
@@ -13672,6 +13691,10 @@ export default function App() {
                 {/* 5. CARPLAY & NFC TRIPS */}
                 <Text style={styles.autoSectionHeader}>CARPLAY &amp; NFC TRIPS</Text>
                 <View style={styles.autoCard}>{renderLinkRows(carplayTripLinks)}</View>
+
+                {/* 5a. NFC CHARGING */}
+                <Text style={styles.autoSectionHeader}>NFC CHARGING</Text>
+                <View style={styles.autoCard}>{renderLinkRows(nfcChargingLinks)}</View>
 
                 {/* 5b. Private Links Security Card */}
                 <View style={styles.autoPrivacyCard}>

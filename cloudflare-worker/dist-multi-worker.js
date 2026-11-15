@@ -11309,9 +11309,10 @@ init_multi_user_auth();
 // cloudflare-worker/trip-toggle.ts
 var TRIP_TOGGLE_COOLDOWN_SEC = 10;
 var TRIP_TOGGLE_IN_FLIGHT_TIMEOUT_SEC = 15;
-function evaluateTripToggleDecision(params) {
+function evaluateWebhookToggleDecision(params) {
   const {
-    ongoingTrip,
+    activeRecord,
+    activeStartedAtSec = null,
     lockState = null,
     nowSec,
     cooldownSec = TRIP_TOGGLE_COOLDOWN_SEC
@@ -11326,25 +11327,37 @@ function evaluateTripToggleDecision(params) {
         action: "cooldown",
         reason: "in_flight",
         remainingSec,
-        ongoingTrip
+        active: activeRecord
       };
     }
   }
-  if (ongoingTrip) {
-    const startTs = Number(ongoingTrip.start_timestamp);
-    if (safeCooldown > 0 && Number.isFinite(startTs) && startTs > 0) {
-      const elapsedSinceStart = nowSec - startTs;
-      if (elapsedSinceStart >= -5 && elapsedSinceStart < safeCooldown) {
-        const remainingSec = Math.max(1, safeCooldown - Math.max(0, Math.floor(elapsedSinceStart)));
+  if (activeRecord) {
+    if (safeCooldown > 0) {
+      const candidates = [];
+      const startTs = Number(activeStartedAtSec);
+      if (Number.isFinite(startTs) && startTs > 0) {
+        const elapsedSinceStart = nowSec - startTs;
+        if (elapsedSinceStart >= -5 && elapsedSinceStart < safeCooldown) {
+          candidates.push(Math.max(0, Math.floor(elapsedSinceStart)));
+        }
+      }
+      if (lockState?.status === "done" && lockState.action === "start" && Number.isFinite(lockState.ts) && lockState.ts > 0) {
+        const elapsedSinceLock = nowSec - Number(lockState.ts);
+        if (elapsedSinceLock >= -5 && elapsedSinceLock < safeCooldown) {
+          candidates.push(Math.max(0, Math.floor(elapsedSinceLock)));
+        }
+      }
+      if (candidates.length > 0) {
+        const minElapsed = Math.min(...candidates);
         return {
           action: "cooldown",
           reason: "recently_started",
-          remainingSec,
-          ongoingTrip
+          remainingSec: Math.max(1, safeCooldown - minElapsed),
+          active: activeRecord
         };
       }
     }
-    return { action: "stop", trip: ongoingTrip };
+    return { action: "stop", active: activeRecord };
   }
   if (safeCooldown > 0 && lockState?.status === "done" && lockState.action === "stop" && Number.isFinite(lockState.ts) && lockState.ts > 0) {
     const elapsedSinceStop = nowSec - Number(lockState.ts);
@@ -11354,9 +11367,30 @@ function evaluateTripToggleDecision(params) {
         action: "cooldown",
         reason: "recently_stopped",
         remainingSec,
-        ongoingTrip: null
+        active: null
       };
     }
+  }
+  return { action: "start" };
+}
+function evaluateTripToggleDecision(params) {
+  const decision = evaluateWebhookToggleDecision({
+    activeRecord: params.ongoingTrip,
+    activeStartedAtSec: params.ongoingTrip?.start_timestamp,
+    lockState: params.lockState,
+    nowSec: params.nowSec,
+    cooldownSec: params.cooldownSec
+  });
+  if (decision.action === "stop") {
+    return { action: "stop", trip: decision.active };
+  }
+  if (decision.action === "cooldown") {
+    return {
+      action: "cooldown",
+      reason: decision.reason,
+      remainingSec: decision.remainingSec,
+      ongoingTrip: decision.active ?? null
+    };
   }
   return { action: "start" };
 }
@@ -11382,6 +11416,87 @@ function buildTripToggleCooldownPayload(decision) {
     notification: message,
     message,
     ...decision.ongoingTrip ? { trip: decision.ongoingTrip } : {}
+  };
+}
+
+// cloudflare-worker/charging-toggle.ts
+function evaluateChargingToggleDecision(params) {
+  const decision = evaluateWebhookToggleDecision({
+    activeRecord: params.activeSession,
+    activeStartedAtSec: params.activeSession?.start_time,
+    lockState: params.lockState,
+    nowSec: params.nowSec,
+    cooldownSec: params.cooldownSec ?? TRIP_TOGGLE_COOLDOWN_SEC
+  });
+  if (decision.action === "stop") {
+    return { action: "stop", session: decision.active };
+  }
+  if (decision.action === "cooldown") {
+    return {
+      action: "cooldown",
+      reason: decision.reason,
+      remainingSec: decision.remainingSec,
+      activeSession: decision.active ?? null
+    };
+  }
+  return { action: "start" };
+}
+function buildChargingToggleCooldownPayload(decision) {
+  let title;
+  let message;
+  if (decision.reason === "in_flight") {
+    title = "\u23F3 MG Windsor EV \u2022 Charging Sync In Progress";
+    message = `A charging tap is already being processed. Wait ~${decision.remainingSec}s and check your notifications.`;
+  } else if (decision.reason === "recently_started") {
+    title = "\u23F3 MG Windsor EV \u2022 Charging Already Active";
+    message = `Charging session started moments ago. Double-tap protection active \u2014 tap again in ${decision.remainingSec}s to check or stop.`;
+  } else {
+    title = "\u23F3 MG Windsor EV \u2022 Charging Just Completed";
+    message = `Charging session ended moments ago. Double-tap protection active \u2014 tap again in ${decision.remainingSec}s to start a new session.`;
+  }
+  return {
+    success: true,
+    action: "cooldown",
+    cooldownReason: decision.reason,
+    cooldownRemainingSec: decision.remainingSec,
+    title,
+    notification: message,
+    message,
+    ...decision.activeSession ? { session: decision.activeSession } : {}
+  };
+}
+function resolveChargingToggleStopAction(liveTelem) {
+  if (liveTelem && liveTelem.hasChargeTelemetry !== false && Boolean(liveTelem.isCharging)) {
+    return "still_charging";
+  }
+  return "finalize";
+}
+function classifyChargingNotStartedReason(liveTelem) {
+  if (!liveTelem || liveTelem.hasChargeTelemetry === false) {
+    return {
+      reason: "unavailable",
+      title: "\u2139\uFE0F MG Windsor EV \u2022 Charge Status Unavailable",
+      message: "Car charge telemetry is temporarily unavailable from MG server. Tap again in a moment, or background detection will start automatically once charging stabilizes."
+    };
+  }
+  if (Number(liveTelem.speedKmh) > 1) {
+    return {
+      reason: "moving",
+      title: "\u2139\uFE0F MG Windsor EV \u2022 Vehicle Moving",
+      message: "Car appears to be driving right now. Park and plug in before starting a charging session."
+    };
+  }
+  if (!liveTelem.isPluggedIn) {
+    return {
+      reason: "unplugged",
+      title: "\u2139\uFE0F MG Windsor EV \u2022 Charger Not Plugged In",
+      message: "Charging gun is not plugged in yet. Plug in first, wait for charging to begin, then tap NFC again."
+    };
+  }
+  return {
+    reason: "not_drawing",
+    title: "\u2139\uFE0F MG Windsor EV \u2022 Waiting For Charger Power",
+    message: "Charging gun is plugged in, but power draw is 0 kW right now (waiting on EVSE/breaker/schedule). Auto-detection will start automatically as soon as charging begins."
   };
 }
 
@@ -13857,6 +13972,85 @@ async function syncChargingOnTripStop(env, url, telem, distanceKm, tripVin) {
   } catch (_) {
   }
 }
+async function finalizeActiveChargingSession(env, url, activeSession, liveTelem, options) {
+  const { nowSec, triggerSource, sessionVin, endSoc } = options;
+  const startSoc = Number(activeSession.start_soc) || 0;
+  const timing = resolveCompletedSessionTiming(activeSession, nowSec);
+  const activeSec = timing.activeDurationSec;
+  const socAdded = Math.max(0, endSoc - startSoc);
+  const kwhAdded = Number((socAdded / 100 * 38).toFixed(2));
+  const effFactor = activeSession.charge_type === "DC" || Number(activeSession.peak_power_kw) > 11 ? 0.94 : 0.88;
+  const grossEnergyUsed = Math.max(
+    Number(activeSession.energy_used_kwh) || 0,
+    Number((kwhAdded / effFactor).toFixed(2))
+  );
+  const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
+  const durationMin = timing.durationMin;
+  if (options.allowZeroEnergyDiscard && shouldDiscardZeroEnergySession({
+    triggerSource,
+    socAdded,
+    activeDurationSec: activeSec,
+    energyUsedKwh: grossEnergyUsed
+  })) {
+    await d1DeleteChargingSession(env, activeSession.id, sessionVin);
+    return { discarded: true, session: null };
+  }
+  const endRangeKm = resolveChargingEndRangeKm({
+    startRangeKm: activeSession.start_range_km,
+    storedEndRangeKm: activeSession.end_range_km,
+    liveRangeKm: liveTelem?.rangeKm,
+    startSoc,
+    endSoc,
+    isComplete: true
+  });
+  const completedUpdates = {
+    status: "completed",
+    end_time: timing.endTimeSec,
+    end_soc: endSoc,
+    soc_added: socAdded,
+    kwh_added: kwhAdded,
+    energy_used_kwh: grossEnergyUsed,
+    charging_loss_kwh: lossKwh,
+    last_power_kw: 0,
+    end_range_km: endRangeKm,
+    pause_pending_at: null,
+    active_duration_seconds: activeSec,
+    last_poll_time: nowSec
+  };
+  if (!options.preservePeakPower) {
+    completedUpdates.peak_power_kw = Math.max(Number(activeSession.peak_power_kw) || 0, 3.3);
+  }
+  if (options.fillLocationIfMissing && (!activeSession.location || activeSession.start_lat == null) && hasValidGpsCoords(liveTelem?.lat, liveTelem?.lng)) {
+    completedUpdates.start_lat = liveTelem.lat;
+    completedUpdates.start_lng = liveTelem.lng;
+    completedUpdates.location = await resolveLocation(liveTelem.lat, liveTelem.lng);
+  }
+  await d1UpdateChargingSession(env, activeSession.id, completedUpdates, sessionVin);
+  const completedSession = { ...activeSession, ...completedUpdates };
+  if (options.notify) {
+    const body = options.notify.buildBody({ socAdded, kwhAdded, grossEnergyUsed, durationMin });
+    await dispatchTripNotification(
+      url,
+      options.notify.title,
+      body,
+      options.notify.tags,
+      env,
+      sessionVin
+    );
+    await d1InsertNotification(env, {
+      id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+      vin: sessionVin,
+      type: "charge_end",
+      title: options.notify.title,
+      message: body,
+      timestamp: nowSec,
+      date: istDateString(nowSec),
+      is_read: 0,
+      metadata: JSON.stringify(completedSession)
+    });
+  }
+  return { discarded: false, session: completedSession };
+}
 async function syncChargingSessionState(env, url, liveTelem, triggerSource = "poll", vin) {
   const v = normVin(vin || url.searchParams.get("vin"));
   const activeSession = await d1GetActiveChargingSession(env, v);
@@ -14089,121 +14283,39 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
   const startSoc = Number(activeSession.start_soc) || 0;
   const currentSoc = Math.max(liveTelem.soc, Number(activeSession.end_soc) || startSoc);
   if (shouldFinalizeOnMovement({ triggerSource, odoDiffKm: odoDiff, liveTelem })) {
-    const timing = resolveCompletedSessionTiming(activeSession, nowSec);
-    const activeSec = timing.activeDurationSec;
-    const socAdded = Math.max(0, currentSoc - startSoc);
-    const kwhAdded = Number((socAdded / 100 * 38).toFixed(2));
-    const effFactor = activeSession.charge_type === "DC" || Number(activeSession.peak_power_kw) > 11 ? 0.94 : 0.88;
-    const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
-    const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-    const durationMin = timing.durationMin;
-    if (shouldDiscardZeroEnergySession({
+    const fin = await finalizeActiveChargingSession(env, url, activeSession, liveTelem, {
+      nowSec,
       triggerSource,
-      socAdded,
-      activeDurationSec: activeSec,
-      energyUsedKwh: grossEnergyUsed
-    })) {
-      await d1DeleteChargingSession(env, activeSession.id, v);
-      return null;
-    }
-    const completedEndRangeKm = resolveChargingEndRangeKm({
-      startRangeKm: activeSession.start_range_km,
-      storedEndRangeKm: activeSession.end_range_km,
-      liveRangeKm: liveTelem.rangeKm,
-      startSoc,
+      sessionVin,
       endSoc: currentSoc,
-      isComplete: true
+      allowZeroEnergyDiscard: true,
+      notify: {
+        title: `\u{1F50B} Charging Completed (${currentSoc}%)`,
+        tags: "battery,white_check_mark",
+        buildBody: ({ socAdded, kwhAdded, grossEnergyUsed, durationMin }) => `Added +${socAdded}% (+${kwhAdded} kWh) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${durationMin}m`
+      }
     });
-    const completedUpdates = {
-      status: "completed",
-      end_time: timing.endTimeSec,
-      end_soc: currentSoc,
-      soc_added: socAdded,
-      kwh_added: kwhAdded,
-      energy_used_kwh: grossEnergyUsed,
-      charging_loss_kwh: lossKwh,
-      peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
-      last_power_kw: 0,
-      end_range_km: completedEndRangeKm,
-      pause_pending_at: null,
-      active_duration_seconds: activeSec,
-      last_poll_time: nowSec
-    };
-    await d1UpdateChargingSession(env, activeSession.id, completedUpdates, sessionVin);
-    const title = `\u{1F50B} Charging Completed (${currentSoc}%)`;
-    const body = `Added +${socAdded}% (+${kwhAdded} kWh) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, "battery,white_check_mark", env, sessionVin);
-    await d1InsertNotification(env, {
-      id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-      vin: sessionVin,
-      type: "charge_end",
-      title,
-      message: body,
-      timestamp: nowSec,
-      date: istDateString(nowSec),
-      is_read: 0,
-      metadata: JSON.stringify({ ...activeSession, ...completedUpdates })
-    });
-    return { ...activeSession, ...completedUpdates };
+    return fin.session;
   }
   const decision = evaluateChargingStateDecision(activeSession, liveTelem, currentSoc, nowSec);
   if (decision.action === "ignore_unavailable") {
     return activeSession;
   }
   if (decision.action === "complete_full") {
-    const timing = resolveCompletedSessionTiming(activeSession, nowSec);
-    const activeSec = timing.activeDurationSec;
-    const endSoc = 100;
-    const socAdded = Math.max(0, endSoc - startSoc);
-    const kwhAdded = Number((socAdded / 100 * 38).toFixed(2));
-    const effFactor = activeSession.charge_type === "DC" || Number(activeSession.peak_power_kw) > 11 ? 0.94 : 0.88;
-    const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
-    const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-    const durationMin = timing.durationMin;
-    const fullEndRangeKm = resolveChargingEndRangeKm({
-      startRangeKm: activeSession.start_range_km,
-      storedEndRangeKm: activeSession.end_range_km,
-      liveRangeKm: liveTelem.rangeKm,
-      startSoc,
-      endSoc,
-      isComplete: true
+    const fin = await finalizeActiveChargingSession(env, url, activeSession, liveTelem, {
+      nowSec,
+      triggerSource,
+      sessionVin,
+      endSoc: 100,
+      allowZeroEnergyDiscard: false,
+      fillLocationIfMissing: true,
+      notify: {
+        title: `\u{1F50B} Charging Complete (100%)`,
+        tags: "battery,sparkles",
+        buildBody: ({ socAdded, kwhAdded, grossEnergyUsed, durationMin }) => `Full charge reached! Added +${socAdded}% (+${kwhAdded} kWh) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${durationMin}m`
+      }
     });
-    const completedUpdates = {
-      status: "completed",
-      end_time: timing.endTimeSec,
-      end_soc: endSoc,
-      soc_added: socAdded,
-      kwh_added: kwhAdded,
-      energy_used_kwh: grossEnergyUsed,
-      charging_loss_kwh: lossKwh,
-      peak_power_kw: Math.max(Number(activeSession.peak_power_kw) || 0, 3.3),
-      last_power_kw: 0,
-      end_range_km: fullEndRangeKm,
-      pause_pending_at: null,
-      active_duration_seconds: activeSec,
-      last_poll_time: nowSec
-    };
-    if ((!activeSession.location || activeSession.start_lat == null) && hasValidGpsCoords(liveTelem.lat, liveTelem.lng)) {
-      completedUpdates.start_lat = liveTelem.lat;
-      completedUpdates.start_lng = liveTelem.lng;
-      completedUpdates.location = await resolveLocation(liveTelem.lat, liveTelem.lng);
-    }
-    await d1UpdateChargingSession(env, activeSession.id, completedUpdates, sessionVin);
-    const title = `\u{1F50B} Charging Complete (100%)`;
-    const body = `Full charge reached! Added +${socAdded}% (+${kwhAdded} kWh) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${durationMin}m`;
-    await dispatchTripNotification(url, title, body, "battery,sparkles", env, sessionVin);
-    await d1InsertNotification(env, {
-      id: "notif_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-      vin: sessionVin,
-      type: "charge_end",
-      title,
-      message: body,
-      timestamp: nowSec,
-      date: istDateString(nowSec),
-      is_read: 0,
-      metadata: JSON.stringify({ ...activeSession, ...completedUpdates })
-    });
-    return { ...activeSession, ...completedUpdates };
+    return fin.session;
   }
   if (decision.action === "pending_pause") {
     const pendingUpdates = {
@@ -14243,36 +14355,16 @@ async function syncChargingSessionState(env, url, liveTelem, triggerSource = "po
   if (decision.action === "stay_paused") {
     const pausedSec = nowSec - (Number(activeSession.paused_at) || nowSec);
     if (pausedSec > PAUSED_SESSION_TIMEOUT_SECONDS) {
-      const timing = resolveCompletedSessionTiming(activeSession, nowSec);
-      const socAdded = Math.max(0, currentSoc - startSoc);
-      const kwhAdded = Number((socAdded / 100 * 38).toFixed(2));
-      const effFactor = activeSession.charge_type === "DC" ? 0.94 : 0.88;
-      const grossEnergyUsed = Math.max(Number(activeSession.energy_used_kwh) || 0, Number((kwhAdded / effFactor).toFixed(2)));
-      const lossKwh = Math.max(0, Number((grossEnergyUsed - kwhAdded).toFixed(2)));
-      const pausedTimeoutEndRangeKm = resolveChargingEndRangeKm({
-        startRangeKm: activeSession.start_range_km,
-        storedEndRangeKm: activeSession.end_range_km,
-        liveRangeKm: liveTelem.rangeKm,
-        startSoc,
+      const fin = await finalizeActiveChargingSession(env, url, activeSession, liveTelem, {
+        nowSec,
+        triggerSource,
+        sessionVin,
         endSoc: currentSoc,
-        isComplete: true
+        allowZeroEnergyDiscard: false,
+        preservePeakPower: true,
+        notify: null
       });
-      const updates = {
-        status: "completed",
-        end_time: timing.endTimeSec,
-        end_soc: currentSoc,
-        soc_added: socAdded,
-        kwh_added: kwhAdded,
-        energy_used_kwh: grossEnergyUsed,
-        charging_loss_kwh: lossKwh,
-        last_power_kw: 0,
-        end_range_km: pausedTimeoutEndRangeKm,
-        pause_pending_at: null,
-        active_duration_seconds: timing.activeDurationSec,
-        last_poll_time: nowSec
-      };
-      await d1UpdateChargingSession(env, activeSession.id, updates, sessionVin);
-      return { ...activeSession, ...updates };
+      return fin.session;
     }
     return activeSession;
   }
@@ -14754,6 +14846,227 @@ ${payload.message}`,
     throw err;
   }
 }
+async function handleChargingToggleWebhook(env, request, url, body) {
+  const caller = await resolveTripWebhookCaller(env, request, url, body);
+  if (!caller.ok) return caller.response;
+  const activeVin = caller.vin;
+  const toggleKey = `charging_toggle_state:${activeVin}`;
+  const nowSec = Math.floor(Date.now() / 1e3);
+  const [activeSession, lockState] = await Promise.all([
+    d1GetActiveChargingSession(env, activeVin),
+    d1KvGet(env, toggleKey)
+  ]);
+  const decision = evaluateChargingToggleDecision({ activeSession, lockState, nowSec });
+  if (decision.action === "cooldown") {
+    const payload = buildChargingToggleCooldownPayload(decision);
+    return formatTripWebhookResponse(url, payload, `${payload.title}
+
+${payload.message}`, 200);
+  }
+  await d1KvPut(env, toggleKey, {
+    status: "in_flight",
+    ts: nowSec,
+    action: decision.action
+  });
+  try {
+    const mg = await getMgClientForVin(env, activeVin);
+    if (decision.action === "start") {
+      if (!mg) {
+        await d1KvDelete(env, toggleKey);
+        const msg = "MG vehicle session not found. Please open the MG Windsor app once to connect.";
+        return formatTripWebhookResponse(url, { success: false, error: msg }, `\u274C ${msg}`, 401);
+      }
+      let telem2 = await fetchCarTelemetry(mg.client, activeVin);
+      if (telem2.isPluggedIn && !telem2.isCharging && Number(telem2.speedKmh) <= 1) {
+        await new Promise((r) => setTimeout(r, 2500));
+        try {
+          telem2 = await fetchCarTelemetry(mg.client, activeVin);
+        } catch (_) {
+        }
+      }
+      if (shouldBlockChargingSessionStart({ triggerSource: "nfc_start", liveTelem: telem2 })) {
+        await d1KvDelete(env, toggleKey);
+        const info = classifyChargingNotStartedReason(telem2);
+        return formatTripWebhookResponse(
+          url,
+          {
+            success: false,
+            action: "not_charging",
+            reason: info.reason,
+            title: info.title,
+            notification: info.message,
+            message: info.message
+          },
+          `${info.title}
+
+${info.message}`,
+          200
+        );
+      }
+      const started = await syncChargingSessionState(env, url, telem2, "nfc_start", activeVin);
+      if (!started || started.status !== "ongoing") {
+        await d1KvDelete(env, toggleKey);
+        const info = classifyChargingNotStartedReason(telem2);
+        return formatTripWebhookResponse(
+          url,
+          {
+            success: false,
+            action: "not_charging",
+            reason: info.reason,
+            title: info.title,
+            notification: info.message,
+            message: info.message
+          },
+          `${info.title}
+
+${info.message}`,
+          200
+        );
+      }
+      await d1KvPut(env, toggleKey, {
+        status: "done",
+        ts: Math.floor(Date.now() / 1e3),
+        action: "start"
+      });
+      const isResumed = Number(started.outage_count) > 0;
+      const chargeType = started.charge_type || "AC";
+      const title = `\u26A1 MG Windsor EV \u2022 Charging ${isResumed ? "Resumed" : "Started"} (${chargeType})`;
+      const notificationText = [
+        `\u{1F7E2} Auto-polling is tracking this session in Cloudflare D1.`,
+        `\u23F1\uFE0F Started: ${formatClockTime(Number(started.start_time) || nowSec)}`,
+        `\u{1F50B} Battery: ${started.end_soc ?? started.start_soc}% SOC`,
+        `\u26A1 Power: ${Number(started.last_power_kw ?? telem2.powerKw).toFixed(2)} kW`
+      ].join("\n");
+      return formatTripWebhookResponse(
+        url,
+        {
+          success: true,
+          action: "start",
+          resumed: isResumed,
+          title,
+          notification: notificationText,
+          message: `Charging session ${isResumed ? "resumed" : "started"} via NFC toggle`,
+          session: started
+        },
+        `${title}
+
+${notificationText}`,
+        200
+      );
+    }
+    const currentActive = decision.session;
+    const telem = mg ? await fetchCarTelemetry(mg.client, activeVin).catch(() => null) : null;
+    if (resolveChargingToggleStopAction(telem) === "still_charging") {
+      const synced = await syncChargingSessionState(env, url, telem, "nfc_sync", activeVin);
+      await d1KvDelete(env, toggleKey);
+      const s = synced || currentActive;
+      const curSoc = Number(s?.end_soc ?? telem?.soc ?? s?.start_soc ?? 0);
+      const socAdded = Math.max(0, curSoc - (Number(s?.start_soc) || 0));
+      const kwhAdded = Number(s?.kwh_added ?? (socAdded / 100 * 38).toFixed(2));
+      const powerKw = Number(telem?.powerKw ?? s?.last_power_kw ?? 0);
+      const title = "\u26A1 MG Windsor EV \u2022 Still Actively Charging";
+      const notificationText = [
+        `\u{1F50B} Currently at ${curSoc}% (+${socAdded}% / +${kwhAdded} kWh) drawing ${powerKw} kW.`,
+        "\u{1F50C} Unplug or switch off the charger first, then tap NFC again to finish."
+      ].join("\n");
+      return formatTripWebhookResponse(
+        url,
+        {
+          success: false,
+          action: "still_charging",
+          title,
+          notification: notificationText,
+          message: notificationText,
+          session: s
+        },
+        `${title}
+
+${notificationText}`,
+        200
+      );
+    }
+    const sessionVin = normVin(currentActive.vin) || activeVin;
+    const startSoc = Number(currentActive.start_soc) || 0;
+    const observedSoc = Math.max(
+      Number(telem?.soc) || 0,
+      Number(currentActive.end_soc) || 0,
+      startSoc
+    );
+    const finalEndSoc = observedSoc >= 99 && telem?.hasChargeTelemetry !== false && !telem?.isCharging ? 100 : observedSoc;
+    const fin = await finalizeActiveChargingSession(env, url, currentActive, telem, {
+      nowSec,
+      triggerSource: "nfc_stop",
+      sessionVin,
+      endSoc: finalEndSoc,
+      allowZeroEnergyDiscard: true,
+      fillLocationIfMissing: true,
+      notify: {
+        title: `\u{1F50B} Charging Completed (${finalEndSoc}%)`,
+        tags: "battery,white_check_mark",
+        buildBody: ({ socAdded, kwhAdded, grossEnergyUsed, durationMin }) => `Added +${socAdded}% (+${kwhAdded} kWh) \u2022 Used ${grossEnergyUsed} kWh \u2022 ${durationMin}m`
+      }
+    });
+    await d1KvPut(env, toggleKey, {
+      status: "done",
+      ts: Math.floor(Date.now() / 1e3),
+      action: "stop"
+    });
+    if (fin.discarded || !fin.session) {
+      const cancelTitle = "\u2139\uFE0F MG Windsor EV \u2022 Empty Charge Cancelled";
+      const cancelMsg = "0% SoC added in brief plug test \u2014 cancelled session to keep your charging history clean.";
+      return formatTripWebhookResponse(
+        url,
+        {
+          success: true,
+          action: "stop",
+          cancelled: true,
+          title: cancelTitle,
+          notification: cancelMsg,
+          message: cancelMsg
+        },
+        `${cancelTitle}
+
+${cancelMsg}`,
+        200
+      );
+    }
+    const done = fin.session;
+    const doneDurationMin = Math.round((Number(done.active_duration_seconds) || 0) / 60);
+    const doneTitle = `\u{1F50B} MG Windsor EV \u2022 Charging Completed (${done.end_soc}%)`;
+    const doneText = [
+      "\u2705 Charging session saved in Cloudflare D1.",
+      `\u26A1 Added: +${done.soc_added}% (+${done.kwh_added} kWh ${done.charge_type || "AC"})`,
+      `\u{1F50C} Wall Energy: ${done.energy_used_kwh} kWh (${doneDurationMin} min)`
+    ].join("\n");
+    return formatTripWebhookResponse(
+      url,
+      {
+        success: true,
+        action: "stop",
+        cancelled: false,
+        title: doneTitle,
+        notification: doneText,
+        message: "Charging session finalized via NFC toggle",
+        session: done
+      },
+      `${doneTitle}
+
+${doneText}`,
+      200
+    );
+  } catch (err) {
+    await d1KvDelete(env, toggleKey).catch(() => {
+    });
+    const errMsg = `\u274C Charging Toggle Error: ${err.message}`;
+    if (url.searchParams.get("format") === "json") {
+      return json({ success: false, error: err.message }, 500);
+    }
+    return new Response(errMsg, {
+      headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS },
+      status: 200
+    });
+  }
+}
 async function handleApi(env, request, url) {
   const path = url.pathname;
   if (path === "/api/push-vapid-public-key") {
@@ -15156,6 +15469,9 @@ ${emptyMsg}`,
   }
   if (path === "/api/trip/toggle") {
     return await handleTripToggleWebhook(env, request, url, body);
+  }
+  if (path === "/api/charging/toggle") {
+    return await handleChargingToggleWebhook(env, request, url, body);
   }
   if (path === "/api/trips") {
     const auth = await requireAppVin(env, request, url, body);
