@@ -119,19 +119,19 @@ export const WHEEL_SERVICE_META: Record<
 > = {
   balancing: {
     key: 'balancing',
-    label: 'Wheel Balancing',
+    label: 'Wheel balancing',
     shortLabel: 'Balancing',
     defaultIntervalKm: 5000,
   },
   alignment: {
     key: 'alignment',
-    label: 'Wheel Alignment',
+    label: 'Wheel alignment',
     shortLabel: 'Alignment',
     defaultIntervalKm: 5000,
   },
   rotation: {
     key: 'rotation',
-    label: 'Tire Rotation',
+    label: 'Tyre rotation',
     shortLabel: 'Rotation',
     defaultIntervalKm: 10000,
   },
@@ -843,6 +843,73 @@ export function computeWheelServicesStatus(params: {
       urgency,
     };
   });
+}
+
+export interface ServiceIntervalProgress {
+  startKm: number;
+  targetKm: number;
+  fraction: number;
+  startLabel: string;
+  targetLabel: string;
+}
+
+/**
+ * Computes progress across the current service interval (0..1) and endpoint labels
+ * for both the Profile summary card and the Service Reminder hero card.
+ */
+export function computeServiceIntervalProgress(params: {
+  odometerKm: number | null | undefined;
+  lastServiceOdoKm: number | null | undefined;
+  previousMilestoneKm: number | null | undefined;
+  nextMilestoneKm: number;
+}): ServiceIntervalProgress {
+  const { odometerKm, lastServiceOdoKm, previousMilestoneKm, nextMilestoneKm } = params;
+  const hasLastOdo =
+    typeof lastServiceOdoKm === 'number' && Number.isFinite(lastServiceOdoKm) && lastServiceOdoKm >= 0;
+  const hasPrev =
+    typeof previousMilestoneKm === 'number' && Number.isFinite(previousMilestoneKm) && previousMilestoneKm >= 0;
+  const startKm = hasLastOdo ? Math.round(lastServiceOdoKm!) : hasPrev ? Math.round(previousMilestoneKm!) : 0;
+  const targetKm = Math.max(0, Math.round(nextMilestoneKm));
+
+  let fraction = 0;
+  if (typeof odometerKm === 'number' && Number.isFinite(odometerKm) && odometerKm >= 0) {
+    const span = targetKm - startKm;
+    if (span <= 0) {
+      fraction = odometerKm >= targetKm ? 1 : 0;
+    } else {
+      fraction = Math.max(0, Math.min(1, (odometerKm - startKm) / span));
+    }
+  }
+
+  const startLabel = hasLastOdo
+    ? `Last service ${formatKmNumber(startKm)}`
+    : hasPrev
+      ? `Prev ${formatKmNumber(startKm)} km`
+      : '0 km';
+
+  return {
+    startKm,
+    targetKm,
+    fraction,
+    startLabel,
+    targetLabel: `${formatKmNumber(targetKm)} km`,
+  };
+}
+
+export function formatServiceDaysCountdownText(
+  daysRemaining: number | null | undefined,
+  missingText: string = 'Enter last service date'
+): string {
+  if (daysRemaining === null || daysRemaining === undefined || !Number.isFinite(daysRemaining)) {
+    return missingText;
+  }
+  if (daysRemaining < 0) {
+    const overdue = Math.abs(Math.round(daysRemaining));
+    return `${overdue} day${overdue === 1 ? '' : 's'} overdue`;
+  }
+  if (daysRemaining === 0) return 'Due today';
+  const rounded = Math.round(daysRemaining);
+  return `${rounded} day${rounded === 1 ? '' : 's'} left`;
 }
 
 export function sanitizeServiceReminderSettings(raw: unknown): ServiceReminderSettings {

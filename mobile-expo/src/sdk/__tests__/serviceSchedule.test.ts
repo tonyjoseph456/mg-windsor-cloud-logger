@@ -5,12 +5,14 @@ import {
   addCalendarMonthsToIsoDate,
   computeMilestoneCost,
   computeNextServiceStatus,
+  computeServiceIntervalProgress,
   computeWheelServicesStatus,
   createDefaultServiceReminderSettings,
   diffIsoDateDays,
   fetchLatestServiceCatalog,
   formatInrAmount,
   formatKmNumber,
+  formatServiceDaysCountdownText,
   getMilestoneForKm,
   parseServiceCatalogFromHtml,
   sanitizeServiceReminderSettings,
@@ -286,4 +288,50 @@ test('fetchLatestServiceCatalog handles live fetch success and network/404 fallb
   assert.equal(cached.source, 'cached');
   assert.equal(cached.prices['AC filter'], 825);
   assert.equal(cached.paidServiceChargeInr, 2400);
+});
+
+test('computeServiceIntervalProgress and formatServiceDaysCountdownText handle all boundary states', () => {
+  const prog = computeServiceIntervalProgress({
+    odometerKm: 39472,
+    lastServiceOdoKm: 30207,
+    previousMilestoneKm: 30000,
+    nextMilestoneKm: 45000,
+  });
+  assert.equal(prog.startKm, 30207);
+  assert.equal(prog.targetKm, 45000);
+  assert.equal(prog.startLabel, 'Last service 30,207');
+  assert.equal(prog.targetLabel, '45,000 km');
+  assert.ok(Math.abs(prog.fraction - (39472 - 30207) / (45000 - 30207)) < 1e-6);
+
+  const fallbackPrev = computeServiceIntervalProgress({
+    odometerKm: 37500,
+    lastServiceOdoKm: null,
+    previousMilestoneKm: 30000,
+    nextMilestoneKm: 45000,
+  });
+  assert.equal(fallbackPrev.startKm, 30000);
+  assert.equal(fallbackPrev.startLabel, 'Prev 30,000 km');
+  assert.equal(fallbackPrev.fraction, 0.5);
+
+  const overdueClamped = computeServiceIntervalProgress({
+    odometerKm: 46000,
+    lastServiceOdoKm: 30207,
+    previousMilestoneKm: 30000,
+    nextMilestoneKm: 45000,
+  });
+  assert.equal(overdueClamped.fraction, 1);
+
+  const nullOdo = computeServiceIntervalProgress({
+    odometerKm: null,
+    lastServiceOdoKm: 30207,
+    previousMilestoneKm: 30000,
+    nextMilestoneKm: 45000,
+  });
+  assert.equal(nullOdo.fraction, 0);
+
+  assert.equal(formatServiceDaysCountdownText(190), '190 days left');
+  assert.equal(formatServiceDaysCountdownText(1), '1 day left');
+  assert.equal(formatServiceDaysCountdownText(0), 'Due today');
+  assert.equal(formatServiceDaysCountdownText(-3), '3 days overdue');
+  assert.equal(formatServiceDaysCountdownText(null, 'Add date'), 'Add date');
 });

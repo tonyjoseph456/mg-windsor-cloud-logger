@@ -129,15 +129,17 @@ import {
   sanitizeServiceReminderSettings,
   sanitizeServiceScheduleCatalog,
   computeNextServiceStatus,
+  computeServiceIntervalProgress,
   computeWheelServicesStatus,
   formatInrAmount,
   formatKmNumber,
+  formatServiceDaysCountdownText,
   getTodayLocalIsoDate,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 import { SwipeableDeleteRow } from './src/SwipeableDeleteRow';
 import { HomeServiceAlertCard } from './src/HomeServiceAlertCard';
-import { ServiceReminderScreen } from './src/ServiceReminderScreen';
+import { ServiceReminderScreen, ServiceSubScreenKey } from './src/ServiceReminderScreen';
 import {
   applyScreenOrientationPolicy,
   detectRuntimeIsTablet,
@@ -2853,10 +2855,15 @@ export default function App() {
   // Dedicated Service Reminder Screen State & Animation
   const serviceReminderSlideAnim = useRef(new Animated.Value(0)).current;
   const [isServiceReminderVisible, setIsServiceReminderVisible] = useState<boolean>(false);
+  const serviceSubSlideAnim = useRef(new Animated.Value(0)).current;
+  const [activeServiceSubScreen, setActiveServiceSubScreen] = useState<ServiceSubScreenKey | null>(null);
 
   const handleOpenServiceReminderScreen = () => {
     setServiceTodayKey(getTodayLocalIsoDate());
     syncServiceCatalog({ quiet: true });
+    setActiveServiceSubScreen(null);
+    serviceSubSlideAnim.stopAnimation();
+    serviceSubSlideAnim.setValue(0);
     setIsServiceReminderVisible(true);
     serviceReminderSlideAnim.stopAnimation();
     serviceReminderSlideAnim.setValue(0);
@@ -2869,6 +2876,14 @@ export default function App() {
   };
 
   const handleCloseServiceReminderScreen = () => {
+    if (activeServiceSubScreen !== null) {
+      serviceSubSlideAnim.stopAnimation();
+      Animated.timing(serviceSubSlideAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: Platform.OS !== 'web',
+      }).start(() => setActiveServiceSubScreen(null));
+    }
     serviceReminderSlideAnim.stopAnimation();
     Animated.timing(serviceReminderSlideAnim, {
       toValue: 0,
@@ -2878,6 +2893,33 @@ export default function App() {
     }).start(({ finished }) => {
       if (finished) {
         setIsServiceReminderVisible(false);
+        setActiveServiceSubScreen(null);
+      }
+    });
+  };
+
+  const handleOpenServiceSubScreen = (sub: ServiceSubScreenKey) => {
+    setActiveServiceSubScreen(sub);
+    serviceSubSlideAnim.stopAnimation();
+    serviceSubSlideAnim.setValue(0);
+    Animated.timing(serviceSubSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseServiceSubScreen = () => {
+    serviceSubSlideAnim.stopAnimation();
+    Animated.timing(serviceSubSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      if (finished) {
+        setActiveServiceSubScreen(null);
       }
     });
   };
@@ -6309,6 +6351,8 @@ export default function App() {
     ? { key: 'analytics', anim: analyticsSlideAnim, close: handleCloseAnalyticsScreen }
     : isTextSizeScreenVisible
     ? { key: 'textSize', anim: textSizeSlideAnim, close: handleCloseTextSizeScreen }
+    : isServiceReminderVisible && activeServiceSubScreen !== null
+    ? { key: `serviceSub_${activeServiceSubScreen}`, anim: serviceSubSlideAnim, close: handleCloseServiceSubScreen }
     : isServiceReminderVisible
     ? { key: 'serviceReminder', anim: serviceReminderSlideAnim, close: handleCloseServiceReminderScreen }
     : isMapsKeyScreenVisible
@@ -6535,7 +6579,11 @@ export default function App() {
   // Browser / Android system back gesture synchronization
   const desiredBackDepth =
     !booting && isAuthenticated
-      ? (isRouteResultVisible ? 2 : activeBackScreen ? 1 : 0) + (isModalOverlayOpen ? 1 : 0)
+      ? (isRouteResultVisible || (isServiceReminderVisible && activeServiceSubScreen !== null)
+          ? 2
+          : activeBackScreen
+            ? 1
+            : 0) + (isModalOverlayOpen ? 1 : 0)
       : 0;
   const pushedHistoryDepthRef = useRef<number>(0);
   const ignorePopCountRef = useRef<number>(0);
@@ -6609,6 +6657,10 @@ export default function App() {
       }
       if (isTripDetailVisible) setSelectedTripForDetail(null);
       if (isChargeDetailVisible) setSelectedChargeForDetail(null);
+      if (activeServiceSubScreen !== null) {
+        setActiveServiceSubScreen(null);
+        serviceSubSlideAnim.setValue(0);
+      }
       setTab(nextTab);
     },
     [
@@ -6624,6 +6676,7 @@ export default function App() {
       isAnalyticsScreenVisible,
       isTextSizeScreenVisible,
       isServiceReminderVisible,
+      activeServiceSubScreen,
       isMapsKeyScreenVisible,
       isPushScreenVisible,
       isNotifsScreenVisible,
@@ -6999,6 +7052,13 @@ export default function App() {
     catalog: serviceCatalog,
   });
 
+  const serviceIntervalProgress = computeServiceIntervalProgress({
+    odometerKm: liveServiceOdometerKm,
+    lastServiceOdoKm: activeServiceSettings.lastServiceOdoKm,
+    previousMilestoneKm: serviceStatus.previousMilestone?.km ?? null,
+    nextMilestoneKm: serviceStatus.nextMilestone.km,
+  });
+
   const wheelStatuses = computeWheelServicesStatus({
     odometerKm: liveServiceOdometerKm,
     settings: activeServiceSettings,
@@ -7154,6 +7214,22 @@ export default function App() {
   });
 
   const serviceReminderTranslateX = serviceReminderSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const serviceSubShiftX = serviceSubSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -screenWidth * 0.3],
+    extrapolate: 'clamp',
+  });
+
+  const serviceReminderEffectiveTranslateX = Animated.add(
+    serviceReminderTranslateX,
+    serviceSubShiftX
+  );
+
+  const serviceSubTranslateX = serviceSubSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -8917,80 +8993,121 @@ export default function App() {
                   accessibilityRole="button"
                   accessibilityLabel="Open Windsor Service and Wheel Maintenance Reminder"
                 >
-                  <View style={styles.profileRowItem}>
-                    <View style={styles.profileRowIconWrap}>
-                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={serviceStatus.urgency === 'overdue' ? '#F87171' : serviceStatus.urgency === 'warning' ? '#FBBF24' : '#10B981'} strokeWidth={2}>
-                        <Path
-                          d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </Svg>
-                    </View>
-                    <View style={{ flex: 1, marginRight: 8 }}>
-                      <Text style={styles.profileRowTitleFlexReset}>
-                        Next service · {formatKmNumber(serviceStatus.nextMilestone.km)} km
-                      </Text>
-                      <Text style={styles.profileRowSub}>
-                        {serviceStatus.kmRemaining !== null
-                          ? serviceStatus.kmRemaining < 0
-                            ? `${formatKmNumber(Math.abs(serviceStatus.kmRemaining))} km overdue`
+                  {(() => {
+                    const serviceAccent =
+                      serviceStatus.urgency === 'overdue'
+                        ? '#F87171'
+                        : serviceStatus.urgency === 'warning'
+                          ? '#FBBF24'
+                          : '#34D399';
+                    const serviceIconBg =
+                      serviceStatus.urgency === 'overdue'
+                        ? 'rgba(239, 68, 68, 0.16)'
+                        : serviceStatus.urgency === 'warning'
+                          ? 'rgba(245, 158, 11, 0.16)'
+                          : 'rgba(16, 185, 129, 0.14)';
+                    const kmLeftStr =
+                      serviceStatus.kmRemaining !== null
+                        ? serviceStatus.kmRemaining < 0
+                          ? `${formatKmNumber(Math.abs(serviceStatus.kmRemaining))} km overdue`
+                          : serviceStatus.kmRemaining === 0
+                            ? 'Due now'
                             : `${formatKmNumber(serviceStatus.kmRemaining)} km left`
-                          : 'Sync odo'}
-                        {' · '}
-                        {serviceStatus.daysRemaining !== null
-                          ? serviceStatus.daysRemaining < 0
-                            ? `${Math.abs(serviceStatus.daysRemaining)}d overdue`
-                            : serviceStatus.daysRemaining === 0
-                              ? 'Due today'
-                              : `${serviceStatus.daysRemaining}d left`
-                          : 'Enter last service date'}
-                      </Text>
-                    </View>
-                    <Text
-                      style={[
-                        styles.profileRowVal,
-                        styles.profileRowValGreen,
-                        serviceStatus.urgency === 'warning' && styles.profileRowValAmber,
-                        serviceStatus.urgency === 'overdue' && styles.profileRowValRed,
-                      ]}
-                    >
-                      {formatInrAmount(serviceStatus.cost.totalInr)}
-                    </Text>
-                    <Text style={styles.profileRowChevron}>›</Text>
-                  </View>
+                        : 'Sync odo';
+                    const daysLeftStr = formatServiceDaysCountdownText(serviceStatus.daysRemaining);
 
-                  <View style={styles.profileRowDivider} />
-
-                  <View style={styles.profileServiceWheelBar}>
-                    {wheelStatuses.map((w) => {
-                      const chipColor =
-                        w.urgency === 'overdue'
-                          ? '#FCA5A5'
-                          : w.urgency === 'warning'
-                            ? '#FCD34D'
-                            : w.urgency === 'normal'
-                              ? '#34D399'
-                              : '#94A3B8';
-                      const shortText = !w.enabled
-                        ? `${w.shortLabel}: Off`
-                        : w.lastDoneKm === null
-                          ? `${w.shortLabel}: Set km`
-                          : w.kmRemaining === null
-                            ? `${w.shortLabel}: ${formatKmNumber(w.intervalKm)}k`
-                            : w.kmRemaining <= 0
-                              ? `${w.shortLabel}: Due`
-                              : `${w.shortLabel}: ${formatKmNumber(w.kmRemaining)} km`;
-                      return (
-                        <View key={w.key} style={styles.profileServiceWheelPill}>
-                          <View style={[styles.profileServiceWheelDot, { backgroundColor: chipColor }]} />
-                          <Text style={[styles.profileServiceWheelText, { color: chipColor }]} numberOfLines={1}>
-                            {shortText}
+                    return (
+                      <>
+                        <View style={styles.profileServiceTopRow}>
+                          <View style={[styles.profileServiceIconCircle, { backgroundColor: serviceIconBg }]}>
+                            <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={serviceAccent} strokeWidth={2}>
+                              <Path
+                                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </Svg>
+                          </View>
+                          <View style={{ flex: 1, marginRight: 10 }}>
+                            <Text style={styles.profileServiceTitle}>
+                              Next service · {formatKmNumber(serviceStatus.nextMilestone.km)} km
+                            </Text>
+                            <Text style={styles.profileServiceSub}>
+                              {kmLeftStr} · {daysLeftStr}
+                            </Text>
+                          </View>
+                          <Text
+                            style={[
+                              styles.profileServiceCostVal,
+                              { color: serviceAccent },
+                            ]}
+                          >
+                            {formatInrAmount(serviceStatus.cost.totalInr)}
                           </Text>
+                          <Text style={styles.profileRowChevron}>›</Text>
                         </View>
-                      );
-                    })}
-                  </View>
+
+                        <View style={styles.profileServiceProgressTrack}>
+                          <View
+                            style={[
+                              styles.profileServiceProgressFill,
+                              {
+                                width: `${Math.round(serviceIntervalProgress.fraction * 100)}%`,
+                                backgroundColor: serviceAccent,
+                              },
+                            ]}
+                          />
+                        </View>
+
+                        <View style={styles.profileServiceFullDivider} />
+
+                        <View style={styles.profileServiceWheelBar}>
+                          {wheelStatuses.map((w) => {
+                            const dotColor =
+                              w.urgency === 'overdue'
+                                ? '#F87171'
+                                : w.urgency === 'warning'
+                                  ? '#FBBF24'
+                                  : w.urgency === 'normal'
+                                    ? '#34D399'
+                                    : '#64748B';
+                            const valColor =
+                              w.urgency === 'overdue'
+                                ? '#FCA5A5'
+                                : w.urgency === 'warning'
+                                  ? '#FCD34D'
+                                  : !w.enabled || w.lastDoneKm === null
+                                    ? '#64748B'
+                                    : '#F8FAFC';
+                            const valText = !w.enabled
+                              ? 'Off'
+                              : w.lastDoneKm === null
+                                ? 'Set km'
+                                : w.kmRemaining === null
+                                  ? 'Sync odo'
+                                  : w.kmRemaining < 0
+                                    ? `${formatKmNumber(Math.abs(w.kmRemaining))} overdue`
+                                    : w.kmRemaining === 0
+                                      ? 'Due now'
+                                      : `${formatKmNumber(w.kmRemaining)} km`;
+                            return (
+                              <View key={w.key} style={styles.profileServiceWheelCol}>
+                                <View style={styles.profileServiceWheelLabelRow}>
+                                  <View style={[styles.profileServiceWheelDot, { backgroundColor: dotColor }]} />
+                                  <Text style={styles.profileServiceWheelLabel} numberOfLines={1}>
+                                    {w.shortLabel}
+                                  </Text>
+                                </View>
+                                <Text style={[styles.profileServiceWheelVal, { color: valColor }]} numberOfLines={1}>
+                                  {valText}
+                                </Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </>
+                    );
+                  })()}
                 </TouchableOpacity>
               </View>
 
@@ -13221,7 +13338,7 @@ export default function App() {
       {/* Service Reminder Fullscreen Tween Screen */}
       {isServiceReminderVisible && (
         <ServiceReminderScreen
-          translateX={serviceReminderTranslateX}
+          translateX={serviceReminderEffectiveTranslateX}
           odometerKm={liveServiceOdometerKm}
           catalog={serviceCatalog}
           isSyncingCatalog={isSyncingServiceCatalog}
@@ -13232,6 +13349,10 @@ export default function App() {
           wheelStatuses={wheelStatuses}
           onChangeSettings={handleUpdateServiceReminderSettings}
           onClose={handleCloseServiceReminderScreen}
+          activeSubScreen={activeServiceSubScreen}
+          subScreenTranslateX={serviceSubTranslateX}
+          onOpenSubScreen={handleOpenServiceSubScreen}
+          onCloseSubScreen={handleCloseServiceSubScreen}
           onShowBanner={showBanner}
         />
       )}
@@ -21261,32 +21382,83 @@ const styles = StyleSheet.create({
   profileRowValRed: {
     color: '#F87171',
   },
+  profileServiceTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 15,
+    paddingBottom: 12,
+  },
+  profileServiceIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  profileServiceTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  profileServiceSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  profileServiceCostVal: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginRight: 8,
+  },
+  profileServiceProgressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#1E293B',
+    overflow: 'hidden',
+    marginHorizontal: 16,
+    marginBottom: 14,
+  },
+  profileServiceProgressFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  profileServiceFullDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+  },
   profileServiceWheelBar: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    alignItems: 'flex-start',
     paddingHorizontal: 16,
-    paddingVertical: 11,
+    paddingVertical: 13,
+    gap: 10,
   },
-  profileServiceWheelPill: {
+  profileServiceWheelCol: {
+    flex: 1,
+  },
+  profileServiceWheelLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#0B1120',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
   },
   profileServiceWheelDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
   },
-  profileServiceWheelText: {
-    fontSize: 11,
-    fontWeight: '600',
+  profileServiceWheelLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  profileServiceWheelVal: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginTop: 4,
   },
   profileRowChevron: {
     color: '#64748B',

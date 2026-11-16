@@ -7,6 +7,7 @@ import {
   formatInrAmount,
   formatIsoDateShort,
   formatKmNumber,
+  formatServiceDaysCountdownText,
   WheelServiceKey,
 } from './sdk';
 
@@ -15,16 +16,6 @@ interface HomeServiceAlertCardProps {
   wheelStatuses: ComputedWheelServiceItemStatus[];
   onPressManage: () => void;
   onMarkWheelDone: (key: WheelServiceKey) => void;
-}
-
-function formatDaysCountdown(status: ComputedNextServiceStatus): string {
-  if (status.daysRemaining === null) return 'Add service date';
-  if (status.daysRemaining < 0) {
-    const overdue = Math.abs(status.daysRemaining);
-    return `${overdue} day${overdue === 1 ? '' : 's'} overdue`;
-  }
-  if (status.daysRemaining === 0) return 'Due today';
-  return `${status.daysRemaining} day${status.daysRemaining === 1 ? '' : 's'} left`;
 }
 
 function formatKmCountdown(kmRemaining: number | null): string {
@@ -132,7 +123,7 @@ export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
                   serviceStatus.isDaysWarning && { color: badgeTextColor },
                 ]}
               >
-                {formatDaysCountdown(serviceStatus)}
+                {formatServiceDaysCountdownText(serviceStatus.daysRemaining, 'Add service date')}
               </Text>
               {serviceStatus.nextDueDate && (
                 <Text style={styles.countdownSub}>Due {formatIsoDateShort(serviceStatus.nextDueDate)}</Text>

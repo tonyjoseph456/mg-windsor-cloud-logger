@@ -17,12 +17,14 @@ import {
   ComputedNextServiceStatus,
   ComputedWheelServiceItemStatus,
   computeMilestoneCost,
+  computeServiceIntervalProgress,
   DEFAULT_SERVICE_WARNING_DAYS,
   DEFAULT_SERVICE_WARNING_KM,
   DEFAULT_WHEEL_SERVICE_WARNING_KM,
   formatInrAmount,
   formatIsoDateShort,
   formatKmNumber,
+  formatServiceDaysCountdownText,
   getServiceMilestonesUpTo,
   getTodayLocalIsoDate,
   isValidIsoDateString,
@@ -33,6 +35,8 @@ import {
   WHEEL_SERVICE_META,
   WheelServiceKey,
 } from './sdk';
+
+export type ServiceSubScreenKey = 'lastService' | 'alerts' | 'schedule';
 
 interface ServiceReminderScreenProps {
   translateX: Animated.AnimatedInterpolation<string | number>;
@@ -46,6 +50,10 @@ interface ServiceReminderScreenProps {
   wheelStatuses: ComputedWheelServiceItemStatus[];
   onChangeSettings: (next: ServiceReminderSettings) => void;
   onClose: () => void;
+  activeSubScreen: ServiceSubScreenKey | null;
+  subScreenTranslateX: Animated.AnimatedInterpolation<string | number>;
+  onOpenSubScreen: (key: ServiceSubScreenKey) => void;
+  onCloseSubScreen: () => void;
   onShowBanner?: (type: 'ok' | 'err', msg: string) => void;
 }
 
@@ -54,6 +62,35 @@ function formatAutoDateInput(raw: string): string {
   if (digits.length <= 4) return digits;
   if (digits.length <= 6) return `${digits.slice(0, 4)}-${digits.slice(4)}`;
   return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6)}`;
+}
+
+function formatSyncTimestamp(iso: string | null): string {
+  if (!iso) return 'Using offline baseline';
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return iso;
+  return dt.toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function BackButton({ onPress, label }: { onPress: () => void; label: string }) {
+  return (
+    <TouchableOpacity
+      style={styles.backBtn}
+      onPress={onPress}
+      activeOpacity={0.7}
+      accessibilityLabel={label}
+      accessibilityRole="button"
+    >
+      <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+        <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+      </Svg>
+    </TouchableOpacity>
+  );
 }
 
 export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
@@ -68,22 +105,32 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
   wheelStatuses,
   onChangeSettings,
   onClose,
+  activeSubScreen,
+  subScreenTranslateX,
+  onOpenSubScreen,
+  onCloseSubScreen,
   onShowBanner,
 }) => {
   const todayIso = getTodayLocalIsoDate();
+
+  // ---- Last service draft state (committed on Save) ----
   const [dateDraft, setDateDraft] = useState<string>(settings.lastServiceDate || '');
+  const [isDateFocused, setIsDateFocused] = useState<boolean>(false);
+  const [dateError, setDateError] = useState<string | null>(null);
   const [odoDraft, setOdoDraft] = useState<string>(
     settings.lastServiceOdoKm !== null && settings.lastServiceOdoKm !== undefined
       ? String(settings.lastServiceOdoKm)
       : ''
   );
+  const [isOdoFocused, setIsOdoFocused] = useState<boolean>(false);
+  const [milestoneDraft, setMilestoneDraft] = useState<number | null>(settings.lastServiceMilestoneKm);
+  const [showAllLastMilestones, setShowAllLastMilestones] = useState<boolean>(false);
+
+  // ---- Alerts & tyre care state (live updates) ----
   const [warnDaysDraft, setWarnDaysDraft] = useState<string>(String(settings.warningDays));
   const [warnKmDraft, setWarnKmDraft] = useState<string>(String(settings.warningKm));
-  const [wheelIntervalDrafts, setWheelIntervalDrafts] = useState<Record<WheelServiceKey, string>>({
-    balancing: String(settings.wheelServices.balancing.intervalKm),
-    alignment: String(settings.wheelServices.alignment.intervalKm),
-    rotation: String(settings.wheelServices.rotation.intervalKm),
-  });
+  const [isWarnKmFocused, setIsWarnKmFocused] = useState<boolean>(false);
+  const [expandedWheelKey, setExpandedWheelKey] = useState<WheelServiceKey | null>('balancing');
   const [wheelLastKmDrafts, setWheelLastKmDrafts] = useState<Record<WheelServiceKey, string>>({
     balancing:
       settings.wheelServices.balancing.lastDoneKm !== null
@@ -98,25 +145,42 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
         ? String(settings.wheelServices.rotation.lastDoneKm)
         : '',
   });
+  const [focusedWheelLastKey, setFocusedWheelLastKey] = useState<WheelServiceKey | null>(null);
   const [wheelWarnKmDrafts, setWheelWarnKmDrafts] = useState<Record<WheelServiceKey, string>>({
     balancing: String(settings.wheelServices.balancing.warningKm),
     alignment: String(settings.wheelServices.alignment.warningKm),
     rotation: String(settings.wheelServices.rotation.warningKm),
   });
+  const [focusedWheelWarnKey, setFocusedWheelWarnKey] = useState<WheelServiceKey | null>(null);
+
+  // ---- Replacement schedule state ----
   const [inspectKm, setInspectKm] = useState<number>(serviceStatus.nextMilestone.km);
-  const [showScheduleList, setShowScheduleList] = useState<boolean>(false);
 
+  // Refresh drafts whenever opening a sub-screen
   useEffect(() => {
-    setDateDraft(settings.lastServiceDate || '');
-  }, [settings.lastServiceDate]);
-
-  useEffect(() => {
-    setOdoDraft(
-      settings.lastServiceOdoKm !== null && settings.lastServiceOdoKm !== undefined
-        ? String(settings.lastServiceOdoKm)
-        : ''
-    );
-  }, [settings.lastServiceOdoKm]);
+    if (activeSubScreen === 'lastService') {
+      setDateDraft(settings.lastServiceDate || '');
+      setDateError(null);
+      setIsDateFocused(false);
+      setOdoDraft(
+        settings.lastServiceOdoKm !== null && settings.lastServiceOdoKm !== undefined
+          ? String(settings.lastServiceOdoKm)
+          : ''
+      );
+      setIsOdoFocused(false);
+      setMilestoneDraft(settings.lastServiceMilestoneKm);
+      setShowAllLastMilestones(
+        (settings.lastServiceMilestoneKm ?? 0) > 30000 || (odometerKm ?? 0) >= 45000
+      );
+    } else if (activeSubScreen === 'alerts') {
+      setWarnDaysDraft(String(settings.warningDays));
+      setWarnKmDraft(String(settings.warningKm));
+      setIsWarnKmFocused(false);
+      setExpandedWheelKey((prev) => prev || 'balancing');
+    } else if (activeSubScreen === 'schedule') {
+      setInspectKm(serviceStatus.nextMilestone.km);
+    }
+  }, [activeSubScreen]);
 
   useEffect(() => {
     setWarnDaysDraft(String(settings.warningDays));
@@ -127,11 +191,6 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
   }, [settings.warningKm]);
 
   useEffect(() => {
-    setWheelIntervalDrafts({
-      balancing: String(settings.wheelServices.balancing.intervalKm),
-      alignment: String(settings.wheelServices.alignment.intervalKm),
-      rotation: String(settings.wheelServices.rotation.intervalKm),
-    });
     setWheelLastKmDrafts({
       balancing:
         settings.wheelServices.balancing.lastDoneKm !== null
@@ -158,76 +217,127 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
     catalog
   );
 
+  const lastServiceMilestoneCap = Math.max(
+    30000,
+    serviceStatus.previousMilestone?.km ?? 0,
+    milestoneDraft ?? 0
+  );
+  const visibleLastServiceMilestones = showAllLastMilestones
+    ? milestones.slice(0, 12)
+    : milestones.filter((m) => m.km <= lastServiceMilestoneCap);
+  const hasHiddenMilestones = !showAllLastMilestones && milestones.length > visibleLastServiceMilestones.length;
+
   const inspectedMilestone: ServiceMilestoneDefinition =
     milestones.find((m) => m.km === inspectKm) || serviceStatus.nextMilestone;
   const inspectedCost = computeMilestoneCost(inspectedMilestone, catalog);
 
-  const formatCatalogSyncLabel = () => {
-    if (catalog.fetchedAt) {
-      const dt = new Date(catalog.fetchedAt);
-      const timeStr = Number.isNaN(dt.getTime())
-        ? catalog.fetchedAt
-        : dt.toLocaleString(undefined, {
-            day: '2-digit',
-            month: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-          });
-      if (catalog.source === 'live') return `Live costs synced · ${timeStr}`;
-      return `Cached live costs · ${timeStr}`;
-    }
-    return 'Bundled baseline estimate (offline fallback)';
-  };
+  const intervalProgress = computeServiceIntervalProgress({
+    odometerKm,
+    lastServiceOdoKm: settings.lastServiceOdoKm,
+    previousMilestoneKm: serviceStatus.previousMilestone?.km ?? null,
+    nextMilestoneKm: serviceStatus.nextMilestone.km,
+  });
+
+  const accentColor =
+    serviceStatus.urgency === 'overdue'
+      ? '#F87171'
+      : serviceStatus.urgency === 'warning'
+        ? '#FBBF24'
+        : '#34D399';
 
   const urgencyBadge =
     serviceStatus.urgency === 'overdue'
       ? {
-          label: 'OVERDUE',
-          bg: 'rgba(239, 68, 68, 0.18)',
-          border: 'rgba(248, 113, 113, 0.45)',
+          label: 'Overdue',
+          bg: 'rgba(239, 68, 68, 0.16)',
           color: '#FCA5A5',
         }
       : serviceStatus.urgency === 'warning'
         ? {
-            label: 'DUE SOON',
-            bg: 'rgba(245, 158, 11, 0.18)',
-            border: 'rgba(251, 191, 36, 0.45)',
+            label: 'Due soon',
+            bg: 'rgba(245, 158, 11, 0.16)',
             color: '#FCD34D',
           }
         : {
-            label: 'ON TRACK',
+            label: 'On track',
             bg: 'rgba(16, 185, 129, 0.16)',
-            border: 'rgba(52, 211, 153, 0.35)',
             color: '#34D399',
           };
 
-  const handleLastDateText = (val: string) => {
+  const formatHubDistanceLeft = () => {
+    if (serviceStatus.kmRemaining === null) return '-- km';
+    if (serviceStatus.kmRemaining < 0) {
+      return `${formatKmNumber(Math.abs(serviceStatus.kmRemaining))} km overdue`;
+    }
+    if (serviceStatus.kmRemaining === 0) return 'Due now';
+    return `${formatKmNumber(serviceStatus.kmRemaining)} km`;
+  };
+
+  const formatHubTimeLeft = () => {
+    if (serviceStatus.daysRemaining === null) return 'Add date';
+    if (serviceStatus.daysRemaining < 0) {
+      const overdue = Math.abs(serviceStatus.daysRemaining);
+      return `${overdue} day${overdue === 1 ? '' : 's'} overdue`;
+    }
+    if (serviceStatus.daysRemaining === 0) return 'Due today';
+    return `${serviceStatus.daysRemaining} day${serviceStatus.daysRemaining === 1 ? '' : 's'}`;
+  };
+
+  const handleMarkNextServiceDoneToday = () => {
+    const roundedOdo =
+      odometerKm !== null && Number.isFinite(odometerKm)
+        ? Math.round(odometerKm)
+        : serviceStatus.nextMilestone.km;
+    onChangeSettings({
+      ...settings,
+      lastServiceDate: todayIso,
+      lastServiceOdoKm: roundedOdo,
+      lastServiceMilestoneKm: serviceStatus.nextMilestone.km,
+    });
+    onShowBanner?.(
+      'ok',
+      `Logged ${formatKmNumber(serviceStatus.nextMilestone.km)} km service on ${formatIsoDateShort(todayIso)}`
+    );
+  };
+
+  // ---- Last Service Handlers ----
+  const handleLastDateDraftInput = (val: string) => {
     const cleaned = val.trim();
     const formatted =
       cleaned.length > dateDraft.length && !cleaned.includes('-')
         ? formatAutoDateInput(cleaned)
         : cleaned.slice(0, 10);
     setDateDraft(formatted);
-    if (!formatted) {
-      onChangeSettings({ ...settings, lastServiceDate: null });
-    } else if (isValidIsoDateString(formatted)) {
-      onChangeSettings({ ...settings, lastServiceDate: formatted });
+    if (!formatted || isValidIsoDateString(formatted)) {
+      setDateError(null);
     }
   };
 
-  const handleLastOdoText = (val: string) => {
-    const digits = val.replace(/\D/g, '');
+  const handleLastOdoDraftInput = (val: string) => {
+    const digits = val.replace(/\D/g, '').slice(0, 7);
     setOdoDraft(digits);
-    if (!digits) {
-      onChangeSettings({ ...settings, lastServiceOdoKm: null });
+  };
+
+  const handleSaveLastService = () => {
+    const trimmedDate = dateDraft.trim();
+    if (trimmedDate && !isValidIsoDateString(trimmedDate)) {
+      setDateError('Enter a valid calendar date (YYYY-MM-DD).');
       return;
     }
-    const parsed = Number(digits);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      onChangeSettings({ ...settings, lastServiceOdoKm: Math.min(1000000, parsed) });
-    }
+    const cleanOdoDigits = odoDraft.replace(/\D/g, '');
+    const parsedOdo = cleanOdoDigits ? Math.min(1000000, Number(cleanOdoDigits)) : null;
+    onChangeSettings({
+      ...settings,
+      lastServiceDate: trimmedDate || null,
+      lastServiceOdoKm:
+        parsedOdo !== null && Number.isFinite(parsedOdo) ? parsedOdo : null,
+      lastServiceMilestoneKm: milestoneDraft,
+    });
+    onShowBanner?.('ok', 'Service record updated');
+    onCloseSubScreen();
   };
 
+  // ---- Alerts & Tyre Care Handlers ----
   const handleWarnDaysText = (val: string) => {
     const digits = val.replace(/\D/g, '');
     setWarnDaysDraft(digits);
@@ -258,26 +368,10 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
     onChangeSettings({ ...settings, warningKm: nextVal });
   };
 
-  const handleMarkNextServiceDoneToday = () => {
-    const roundedOdo =
-      odometerKm !== null && Number.isFinite(odometerKm)
-        ? Math.round(odometerKm)
-        : serviceStatus.nextMilestone.km;
-    onChangeSettings({
-      ...settings,
-      lastServiceDate: todayIso,
-      lastServiceOdoKm: roundedOdo,
-      lastServiceMilestoneKm: serviceStatus.nextMilestone.km,
-    });
-    onShowBanner?.(
-      'ok',
-      `Logged ${formatKmNumber(serviceStatus.nextMilestone.km)} km service on ${formatIsoDateShort(
-        todayIso
-      )}`
-    );
-  };
-
-  const updateWheel = (key: WheelServiceKey, patch: Partial<ServiceReminderSettings['wheelServices'][WheelServiceKey]>) => {
+  const updateWheel = (
+    key: WheelServiceKey,
+    patch: Partial<ServiceReminderSettings['wheelServices'][WheelServiceKey]>
+  ) => {
     onChangeSettings({
       ...settings,
       wheelServices: {
@@ -292,7 +386,7 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
 
   const handleMarkWheelDoneNow = (key: WheelServiceKey) => {
     if (odometerKm === null || !Number.isFinite(odometerKm)) {
-      onShowBanner?.('err', 'Sync live odometer first or type the last-done km below.');
+      onShowBanner?.('err', 'Sync live odometer first or type the last-done km.');
       return;
     }
     const rounded = Math.round(odometerKm);
@@ -304,712 +398,905 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
     );
   };
 
-  const isDateDraftInvalid = Boolean(dateDraft && !isValidIsoDateString(dateDraft));
-
-  const formatDaysBadgeText = () => {
-    if (serviceStatus.daysRemaining === null) return 'Add date';
-    if (serviceStatus.daysRemaining < 0) {
-      return `${Math.abs(serviceStatus.daysRemaining)}d overdue`;
-    }
-    if (serviceStatus.daysRemaining === 0) return 'Today';
-    return `${serviceStatus.daysRemaining} days`;
+  const formatWheelCountdownText = (item: ComputedWheelServiceItemStatus): string => {
+    if (!item.enabled) return 'Disabled';
+    if (item.lastDoneKm === null) return 'Set last done km';
+    if (item.kmRemaining === null) return `Due at ${formatKmNumber(item.nextDueKm ?? 0)} km`;
+    if (item.kmRemaining < 0) return `${formatKmNumber(Math.abs(item.kmRemaining))} km overdue`;
+    if (item.kmRemaining === 0) return 'Due now';
+    return `${formatKmNumber(item.kmRemaining)} km left`;
   };
 
-  const formatKmBadgeText = () => {
-    if (serviceStatus.kmRemaining === null) return '-- km';
-    if (serviceStatus.kmRemaining < 0) {
-      return `${formatKmNumber(Math.abs(serviceStatus.kmRemaining))} km overdue`;
-    }
-    if (serviceStatus.kmRemaining === 0) return 'Due now';
-    return `${formatKmNumber(serviceStatus.kmRemaining)} km`;
-  };
+  const enabledWheelCount = wheelStatuses.filter((w) => w.enabled).length;
+  const replacementCount = serviceStatus.nextMilestone.replacements.length;
+
+  const scheduleDisclaimerText =
+    serviceStatus.lastServiceDate && serviceStatus.previousMilestone
+      ? `Prices are approximate. They are based on your ${formatKmNumber(
+          serviceStatus.previousMilestone.km
+        )} km service on ${formatIsoDateShort(
+          serviceStatus.lastServiceDate
+        )} and may change with price revisions, taxes or labour charges. They update only after your next service.`
+      : catalog.priceNote;
 
   return (
-    <Animated.View
-      style={[
-        styles.layer,
-        {
-          transform: [{ translateX }],
-        },
-      ]}
-    >
-      <SafeAreaView style={styles.safeArea}>
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={true}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Header */}
-          <View style={styles.header}>
-            <TouchableOpacity
-              style={styles.backBtn}
-              onPress={onClose}
-              activeOpacity={0.7}
-              accessibilityLabel="Back to Profile"
-              accessibilityRole="button"
-            >
-              <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
-                <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
-              </Svg>
-            </TouchableOpacity>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.headerTitle}>Service Reminder</Text>
-              <Text style={styles.headerSub}>
-                Live odo: {odometerKm !== null ? `${formatKmNumber(odometerKm)} km` : 'Sync vehicle'} · MG server does not provide last service date
-              </Text>
-            </View>
-          </View>
-
-          {/* 1. Next Service Overview Card */}
-          <View style={styles.card}>
-            <View style={styles.cardTopRow}>
-              <View style={{ flex: 1, paddingRight: 10 }}>
-                <Text style={styles.eyebrow}>NEXT SCHEDULED SERVICE</Text>
-                <Text style={styles.milestoneHeading}>
-                  {formatKmNumber(serviceStatus.nextMilestone.km)} km · {serviceStatus.nextMilestone.timeLabel}
+    <>
+      {/* Root Hub Screen: Service reminder */}
+      <Animated.View
+        style={[
+          styles.layer,
+          {
+            transform: [{ translateX }],
+          },
+        ]}
+      >
+        <SafeAreaView style={styles.safeArea}>
+          <ScrollView
+            style={styles.scrollView}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Header */}
+            <View style={styles.header}>
+              <BackButton onPress={onClose} label="Back to Profile" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.headerTitle}>Service reminder</Text>
+                <Text style={styles.headerSub}>
+                  Odometer {odometerKm !== null ? `${formatKmNumber(odometerKm)} km` : 'not synced'}
                 </Text>
-                {serviceStatus.previousMilestone && (
-                  <Text style={styles.mutedText}>
-                    Previous interval: {formatKmNumber(serviceStatus.previousMilestone.km)} km (
-                    {serviceStatus.previousMilestone.timeLabel})
+              </View>
+            </View>
+
+            {/* 1. Hero Next Service Card */}
+            <View style={styles.card}>
+              <View style={styles.heroTopRow}>
+                <Text style={[styles.heroEyebrow, { color: accentColor }]}>NEXT SERVICE</Text>
+                <View style={[styles.statusBadge, { backgroundColor: urgencyBadge.bg }]}>
+                  <Text style={[styles.statusBadgeText, { color: urgencyBadge.color }]}>
+                    {urgencyBadge.label}
                   </Text>
-                )}
+                </View>
               </View>
-              <View
-                style={[
-                  styles.statusBadge,
-                  { backgroundColor: urgencyBadge.bg, borderColor: urgencyBadge.border },
-                ]}
-              >
-                <Text style={[styles.statusBadgeText, { color: urgencyBadge.color }]}>
-                  {urgencyBadge.label}
+
+              <Text style={styles.heroTitle}>
+                {formatKmNumber(serviceStatus.nextMilestone.km)} km ·{' '}
+                {serviceStatus.nextMilestone.timeLabel.toLowerCase()}
+              </Text>
+              {serviceStatus.previousMilestone ? (
+                <Text style={styles.heroSub}>
+                  Previous: {formatKmNumber(serviceStatus.previousMilestone.km)} km (
+                  {serviceStatus.previousMilestone.timeLabel.toLowerCase()})
                 </Text>
+              ) : (
+                <Text style={styles.heroSub}>First scheduled inspection milestone</Text>
+              )}
+
+              {/* Progress Bar */}
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: `${Math.round(intervalProgress.fraction * 100)}%`,
+                      backgroundColor: accentColor,
+                    },
+                  ]}
+                />
+              </View>
+              <View style={styles.progressLabelsRow}>
+                <Text style={styles.progressLabelText}>{intervalProgress.startLabel}</Text>
+                <Text style={styles.progressLabelText}>{intervalProgress.targetLabel}</Text>
+              </View>
+
+              <View style={styles.heroDivider} />
+
+              {/* 3-Column Metrics */}
+              <View style={styles.heroMetricsRow}>
+                <View style={styles.heroMetricCol}>
+                  <Text style={styles.heroMetricLabel}>Distance left</Text>
+                  <Text
+                    style={[
+                      styles.heroMetricVal,
+                      serviceStatus.isKmWarning && { color: urgencyBadge.color },
+                    ]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {formatHubDistanceLeft()}
+                  </Text>
+                  <Text style={styles.heroMetricSub} numberOfLines={1}>
+                    Target {formatKmNumber(serviceStatus.nextMilestone.km)} km
+                  </Text>
+                </View>
+
+                <View style={styles.heroMetricCol}>
+                  <Text style={styles.heroMetricLabel}>Time left</Text>
+                  <Text
+                    style={[
+                      styles.heroMetricVal,
+                      serviceStatus.isDaysWarning && { color: urgencyBadge.color },
+                      serviceStatus.daysRemaining === null && { color: '#94A3B8' },
+                    ]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {formatHubTimeLeft()}
+                  </Text>
+                  <Text style={styles.heroMetricSub} numberOfLines={1}>
+                    {serviceStatus.nextDueDate
+                      ? `Due ${formatIsoDateShort(serviceStatus.nextDueDate)}`
+                      : `Every ${serviceStatus.intervalMonths} mo`}
+                  </Text>
+                </View>
+
+                <View style={styles.heroMetricCol}>
+                  <Text style={styles.heroMetricLabel}>Approx. cost</Text>
+                  <Text style={[styles.heroMetricVal, { color: '#34D399' }]} numberOfLines={1}>
+                    {formatInrAmount(serviceStatus.cost.totalInr)}
+                  </Text>
+                  <Text style={styles.heroMetricSub} numberOfLines={1}>
+                    {replacementCount > 0
+                      ? `${replacementCount} replacement${replacementCount === 1 ? '' : 's'}`
+                      : 'Inspection only'}
+                  </Text>
+                </View>
               </View>
             </View>
 
-            <View style={styles.metricsRow}>
-              <View style={styles.metricTile}>
-                <Text style={styles.metricLabel}>Kms left</Text>
-                <Text
-                  style={[
-                    styles.metricValue,
-                    serviceStatus.isKmWarning && { color: urgencyBadge.color },
-                  ]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                >
-                  {formatKmBadgeText()}
-                </Text>
-                <Text style={styles.metricSub}>
-                  Target {formatKmNumber(serviceStatus.nextMilestone.km)} km
-                </Text>
-              </View>
-
-              <View style={styles.metricTile}>
-                <Text style={styles.metricLabel}>Days left</Text>
-                <Text
-                  style={[
-                    styles.metricValue,
-                    serviceStatus.isDaysWarning && { color: urgencyBadge.color },
-                    serviceStatus.daysRemaining === null && { color: '#94A3B8', fontSize: 15 },
-                  ]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                >
-                  {formatDaysBadgeText()}
-                </Text>
-                <Text style={styles.metricSub}>
-                  {serviceStatus.nextDueDate
-                    ? `Due ${formatIsoDateShort(serviceStatus.nextDueDate)}`
-                    : `Every ${serviceStatus.intervalMonths} mo`}
-                </Text>
-              </View>
-
-              <View style={styles.metricTile}>
-                <Text style={styles.metricLabel}>Approx. cost</Text>
-                <Text style={[styles.metricValue, { color: '#34D399' }]} numberOfLines={1}>
-                  {formatInrAmount(serviceStatus.cost.totalInr)}
-                </Text>
-                <Text style={styles.metricSub}>
-                  {serviceStatus.cost.lineItems.length > 0
-                    ? `${serviceStatus.nextMilestone.replacements.length} replacement${
-                        serviceStatus.nextMilestone.replacements.length === 1 ? '' : 's'
-                      }`
-                    : 'Inspection only'}
-                </Text>
-              </View>
-            </View>
-
-            {/* Cost Line Breakdown */}
-            <View style={styles.costBox}>
-              <Text style={styles.costBoxTitle}>Estimated Replacement &amp; Service Breakdown</Text>
+            {/* 2. Estimated Cost Breakdown Card */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Estimated cost</Text>
               {serviceStatus.cost.lineItems.length === 0 ? (
-                <Text style={styles.mutedText}>
-                  No mandatory scheduled replacements at {formatKmNumber(serviceStatus.nextMilestone.km)} km (inspection / check items only).
+                <Text style={styles.mutedLineText}>
+                  No mandatory replacements at {formatKmNumber(serviceStatus.nextMilestone.km)} km (inspection only).
                 </Text>
               ) : (
                 serviceStatus.cost.lineItems.map((item) => (
                   <View key={item.name} style={styles.costLineRow}>
-                    <Text style={styles.costLineName}>
-                      {item.name}
-                      {item.kind === 'labour' ? ' (from 30k km)' : ''}
+                    <Text style={styles.costLineLabel}>
+                      {item.kind === 'labour' ? 'Paid service (from 30k km)' : item.name}
                     </Text>
                     <Text style={styles.costLineVal}>{formatInrAmount(item.amountInr)}</Text>
                   </View>
                 ))
               )}
               <View style={styles.costTotalRow}>
-                <Text style={styles.costTotalLabel}>Approx. estimated total</Text>
+                <Text style={styles.costTotalLabel}>Total</Text>
                 <Text style={styles.costTotalVal}>{formatInrAmount(serviceStatus.cost.totalInr)}</Text>
               </View>
             </View>
 
+            {/* 3. Primary Solid Mint Action Button */}
             <TouchableOpacity
-              style={styles.logServiceBtn}
+              style={styles.primaryCtaBtn}
               onPress={handleMarkNextServiceDoneToday}
-              activeOpacity={0.75}
+              activeOpacity={0.82}
+              accessibilityRole="button"
+              accessibilityLabel={`Mark ${formatKmNumber(serviceStatus.nextMilestone.km)} km service done today`}
             >
-              <Text style={styles.logServiceBtnText}>
-                Mark {formatKmNumber(serviceStatus.nextMilestone.km)} km Service Done Today
+              <Text style={styles.primaryCtaText}>
+                Mark {formatKmNumber(serviceStatus.nextMilestone.km)} km service done today
               </Text>
             </TouchableOpacity>
-          </View>
 
-          {/* 2. Last Serviced Input Card */}
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Last Service Record</Text>
-            <Text style={styles.mutedText}>
-              Because MG iSmart does not expose service history, enter your last serviced date (and optional odometer) to calculate exact remaining days and kms.
-            </Text>
+            {/* 4. Sub-screen Navigation Menu Card */}
+            <View style={styles.menuGroupCard}>
+              <TouchableOpacity
+                style={styles.menuRow}
+                onPress={() => onOpenSubScreen('lastService')}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Open Last service record"
+              >
+                <Text style={styles.menuRowTitle}>Last service record</Text>
+                <Text style={styles.menuRowVal}>
+                  {settings.lastServiceDate ? formatIsoDateShort(settings.lastServiceDate) : 'Not set'}
+                </Text>
+                <Text style={styles.menuRowChevron}>›</Text>
+              </TouchableOpacity>
 
-            <View style={styles.fieldGroup}>
-              <View style={styles.fieldHeaderRow}>
-                <Text style={styles.fieldLabel}>Last serviced date</Text>
-                <View style={styles.chipActionsRow}>
+              <View style={styles.menuDivider} />
+
+              <TouchableOpacity
+                style={styles.menuRow}
+                onPress={() => onOpenSubScreen('alerts')}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Open Alerts & tyre care"
+              >
+                <Text style={styles.menuRowTitle}>Alerts &amp; tyre care</Text>
+                <Text style={styles.menuRowVal}>{enabledWheelCount} on</Text>
+                <Text style={styles.menuRowChevron}>›</Text>
+              </TouchableOpacity>
+
+              <View style={styles.menuDivider} />
+
+              <TouchableOpacity
+                style={styles.menuRow}
+                onPress={() => onOpenSubScreen('schedule')}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Open Replacement schedule"
+              >
+                <Text style={styles.menuRowTitle}>Replacement schedule</Text>
+                <Text style={styles.menuRowVal}>{formatKmNumber(serviceStatus.nextMilestone.km)} km</Text>
+                <Text style={styles.menuRowChevron}>›</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Animated.View>
+
+      {/* Nested Pushed Sub-screens */}
+      {activeSubScreen !== null && (
+        <Animated.View
+          style={[
+            styles.subLayer,
+            {
+              transform: [{ translateX: subScreenTranslateX }],
+            },
+          ]}
+        >
+          <SafeAreaView style={styles.safeArea}>
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {/* Sub-screen 1: Last service */}
+              {activeSubScreen === 'lastService' && (
+                <>
+                  <View style={styles.header}>
+                    <BackButton onPress={onCloseSubScreen} label="Back to Service reminder" />
+                    <Text style={styles.headerTitle}>Last service</Text>
+                  </View>
+
+                  <Text style={styles.pageIntro}>
+                    MG iSmart doesn’t share your service history. Enter your last service to get the exact days and km left.
+                  </Text>
+
+                  {/* Date Field */}
+                  <View style={styles.formSection}>
+                    <View style={styles.fieldHeaderRow}>
+                      <Text style={styles.fieldLabel}>Date</Text>
+                      <View style={styles.chipActionsRow}>
+                        <TouchableOpacity
+                          style={styles.outlineGreenPill}
+                          onPress={() => {
+                            setDateDraft(todayIso);
+                            setDateError(null);
+                          }}
+                          activeOpacity={0.75}
+                        >
+                          <Text style={styles.outlineGreenPillText}>Today</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.outlineDarkPill}
+                          onPress={() => {
+                            setDateDraft('');
+                            setDateError(null);
+                          }}
+                          activeOpacity={0.75}
+                        >
+                          <Text style={styles.outlineDarkPillText}>Clear</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {Platform.OS === 'web' ? (
+                      <View style={[styles.inputCard, Boolean(dateError) && styles.inputCardError]}>
+                        <Text
+                          style={[
+                            styles.inputDisplayText,
+                            !isValidIsoDateString(dateDraft) && styles.inputPlaceholderText,
+                          ]}
+                        >
+                          {isValidIsoDateString(dateDraft) ? formatIsoDateShort(dateDraft) : 'Select date'}
+                        </Text>
+                        {React.createElement('input', {
+                          type: 'date',
+                          value: isValidIsoDateString(dateDraft) ? dateDraft : '',
+                          max: todayIso,
+                          'aria-label': 'Last service date',
+                          onChange: (e: any) => handleLastDateDraftInput(String(e?.target?.value || '')),
+                          style: {
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            width: '100%',
+                            height: '100%',
+                            opacity: 0,
+                            cursor: 'pointer',
+                            colorScheme: 'dark',
+                          },
+                        })}
+                      </View>
+                    ) : (
+                      <View style={[styles.inputCard, Boolean(dateError) && styles.inputCardError]}>
+                        <TextInput
+                          style={styles.rawTextInput}
+                          value={
+                            !isDateFocused && isValidIsoDateString(dateDraft)
+                              ? formatIsoDateShort(dateDraft)
+                              : dateDraft
+                          }
+                          onFocus={() => setIsDateFocused(true)}
+                          onBlur={() => setIsDateFocused(false)}
+                          onChangeText={handleLastDateDraftInput}
+                          placeholder="YYYY-MM-DD (e.g. 2026-05-25)"
+                          placeholderTextColor="#64748B"
+                          keyboardType="numbers-and-punctuation"
+                          maxLength={10}
+                          autoCorrect={false}
+                        />
+                      </View>
+                    )}
+                    {Boolean(dateError) && <Text style={styles.errorHint}>{dateError}</Text>}
+                  </View>
+
+                  {/* Odometer (optional) Field */}
+                  <View style={styles.formSection}>
+                    <View style={styles.fieldHeaderRow}>
+                      <Text style={styles.fieldLabel}>Odometer (optional)</Text>
+                      <View style={styles.chipActionsRow}>
+                        {odometerKm !== null && (
+                          <TouchableOpacity
+                            style={styles.outlineGreenPill}
+                            onPress={() => setOdoDraft(String(Math.round(odometerKm)))}
+                            activeOpacity={0.75}
+                          >
+                            <Text style={styles.outlineGreenPillText}>
+                              Use {formatKmNumber(odometerKm)} km
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                        <TouchableOpacity
+                          style={styles.outlineDarkPill}
+                          onPress={() => setOdoDraft('')}
+                          activeOpacity={0.75}
+                        >
+                          <Text style={styles.outlineDarkPillText}>Clear</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    <View style={styles.inputCard}>
+                      <TextInput
+                        style={styles.rawTextInput}
+                        value={
+                          !isOdoFocused && odoDraft
+                            ? `${formatKmNumber(Number(odoDraft))} km`
+                            : odoDraft
+                        }
+                        onFocus={() => setIsOdoFocused(true)}
+                        onBlur={() => setIsOdoFocused(false)}
+                        onChangeText={handleLastOdoDraftInput}
+                        placeholder="Auto from live odometer"
+                        placeholderTextColor="#64748B"
+                        keyboardType="number-pad"
+                      />
+                    </View>
+                  </View>
+
+                  {/* Last Completed Milestone */}
+                  <View style={styles.formSection}>
+                    <Text style={[styles.fieldLabel, { marginBottom: 10 }]}>Last completed milestone</Text>
+                    <View style={styles.milestoneWrapGrid}>
+                      <TouchableOpacity
+                        style={[
+                          styles.choicePill,
+                          milestoneDraft === null && styles.choicePillActive,
+                        ]}
+                        onPress={() => setMilestoneDraft(null)}
+                        activeOpacity={0.75}
+                      >
+                        <Text
+                          style={[
+                            styles.choicePillText,
+                            milestoneDraft === null && styles.choicePillTextActive,
+                          ]}
+                        >
+                          Auto
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.choicePill,
+                          milestoneDraft === 0 && styles.choicePillActive,
+                        ]}
+                        onPress={() => setMilestoneDraft(0)}
+                        activeOpacity={0.75}
+                      >
+                        <Text
+                          style={[
+                            styles.choicePillText,
+                            milestoneDraft === 0 && styles.choicePillTextActive,
+                          ]}
+                        >
+                          Pre-1k
+                        </Text>
+                      </TouchableOpacity>
+
+                      {visibleLastServiceMilestones.map((m) => {
+                        const selected = milestoneDraft === m.km;
+                        return (
+                          <TouchableOpacity
+                            key={m.km}
+                            style={[styles.choicePill, selected && styles.choicePillActive]}
+                            onPress={() => setMilestoneDraft(m.km)}
+                            activeOpacity={0.75}
+                          >
+                            <Text
+                              style={[
+                                styles.choicePillText,
+                                selected && styles.choicePillTextActive,
+                              ]}
+                            >
+                              {formatKmNumber(m.km)} km
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+
+                      {hasHiddenMilestones && (
+                        <TouchableOpacity
+                          style={styles.choicePill}
+                          onPress={() => setShowAllLastMilestones(true)}
+                          activeOpacity={0.75}
+                        >
+                          <Text style={[styles.choicePillText, { color: '#94A3B8' }]}>More…</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+
+                    <Text style={styles.helperCopy}>
+                      Auto picks the next service after your odometer, or after your last serviced odometer if set. Choose a milestone if you serviced early or want to pin an overdue interval.
+                    </Text>
+                  </View>
+
                   <TouchableOpacity
-                    style={styles.miniActionBtn}
+                    style={[styles.primaryCtaBtn, { marginTop: 28 }]}
+                    onPress={handleSaveLastService}
+                    activeOpacity={0.82}
+                    accessibilityRole="button"
+                    accessibilityLabel="Save last service record"
+                  >
+                    <Text style={styles.primaryCtaText}>Save</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+
+              {/* Sub-screen 2: Alerts & tyre care */}
+              {activeSubScreen === 'alerts' && (
+                <>
+                  <View style={styles.header}>
+                    <BackButton onPress={onCloseSubScreen} label="Back to Service reminder" />
+                    <Text style={styles.headerTitle}>Alerts &amp; tyre care</Text>
+                  </View>
+
+                  <Text style={styles.sectionSubHeading}>Show on Home when within</Text>
+                  <Text style={styles.sectionSubCaption}>
+                    Countdown and approx. cost appear on Home inside these limits.
+                  </Text>
+
+                  <View style={styles.limitGridRow}>
+                    {/* Days Card */}
+                    <View style={styles.limitCard}>
+                      <Text style={styles.limitCardLabel}>Days</Text>
+                      <View style={styles.limitStepperRow}>
+                        <TouchableOpacity
+                          style={styles.circleStepBtn}
+                          onPress={() => handleStepWarnDays(-5)}
+                          activeOpacity={0.7}
+                          accessibilityLabel="Decrease warning days"
+                        >
+                          <Text style={styles.circleStepBtnText}>−</Text>
+                        </TouchableOpacity>
+                        <TextInput
+                          style={styles.limitStepperInput}
+                          value={warnDaysDraft}
+                          onChangeText={handleWarnDaysText}
+                          keyboardType="number-pad"
+                          maxLength={3}
+                          accessibilityLabel="Warning days limit"
+                        />
+                        <TouchableOpacity
+                          style={styles.circleStepBtn}
+                          onPress={() => handleStepWarnDays(5)}
+                          activeOpacity={0.7}
+                          accessibilityLabel="Increase warning days"
+                        >
+                          <Text style={styles.circleStepBtnText}>+</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {/* Distance Card */}
+                    <View style={styles.limitCard}>
+                      <Text style={styles.limitCardLabel}>Distance</Text>
+                      <View style={styles.limitStepperRow}>
+                        <TouchableOpacity
+                          style={styles.circleStepBtn}
+                          onPress={() => handleStepWarnKm(-100)}
+                          activeOpacity={0.7}
+                          accessibilityLabel="Decrease warning distance"
+                        >
+                          <Text style={styles.circleStepBtnText}>−</Text>
+                        </TouchableOpacity>
+                        <TextInput
+                          style={styles.limitStepperInputKm}
+                          value={
+                            !isWarnKmFocused && warnKmDraft
+                              ? `${formatKmNumber(Number(warnKmDraft))} km`
+                              : warnKmDraft
+                          }
+                          onFocus={() => setIsWarnKmFocused(true)}
+                          onBlur={() => setIsWarnKmFocused(false)}
+                          onChangeText={handleWarnKmText}
+                          keyboardType="number-pad"
+                          maxLength={9}
+                          accessibilityLabel="Warning distance limit in km"
+                        />
+                        <TouchableOpacity
+                          style={styles.circleStepBtn}
+                          onPress={() => handleStepWarnKm(100)}
+                          activeOpacity={0.7}
+                          accessibilityLabel="Increase warning distance"
+                        >
+                          <Text style={styles.circleStepBtnText}>+</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.resetBlueBtn}
                     onPress={() => {
-                      setDateDraft(todayIso);
-                      onChangeSettings({ ...settings, lastServiceDate: todayIso });
+                      setWarnDaysDraft(String(DEFAULT_SERVICE_WARNING_DAYS));
+                      setWarnKmDraft(String(DEFAULT_SERVICE_WARNING_KM));
+                      onChangeSettings({
+                        ...settings,
+                        warningDays: DEFAULT_SERVICE_WARNING_DAYS,
+                        warningKm: DEFAULT_SERVICE_WARNING_KM,
+                      });
                     }}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.miniActionText}>Today</Text>
+                    <Text style={styles.resetBlueText}>Reset to 30 days / 1,000 km</Text>
                   </TouchableOpacity>
-                  {Boolean(settings.lastServiceDate || dateDraft) && (
-                    <TouchableOpacity
-                      style={[styles.miniActionBtn, styles.miniClearBtn]}
-                      onPress={() => {
-                        setDateDraft('');
-                        onChangeSettings({ ...settings, lastServiceDate: null });
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.miniClearText}>Clear</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
 
-              {Platform.OS === 'web' ? (
-                <View style={styles.webDateWrap}>
-                  {React.createElement('input', {
-                    type: 'date',
-                    value: isValidIsoDateString(dateDraft) ? dateDraft : '',
-                    max: todayIso,
-                    onChange: (e: any) => handleLastDateText(String(e?.target?.value || '')),
-                    style: {
-                      width: '100%',
-                      backgroundColor: 'transparent',
-                      color: '#F8FAFC',
-                      border: 'none',
-                      outline: 'none',
-                      fontSize: 15,
-                      fontWeight: 600,
-                      fontFamily: 'inherit',
-                      colorScheme: 'dark',
-                    },
-                  })}
-                </View>
-              ) : (
-                <TextInput
-                  style={[styles.textInput, isDateDraftInvalid && styles.textInputError]}
-                  value={dateDraft}
-                  onChangeText={handleLastDateText}
-                  placeholder="YYYY-MM-DD (e.g. 2026-05-25)"
-                  placeholderTextColor="#64748B"
-                  keyboardType="numbers-and-punctuation"
-                  maxLength={10}
-                  autoCorrect={false}
-                />
-              )}
-              {isDateDraftInvalid && (
-                <Text style={styles.errorHint}>Enter a valid calendar date as YYYY-MM-DD.</Text>
-              )}
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <View style={styles.fieldHeaderRow}>
-                <Text style={styles.fieldLabel}>Last serviced odometer (optional)</Text>
-                <View style={styles.chipActionsRow}>
-                  {odometerKm !== null && (
-                    <TouchableOpacity
-                      style={styles.miniActionBtn}
-                      onPress={() => {
-                        const rounded = Math.round(odometerKm);
-                        setOdoDraft(String(rounded));
-                        onChangeSettings({ ...settings, lastServiceOdoKm: rounded });
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.miniActionText}>Use {formatKmNumber(odometerKm)} km</Text>
-                    </TouchableOpacity>
-                  )}
-                  {Boolean(odoDraft) && (
-                    <TouchableOpacity
-                      style={[styles.miniActionBtn, styles.miniClearBtn]}
-                      onPress={() => {
-                        setOdoDraft('');
-                        onChangeSettings({ ...settings, lastServiceOdoKm: null });
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.miniClearText}>Clear</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-              <TextInput
-                style={styles.textInput}
-                value={odoDraft}
-                onChangeText={handleLastOdoText}
-                placeholder="Auto from live odometer"
-                placeholderTextColor="#64748B"
-                keyboardType="number-pad"
-              />
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Last completed service milestone</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.milestonePillsRow}
-              >
-                <TouchableOpacity
-                  style={[
-                    styles.milestonePill,
-                    settings.lastServiceMilestoneKm === null && styles.milestonePillActive,
-                  ]}
-                  onPress={() => onChangeSettings({ ...settings, lastServiceMilestoneKm: null })}
-                >
-                  <Text
-                    style={[
-                      styles.milestonePillText,
-                      settings.lastServiceMilestoneKm === null && styles.milestonePillTextActive,
-                    ]}
-                  >
-                    Auto
+                  {/* Tyre Care Accordion */}
+                  <Text style={[styles.sectionSubHeading, { marginTop: 18, marginBottom: 10 }]}>
+                    Tyre care
                   </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.milestonePill,
-                    settings.lastServiceMilestoneKm === 0 && styles.milestonePillActive,
-                  ]}
-                  onPress={() => onChangeSettings({ ...settings, lastServiceMilestoneKm: 0 })}
-                >
-                  <Text
-                    style={[
-                      styles.milestonePillText,
-                      settings.lastServiceMilestoneKm === 0 && styles.milestonePillTextActive,
-                    ]}
-                  >
-                    Pre-1k
-                  </Text>
-                </TouchableOpacity>
-                {milestones.map((m) => {
-                  const selected = settings.lastServiceMilestoneKm === m.km;
-                  return (
-                    <TouchableOpacity
-                      key={m.km}
-                      style={[styles.milestonePill, selected && styles.milestonePillActive]}
-                      onPress={() => onChangeSettings({ ...settings, lastServiceMilestoneKm: m.km })}
-                    >
-                      <Text style={[styles.milestonePillText, selected && styles.milestonePillTextActive]}>
-                        {formatKmNumber(m.km)} km
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-              <Text style={styles.helperHint}>
-                Auto picks the next service after your live odometer (or after your last serviced odometer if set). Select the exact milestone if you serviced early or want to pin an overdue interval.
-              </Text>
-            </View>
-          </View>
 
-          {/* 3. Editable Home Screen Warning Limits */}
-          <View style={styles.card}>
-            <View style={styles.fieldHeaderRow}>
-              <Text style={styles.sectionTitle}>Home Warning Limits</Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setWarnDaysDraft(String(DEFAULT_SERVICE_WARNING_DAYS));
-                  setWarnKmDraft(String(DEFAULT_SERVICE_WARNING_KM));
-                  onChangeSettings({
-                    ...settings,
-                    warningDays: DEFAULT_SERVICE_WARNING_DAYS,
-                    warningKm: DEFAULT_SERVICE_WARNING_KM,
-                  });
-                }}
-              >
-                <Text style={styles.resetLink}>Reset (30d / 1,000 km)</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.mutedText}>
-              Show countdown &amp; approximate cost on the Home screen within these remaining limits:
-            </Text>
+                  <View style={{ gap: 10 }}>
+                    {wheelStatuses.map((item) => {
+                      const isExpanded = expandedWheelKey === item.key;
+                      const statusColor =
+                        item.urgency === 'overdue'
+                          ? '#FCA5A5'
+                          : item.urgency === 'warning'
+                            ? '#FCD34D'
+                            : item.urgency === 'normal'
+                              ? '#34D399'
+                              : '#94A3B8';
+                      const remainingText = formatWheelCountdownText(item);
+                      const statusSub = !item.enabled
+                        ? `Disabled · every ${formatKmNumber(item.intervalKm)} km`
+                        : isExpanded
+                          ? item.nextDueKm !== null
+                            ? `${remainingText} · target ${formatKmNumber(item.nextDueKm)} km`
+                            : remainingText
+                          : `${remainingText} · every ${formatKmNumber(item.intervalKm)} km`;
 
-            <View style={styles.limitRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.fieldLabel}>Last N days</Text>
-                <View style={styles.stepperBox}>
-                  <TouchableOpacity style={styles.stepBtn} onPress={() => handleStepWarnDays(-5)}>
-                    <Text style={styles.stepBtnText}>-</Text>
-                  </TouchableOpacity>
-                  <TextInput
-                    style={styles.stepInput}
-                    value={warnDaysDraft}
-                    onChangeText={handleWarnDaysText}
-                    keyboardType="number-pad"
-                    maxLength={3}
-                  />
-                  <TouchableOpacity style={styles.stepBtn} onPress={() => handleStepWarnDays(5)}>
-                    <Text style={styles.stepBtnText}>+</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
+                      const presets = [5000, 7500, 10000];
+                      const hasCustomPreset = !presets.includes(item.intervalKm);
 
-              <View style={{ flex: 1 }}>
-                <Text style={styles.fieldLabel}>Last N km</Text>
-                <View style={styles.stepperBox}>
-                  <TouchableOpacity style={styles.stepBtn} onPress={() => handleStepWarnKm(-100)}>
-                    <Text style={styles.stepBtnText}>-</Text>
-                  </TouchableOpacity>
-                  <TextInput
-                    style={styles.stepInput}
-                    value={warnKmDraft}
-                    onChangeText={handleWarnKmText}
-                    keyboardType="number-pad"
-                    maxLength={5}
-                  />
-                  <TouchableOpacity style={styles.stepBtn} onPress={() => handleStepWarnKm(100)}>
-                    <Text style={styles.stepBtnText}>+</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </View>
+                      return (
+                        <View key={item.key} style={styles.tyreCard}>
+                          <TouchableOpacity
+                            style={styles.tyreCardHeader}
+                            onPress={() => setExpandedWheelKey(isExpanded ? null : item.key)}
+                            activeOpacity={0.75}
+                            accessibilityRole="button"
+                            accessibilityLabel={`${item.label} settings`}
+                          >
+                            <View style={{ flex: 1, paddingRight: 10 }}>
+                              <Text style={styles.tyreCardTitle}>{item.label}</Text>
+                              <Text style={[styles.tyreCardStatus, { color: statusColor }]}>
+                                {statusSub}
+                              </Text>
+                            </View>
 
-          {/* 4. Wheel Balancing, Alignment & Tire Rotation */}
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Wheel Balancing, Alignment &amp; Rotation</Text>
-            <Text style={styles.mutedText}>
-              Set your preferred km interval and last-done odometer for each tyre maintenance item. Home alerts trigger automatically when approaching or due.
-            </Text>
+                            <View style={styles.tyreHeaderRight}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.switchTrack,
+                                  item.enabled && styles.switchTrackActive,
+                                ]}
+                                onPress={(e) => {
+                                  e?.stopPropagation?.();
+                                  updateWheel(item.key, { enabled: !item.enabled });
+                                }}
+                                activeOpacity={0.8}
+                                accessibilityRole="switch"
+                                accessibilityLabel={`Enable ${item.label} reminder`}
+                                accessibilityState={{ checked: item.enabled }}
+                              >
+                                <View
+                                  style={[
+                                    styles.switchThumb,
+                                    item.enabled && styles.switchThumbActive,
+                                  ]}
+                                />
+                              </TouchableOpacity>
+                              {!isExpanded && <Text style={styles.tyreChevron}>›</Text>}
+                            </View>
+                          </TouchableOpacity>
 
-            {wheelStatuses.map((item) => {
-              const statusColor =
-                item.urgency === 'overdue'
-                  ? '#FCA5A5'
-                  : item.urgency === 'warning'
-                    ? '#FCD34D'
-                    : item.urgency === 'normal'
-                      ? '#34D399'
-                      : '#94A3B8';
+                          {isExpanded && (
+                            <View style={styles.tyreCardBody}>
+                              <Text style={styles.tyreBodyLabel}>Repeat every</Text>
+                              <View style={styles.repeatPillsRow}>
+                                {(hasCustomPreset ? [...presets, item.intervalKm] : presets).map((preset) => {
+                                  const active = item.intervalKm === preset;
+                                  return (
+                                    <TouchableOpacity
+                                      key={preset}
+                                      style={[styles.choicePill, active && styles.choicePillActive]}
+                                      onPress={() => updateWheel(item.key, { intervalKm: preset })}
+                                      activeOpacity={0.75}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.choicePillText,
+                                          active && styles.choicePillTextActive,
+                                        ]}
+                                      >
+                                        {formatKmNumber(preset)} km
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
 
-              const statusText = !item.enabled
-                ? 'Disabled'
-                : item.lastDoneKm === null
-                  ? 'Set last done km'
-                  : item.kmRemaining === null
-                    ? `Due at ${formatKmNumber(item.nextDueKm ?? 0)} km`
-                    : item.kmRemaining <= 0
-                      ? item.kmRemaining === 0
-                        ? 'Due now'
-                        : `${formatKmNumber(Math.abs(item.kmRemaining))} km overdue`
-                      : `${formatKmNumber(item.kmRemaining)} km left`;
+                              <Text style={[styles.tyreBodyLabel, { marginTop: 14 }]}>Last done at</Text>
+                              <View style={styles.lastDoneRow}>
+                                <View style={styles.lastDoneInputWrap}>
+                                  <TextInput
+                                    style={styles.lastDoneInput}
+                                    value={
+                                      focusedWheelLastKey !== item.key && wheelLastKmDrafts[item.key]
+                                        ? `${formatKmNumber(Number(wheelLastKmDrafts[item.key]))} km`
+                                        : wheelLastKmDrafts[item.key]
+                                    }
+                                    onFocus={() => setFocusedWheelLastKey(item.key)}
+                                    onBlur={() => setFocusedWheelLastKey(null)}
+                                    onChangeText={(txt) => {
+                                      const digits = txt.replace(/\D/g, '').slice(0, 7);
+                                      setWheelLastKmDrafts((p) => ({ ...p, [item.key]: digits }));
+                                      if (!digits) {
+                                        updateWheel(item.key, { lastDoneKm: null, lastDoneDate: null });
+                                        return;
+                                      }
+                                      const n = Number(digits);
+                                      if (Number.isFinite(n) && n >= 0) {
+                                        updateWheel(item.key, { lastDoneKm: Math.min(1000000, n) });
+                                      }
+                                    }}
+                                    keyboardType="number-pad"
+                                    placeholder="Set km"
+                                    placeholderTextColor="#64748B"
+                                  />
+                                </View>
 
-              return (
-                <View key={item.key} style={styles.wheelCard}>
-                  <View style={styles.wheelCardHeader}>
-                    <View style={{ flex: 1, paddingRight: 10 }}>
-                      <Text style={styles.wheelCardTitle}>{item.label}</Text>
-                      <Text style={[styles.wheelStatusLabel, { color: statusColor }]}>
-                        {statusText}
-                        {item.nextDueKm !== null ? ` · Target ${formatKmNumber(item.nextDueKm)} km` : ''}
-                      </Text>
-                    </View>
-                    <TouchableOpacity
-                      style={[
-                        styles.toggleTrack,
-                        item.enabled && styles.toggleTrackActive,
-                      ]}
-                      onPress={() => updateWheel(item.key, { enabled: !item.enabled })}
-                      accessibilityRole="switch"
-                      accessibilityLabel={`Enable ${item.label} reminder`}
-                      accessibilityState={{ checked: item.enabled }}
-                    >
-                      <View
-                        style={[
-                          styles.toggleThumb,
-                          item.enabled && styles.toggleThumbActive,
-                        ]}
-                      />
-                    </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={styles.doneNowBlueBtn}
+                                  onPress={() => handleMarkWheelDoneNow(item.key)}
+                                  activeOpacity={0.75}
+                                >
+                                  <Text style={styles.doneNowBlueText}>
+                                    Done now{odometerKm !== null ? ` (${formatKmNumber(odometerKm)})` : ''}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+
+                              <View style={styles.alertBeforeRow}>
+                                <Text style={styles.alertBeforeLabel}>Alert before it’s due</Text>
+                                <TextInput
+                                  style={styles.alertBeforeValueInput}
+                                  value={
+                                    focusedWheelWarnKey !== item.key && wheelWarnKmDrafts[item.key] !== ''
+                                      ? `${formatKmNumber(Number(wheelWarnKmDrafts[item.key]))} km`
+                                      : wheelWarnKmDrafts[item.key]
+                                  }
+                                  onFocus={() => setFocusedWheelWarnKey(item.key)}
+                                  onBlur={() => {
+                                    setFocusedWheelWarnKey(null);
+                                    if (!wheelWarnKmDrafts[item.key]) {
+                                      setWheelWarnKmDrafts((p) => ({
+                                        ...p,
+                                        [item.key]: String(DEFAULT_WHEEL_SERVICE_WARNING_KM),
+                                      }));
+                                      updateWheel(item.key, { warningKm: DEFAULT_WHEEL_SERVICE_WARNING_KM });
+                                    }
+                                  }}
+                                  onChangeText={(txt) => {
+                                    const digits = txt.replace(/\D/g, '').slice(0, 4);
+                                    setWheelWarnKmDrafts((p) => ({ ...p, [item.key]: digits }));
+                                    const n = Number(digits);
+                                    if (digits !== '' && Number.isFinite(n)) {
+                                      updateWheel(item.key, { warningKm: Math.min(5000, Math.max(0, n)) });
+                                    }
+                                  }}
+                                  keyboardType="number-pad"
+                                  maxLength={7}
+                                  accessibilityLabel={`${item.label} alert threshold in km`}
+                                />
+                              </View>
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
+
+              {/* Sub-screen 3: Replacement schedule */}
+              {activeSubScreen === 'schedule' && (
+                <>
+                  <View style={styles.header}>
+                    <BackButton onPress={onCloseSubScreen} label="Back to Service reminder" />
+                    <Text style={styles.headerTitle}>Replacement schedule</Text>
                   </View>
 
-                  <View style={styles.wheelInputsRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.miniLabel}>Preferred interval (km)</Text>
-                      <TextInput
-                        style={styles.textInput}
-                        value={wheelIntervalDrafts[item.key]}
-                        onChangeText={(txt) => {
-                          const digits = txt.replace(/\D/g, '');
-                          setWheelIntervalDrafts((p) => ({ ...p, [item.key]: digits }));
-                          const n = Number(digits);
-                          if (digits && Number.isFinite(n) && n >= 500) {
-                            updateWheel(item.key, { intervalKm: Math.min(100000, n) });
-                          }
-                        }}
-                        keyboardType="number-pad"
-                        placeholder="5000"
-                        placeholderTextColor="#64748B"
-                      />
-                    </View>
+                  <Text style={styles.pageIntro}>
+                    What gets replaced at each service, and roughly what it costs.
+                  </Text>
 
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.miniLabel}>Last done at (km)</Text>
-                      <TextInput
-                        style={styles.textInput}
-                        value={wheelLastKmDrafts[item.key]}
-                        onChangeText={(txt) => {
-                          const digits = txt.replace(/\D/g, '');
-                          setWheelLastKmDrafts((p) => ({ ...p, [item.key]: digits }));
-                          if (!digits) {
-                            updateWheel(item.key, { lastDoneKm: null, lastDoneDate: null });
-                            return;
-                          }
-                          const n = Number(digits);
-                          if (Number.isFinite(n) && n >= 0) {
-                            updateWheel(item.key, { lastDoneKm: Math.min(1000000, n) });
-                          }
-                        }}
-                        keyboardType="number-pad"
-                        placeholder="e.g. 30000"
-                        placeholderTextColor="#64748B"
-                      />
-                    </View>
-                  </View>
-
-                  <View style={styles.wheelQuickBar}>
-                    {[5000, 7500, 10000].map((preset) => {
-                      const active = item.intervalKm === preset;
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.schedulePillsRow}
+                  >
+                    {milestones.slice(0, 12).map((m) => {
+                      const selected = inspectedMilestone.km === m.km;
                       return (
                         <TouchableOpacity
-                          key={preset}
-                          style={[styles.presetChip, active && styles.presetChipActive]}
-                          onPress={() => {
-                            setWheelIntervalDrafts((p) => ({ ...p, [item.key]: String(preset) }));
-                            updateWheel(item.key, { intervalKm: preset });
-                          }}
+                          key={m.km}
+                          style={[styles.choicePill, selected && styles.choicePillActive]}
+                          onPress={() => setInspectKm(m.km)}
+                          activeOpacity={0.75}
                         >
-                          <Text style={[styles.presetChipText, active && styles.presetChipTextActive]}>
-                            {formatKmNumber(preset)} km
+                          <Text
+                            style={[
+                              styles.choicePillText,
+                              selected && styles.choicePillTextActive,
+                            ]}
+                          >
+                            {formatKmNumber(m.km)}
                           </Text>
                         </TouchableOpacity>
                       );
                     })}
+                  </ScrollView>
 
-                    <TouchableOpacity
-                      style={styles.doneNowPill}
-                      onPress={() => handleMarkWheelDoneNow(item.key)}
-                    >
-                      <Text style={styles.doneNowPillText}>
-                        Done now{odometerKm !== null ? ` (${formatKmNumber(odometerKm)})` : ''}
+                  {/* Breakdown Card */}
+                  <View style={styles.card}>
+                    <View style={styles.scheduleBreakdownTop}>
+                      <Text style={styles.scheduleBreakdownTitle}>
+                        {formatKmNumber(inspectedMilestone.km)} km ·{' '}
+                        {inspectedMilestone.timeLabel.toLowerCase()}
                       </Text>
+                      <Text style={styles.scheduleBreakdownPrice}>
+                        {formatInrAmount(inspectedCost.totalInr)}
+                      </Text>
+                    </View>
+
+                    <View style={styles.scheduleBreakdownDivider} />
+
+                    {inspectedCost.lineItems.length === 0 ? (
+                      <Text style={styles.mutedLineText}>
+                        No scheduled replacements — inspection / check items only.
+                      </Text>
+                    ) : (
+                      inspectedCost.lineItems.map((li, idx) => (
+                        <View
+                          key={li.name}
+                          style={[
+                            styles.costLineRow,
+                            idx === inspectedCost.lineItems.length - 1 && {
+                              borderBottomWidth: 0,
+                              paddingBottom: 2,
+                            },
+                          ]}
+                        >
+                          <Text style={styles.costLineLabel}>{li.name}</Text>
+                          <Text style={styles.costLineVal}>{formatInrAmount(li.amountInr)}</Text>
+                        </View>
+                      ))
+                    )}
+                  </View>
+
+                  {/* Sync Status Card */}
+                  <View style={styles.syncCard}>
+                    <View style={{ flex: 1, paddingRight: 12 }}>
+                      <Text
+                        style={[
+                          styles.syncCardTitle,
+                          catalog.source === 'live' && { color: '#34D399' },
+                          Boolean(catalogSyncError) && { color: '#FCD34D' },
+                        ]}
+                      >
+                        {isSyncingCatalog
+                          ? 'Updating live costs...'
+                          : catalog.source === 'live'
+                            ? 'Live costs synced'
+                            : catalog.source === 'cached'
+                              ? 'Cached live costs'
+                              : 'Offline baseline costs'}
+                      </Text>
+                      <Text style={styles.syncCardSub}>
+                        {catalogSyncError || formatSyncTimestamp(catalog.fetchedAt)}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.refreshOutlineBtn}
+                      onPress={onRefreshCatalog}
+                      disabled={isSyncingCatalog}
+                      activeOpacity={0.75}
+                    >
+                      {isSyncingCatalog ? (
+                        <ActivityIndicator size="small" color="#34D399" />
+                      ) : (
+                        <Text style={styles.refreshOutlineText}>Refresh</Text>
+                      )}
                     </TouchableOpacity>
                   </View>
 
-                  <View style={styles.wheelWarnRow}>
-                    <Text style={styles.miniLabel}>Home alert buffer before due (km):</Text>
-                    <TextInput
-                      style={styles.smallInlineInput}
-                      value={wheelWarnKmDrafts[item.key]}
-                      onChangeText={(txt) => {
-                        const digits = txt.replace(/\D/g, '');
-                        setWheelWarnKmDrafts((p) => ({ ...p, [item.key]: digits }));
-                        const n = Number(digits);
-                        if (digits !== '' && Number.isFinite(n)) {
-                          updateWheel(item.key, { warningKm: Math.min(5000, Math.max(0, n)) });
-                        }
-                      }}
-                      keyboardType="number-pad"
-                      maxLength={4}
-                    />
-                    {item.warningKm !== DEFAULT_WHEEL_SERVICE_WARNING_KM && (
-                      <TouchableOpacity
-                        onPress={() => {
-                          setWheelWarnKmDrafts((p) => ({
-                            ...p,
-                            [item.key]: String(DEFAULT_WHEEL_SERVICE_WARNING_KM),
-                          }));
-                          updateWheel(item.key, { warningKm: DEFAULT_WHEEL_SERVICE_WARNING_KM });
-                        }}
-                      >
-                        <Text style={styles.resetLink}>500 km</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                </View>
-              );
-            })}
-          </View>
+                  <Text style={styles.disclaimerText}>{scheduleDisclaimerText}</Text>
 
-          {/* 5. Official Replacement Schedule Explorer */}
-          <View style={[styles.card, { marginBottom: Platform.OS === 'web' ? 140 : 145 }]}>
-            <TouchableOpacity
-              style={styles.fieldHeaderRow}
-              onPress={() => setShowScheduleList((v) => !v)}
-              activeOpacity={0.75}
-            >
-              <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={styles.sectionTitle}>Windsor EV Replacement Schedule</Text>
-                <Text style={styles.mutedText}>
-                  Explore mandatory replacements &amp; costs (1,000 km to 1,50,000 km+)
-                </Text>
-              </View>
-              <Text style={styles.resetLink}>{showScheduleList ? 'Hide ▲' : 'View ▼'}</Text>
-            </TouchableOpacity>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.milestonePillsRow}
-            >
-              {milestones.slice(0, 12).map((m) => {
-                const selected = inspectedMilestone.km === m.km;
-                return (
                   <TouchableOpacity
-                    key={m.km}
-                    style={[styles.milestonePill, selected && styles.milestonePillActive]}
-                    onPress={() => setInspectKm(m.km)}
+                    style={styles.openRefLink}
+                    onPress={() => Linking.openURL(SERVICE_SCHEDULE_SOURCE_URL).catch(() => {})}
+                    activeOpacity={0.7}
                   >
-                    <Text style={[styles.milestonePillText, selected && styles.milestonePillTextActive]}>
-                      {formatKmNumber(m.km)} km
-                    </Text>
+                    <Text style={styles.openRefLinkText}>Open price reference  ↗</Text>
                   </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-
-            <View style={styles.costBox}>
-              <View style={styles.costLineRow}>
-                <Text style={styles.costTotalLabel}>
-                  {formatKmNumber(inspectedMilestone.km)} km — {inspectedMilestone.timeLabel}
-                </Text>
-                <Text style={styles.costTotalVal}>{formatInrAmount(inspectedCost.totalInr)}</Text>
-              </View>
-              {inspectedCost.lineItems.length === 0 ? (
-                <Text style={styles.mutedText}>
-                  No scheduled replacements — inspection / check items only.
-                </Text>
-              ) : (
-                inspectedCost.lineItems.map((li) => (
-                  <View key={li.name} style={styles.costLineRow}>
-                    <Text style={styles.costLineName}>{li.name}</Text>
-                    <Text style={styles.costLineVal}>{formatInrAmount(li.amountInr)}</Text>
-                  </View>
-                ))
+                </>
               )}
-            </View>
-
-            {showScheduleList && (
-              <View style={{ marginTop: 12, gap: 8 }}>
-                {milestones.slice(0, 12).map((m) => {
-                  const c = computeMilestoneCost(m, catalog);
-                  return (
-                    <View key={m.km} style={styles.scheduleTableRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.scheduleTableKm}>
-                          {formatKmNumber(m.km)} km · {m.timeLabel}
-                        </Text>
-                        <Text style={styles.scheduleTableItems}>
-                          {m.replacements.length > 0 ? m.replacements.join(', ') : 'Inspection only'}
-                        </Text>
-                      </View>
-                      <Text style={styles.scheduleTableCost}>{formatInrAmount(c.totalInr)}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-
-            <View style={styles.catalogSyncBar}>
-              <View style={{ flex: 1, paddingRight: 10 }}>
-                <Text
-                  style={[
-                    styles.catalogSyncTitle,
-                    catalog.source === 'live' && { color: '#34D399' },
-                    catalogSyncError && { color: '#FCD34D' },
-                  ]}
-                >
-                  {isSyncingCatalog ? 'Updating costs from mgwindsor_service...' : formatCatalogSyncLabel()}
-                </Text>
-                {Boolean(catalogSyncError) && (
-                  <Text style={styles.catalogSyncErr}>{catalogSyncError}</Text>
-                )}
-              </View>
-              <TouchableOpacity
-                style={styles.refreshCatalogBtn}
-                onPress={onRefreshCatalog}
-                disabled={isSyncingCatalog}
-                activeOpacity={0.75}
-              >
-                {isSyncingCatalog ? (
-                  <ActivityIndicator size="small" color="#34D399" />
-                ) : (
-                  <Text style={styles.refreshCatalogBtnText}>↻ Refresh costs</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.sourceNote}>{catalog.priceNote}</Text>
-            <TouchableOpacity
-              onPress={() => Linking.openURL(SERVICE_SCHEDULE_SOURCE_URL).catch(() => {})}
-              style={{ marginTop: 8 }}
-            >
-              <Text style={styles.sourceUrl}>Open reference: tonyjoseph456.github.io/mgwindsor_service ›</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    </Animated.View>
+            </ScrollView>
+          </SafeAreaView>
+        </Animated.View>
+      )}
+    </>
   );
 };
 
 const styles = StyleSheet.create({
   layer: {
-    position: 'absolute',
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
     backgroundColor: '#0A0E17',
-    zIndex: 60,
+    zIndex: 2000,
+  },
+  subLayer: {
+    position: (Platform.OS === 'web' ? 'fixed' : 'absolute') as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0A0E17',
+    zIndex: 2005,
   },
   safeArea: {
     flex: 1,
@@ -1022,511 +1309,640 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 40,
     width: '100%',
-    maxWidth: 680,
+    maxWidth: 440,
     alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 44 : 20,
+    paddingBottom: Platform.OS === 'web' ? 140 : 145,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 18,
+    paddingTop: 4,
   },
   backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#111827',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#131B2A',
     borderWidth: 1,
     borderColor: '#1E293B',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 14,
   },
   headerTitle: {
     color: '#F8FAFC',
-    fontSize: 22,
+    fontSize: 23,
     fontWeight: '800',
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
   },
   headerSub: {
     color: '#94A3B8',
-    fontSize: 12,
+    fontSize: 13,
+    fontWeight: '500',
     marginTop: 2,
+  },
+  pageIntro: {
+    color: '#94A3B8',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 22,
   },
   card: {
     backgroundColor: '#111827',
     borderRadius: 20,
     borderWidth: 1,
     borderColor: '#1E293B',
-    padding: 16,
+    padding: 18,
     marginBottom: 16,
   },
-  cardTopRow: {
+  heroTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 14,
+    alignItems: 'center',
+    marginBottom: 10,
   },
-  eyebrow: {
-    color: '#10B981',
-    fontSize: 10,
+  heroEyebrow: {
+    fontSize: 11,
     fontWeight: '800',
-    letterSpacing: 0.9,
-    marginBottom: 4,
-  },
-  milestoneHeading: {
-    color: '#F8FAFC',
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.3,
+    letterSpacing: 1.0,
   },
   statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
     borderRadius: 999,
-    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
   },
   statusBadgeText: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.7,
-  },
-  metricsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-  metricTile: {
-    flex: 1,
-    backgroundColor: '#0B1120',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    padding: 10,
-  },
-  metricLabel: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  metricValue: {
-    color: '#F8FAFC',
-    fontSize: 17,
-    fontWeight: '800',
-    marginTop: 3,
-  },
-  metricSub: {
-    color: '#64748B',
-    fontSize: 11,
-    marginTop: 3,
-  },
-  costBox: {
-    backgroundColor: '#0B1120',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    padding: 12,
-    gap: 8,
-  },
-  costBoxTitle: {
-    color: '#E2E8F0',
     fontSize: 12,
     fontWeight: '700',
-    marginBottom: 2,
+  },
+  heroTitle: {
+    color: '#F8FAFC',
+    fontSize: 27,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  heroSub: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 4,
+  },
+  progressTrack: {
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#1E293B',
+    overflow: 'hidden',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  progressLabelsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  progressLabelText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  heroDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginVertical: 15,
+  },
+  heroMetricsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  heroMetricCol: {
+    flex: 1,
+  },
+  heroMetricLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  heroMetricVal: {
+    color: '#F8FAFC',
+    fontSize: 19,
+    fontWeight: '800',
+    marginTop: 4,
+    letterSpacing: -0.3,
+  },
+  heroMetricSub: {
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 3,
+  },
+  cardTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  mutedLineText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    lineHeight: 19,
+    paddingVertical: 6,
   },
   costLineRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 8,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+    gap: 12,
   },
-  costLineName: {
-    color: '#CBD5E1',
-    fontSize: 13,
+  costLineLabel: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '500',
     flex: 1,
   },
   costLineVal: {
     color: '#F8FAFC',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '700',
   },
   costTotalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: 8,
-    marginTop: 4,
-    borderTopWidth: 1,
-    borderTopColor: '#1E293B',
+    paddingTop: 14,
   },
   costTotalLabel: {
     color: '#F8FAFC',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '700',
   },
   costTotalVal: {
     color: '#34D399',
-    fontSize: 16,
+    fontSize: 19,
     fontWeight: '800',
   },
-  logServiceBtn: {
-    marginTop: 12,
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.4)',
-    borderRadius: 12,
-    paddingVertical: 11,
+  primaryCtaBtn: {
+    backgroundColor: '#34D399',
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 18,
     alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
   },
-  logServiceBtnText: {
-    color: '#34D399',
-    fontSize: 13,
-    fontWeight: '700',
+  primaryCtaText: {
+    color: '#052E16',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: -0.2,
   },
-  sectionTitle: {
+  menuGroupCard: {
+    backgroundColor: '#111827',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    overflow: 'hidden',
+  },
+  menuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 17,
+  },
+  menuRowTitle: {
+    flex: 1,
     color: '#F8FAFC',
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 4,
+    fontSize: 15,
+    fontWeight: '600',
   },
-  mutedText: {
+  menuRowVal: {
     color: '#94A3B8',
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    fontWeight: '500',
+    marginRight: 10,
   },
-  fieldGroup: {
-    marginTop: 14,
+  menuRowChevron: {
+    color: '#64748B',
+    fontSize: 19,
+    fontWeight: '400',
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginHorizontal: 18,
+  },
+  formSection: {
+    marginBottom: 22,
   },
   fieldHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 10,
     gap: 8,
   },
   fieldLabel: {
-    color: '#E2E8F0',
-    fontSize: 13,
-    fontWeight: '600',
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
   },
   chipActionsRow: {
     flexDirection: 'row',
-    gap: 6,
-  },
-  miniActionBtn: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.35)',
-    borderRadius: 8,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-  },
-  miniActionText: {
-    color: '#34D399',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  miniClearBtn: {
-    backgroundColor: 'rgba(148, 163, 184, 0.12)',
-    borderColor: 'rgba(148, 163, 184, 0.3)',
-  },
-  miniClearText: {
-    color: '#CBD5E1',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  webDateWrap: {
-    backgroundColor: '#0B1120',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  textInput: {
-    backgroundColor: '#0B1120',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  textInputError: {
-    borderColor: '#F87171',
-  },
-  errorHint: {
-    color: '#FCA5A5',
-    fontSize: 11,
-    marginTop: 5,
-  },
-  helperHint: {
-    color: '#64748B',
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 6,
-  },
-  milestonePillsRow: {
+    alignItems: 'center',
     gap: 8,
+  },
+  outlineGreenPill: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.5)',
+    borderRadius: 999,
+    paddingHorizontal: 14,
     paddingVertical: 6,
   },
-  milestonePill: {
-    backgroundColor: '#0B1120',
+  outlineGreenPillText: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  outlineDarkPill: {
+    backgroundColor: '#111827',
     borderWidth: 1,
     borderColor: '#1E293B',
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
   },
-  milestonePillActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.18)',
-    borderColor: '#10B981',
+  outlineDarkPillText: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    fontWeight: '600',
   },
-  milestonePillText: {
+  inputCard: {
+    position: 'relative',
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    minHeight: 54,
+    justifyContent: 'center',
+  },
+  inputCardError: {
+    borderColor: '#F87171',
+  },
+  inputDisplayText: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  inputPlaceholderText: {
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  rawTextInput: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+    padding: 0,
+    margin: 0,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
+  },
+  errorHint: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    marginTop: 6,
+  },
+  milestoneWrapGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  choicePill: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
+  choicePillActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderColor: '#34D399',
+  },
+  choicePillText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  choicePillTextActive: {
+    color: '#34D399',
+  },
+  helperCopy: {
     color: '#94A3B8',
     fontSize: 12,
-    fontWeight: '600',
+    lineHeight: 18,
+    marginTop: 12,
   },
-  milestonePillTextActive: {
-    color: '#34D399',
+  sectionSubHeading: {
+    color: '#F8FAFC',
+    fontSize: 15,
     fontWeight: '700',
   },
-  resetLink: {
-    color: '#38BDF8',
-    fontSize: 12,
-    fontWeight: '600',
+  sectionSubCaption: {
+    color: '#94A3B8',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4,
+    marginBottom: 14,
   },
-  limitRow: {
+  limitGridRow: {
     flexDirection: 'row',
     gap: 12,
-    marginTop: 12,
   },
-  stepperBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0B1120',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    borderRadius: 12,
-    marginTop: 6,
-    overflow: 'hidden',
-  },
-  stepBtn: {
-    width: 38,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#131C2E',
-  },
-  stepBtnText: {
-    color: '#F8FAFC',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  stepInput: {
+  limitCard: {
     flex: 1,
-    color: '#F8FAFC',
-    fontSize: 15,
-    fontWeight: '700',
-    textAlign: 'center',
-    paddingVertical: 8,
-  },
-  wheelCard: {
-    backgroundColor: '#0B1120',
-    borderRadius: 16,
+    backgroundColor: '#111827',
     borderWidth: 1,
     borderColor: '#1E293B',
-    padding: 13,
-    marginTop: 12,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
   },
-  wheelCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  limitCardLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
     marginBottom: 10,
   },
-  wheelCardTitle: {
+  limitStepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 4,
+  },
+  circleStepBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#152033',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  circleStepBtnText: {
     color: '#F8FAFC',
-    fontSize: 15,
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  limitStepperInput: {
+    flex: 1,
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'center',
+    padding: 0,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
+  },
+  limitStepperInputKm: {
+    flex: 1,
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+    padding: 0,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
+  },
+  resetBlueBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  resetBlueText: {
+    color: '#38BDF8',
+    fontSize: 13,
     fontWeight: '700',
   },
-  wheelStatusLabel: {
+  tyreCard: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  tyreCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+  },
+  tyreCardTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  tyreCardStatus: {
     fontSize: 12,
     fontWeight: '600',
-    marginTop: 2,
+    marginTop: 3,
   },
-  toggleTrack: {
-    width: 46,
-    height: 26,
-    borderRadius: 13,
+  tyreHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  switchTrack: {
+    width: 48,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: '#1E293B',
     padding: 3,
     justifyContent: 'center',
   },
-  toggleTrackActive: {
-    backgroundColor: '#10B981',
+  switchTrackActive: {
+    backgroundColor: '#34D399',
   },
-  toggleThumb: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+  switchThumb: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: '#94A3B8',
   },
-  toggleThumbActive: {
-    backgroundColor: '#FFFFFF',
+  switchThumbActive: {
+    backgroundColor: '#0A0E17',
     alignSelf: 'flex-end',
   },
-  wheelInputsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  miniLabel: {
+  tyreChevron: {
     color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '600',
-    marginBottom: 4,
+    fontSize: 19,
+    fontWeight: '500',
   },
-  wheelQuickBar: {
+  tyreCardBody: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  tyreBodyLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  repeatPillsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
-    marginTop: 10,
-  },
-  presetChip: {
-    backgroundColor: '#111827',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    borderRadius: 8,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-  },
-  presetChipActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.16)',
-    borderColor: '#10B981',
-  },
-  presetChipText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  presetChipTextActive: {
-    color: '#34D399',
-    fontWeight: '700',
-  },
-  doneNowPill: {
-    backgroundColor: 'rgba(56, 189, 248, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.35)',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginLeft: 'auto',
-  },
-  doneNowPillText: {
-    color: '#38BDF8',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  wheelWarnRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  smallInlineInput: {
-    width: 72,
-    backgroundColor: '#111827',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    color: '#F8FAFC',
-    fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  scheduleTableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#0B1120',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
     gap: 8,
   },
-  scheduleTableKm: {
-    color: '#F8FAFC',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  scheduleTableItems: {
-    color: '#94A3B8',
-    fontSize: 11,
-    marginTop: 2,
-  },
-  scheduleTableCost: {
-    color: '#34D399',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  sourceNote: {
-    color: '#64748B',
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 12,
-  },
-  catalogSyncBar: {
+  lastDoneRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#0B1120',
+    gap: 10,
+  },
+  lastDoneInputWrap: {
+    flex: 1,
+    backgroundColor: '#0A0E17',
     borderWidth: 1,
     borderColor: '#1E293B',
     borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginTop: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    justifyContent: 'center',
   },
-  catalogSyncTitle: {
-    color: '#94A3B8',
-    fontSize: 12,
-    fontWeight: '600',
+  lastDoneInput: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    padding: 0,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
   },
-  catalogSyncErr: {
-    color: '#FCA5A5',
-    fontSize: 11,
-    marginTop: 2,
-  },
-  refreshCatalogBtn: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+  doneNowBlueBtn: {
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
     borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.35)',
-    borderRadius: 9,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    minWidth: 102,
+    borderColor: 'rgba(56, 189, 248, 0.5)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  refreshCatalogBtnText: {
-    color: '#34D399',
-    fontSize: 11,
+  doneNowBlueText: {
+    color: '#38BDF8',
+    fontSize: 13,
     fontWeight: '700',
   },
-  sourceUrl: {
-    color: '#38BDF8',
+  alertBeforeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#1E293B',
+  },
+  alertBeforeLabel: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  alertBeforeValueInput: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '800',
+    textAlign: 'right',
+    minWidth: 74,
+    paddingVertical: 2,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
+  },
+  schedulePillsRow: {
+    gap: 8,
+    paddingBottom: 18,
+  },
+  scheduleBreakdownTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  scheduleBreakdownTitle: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+    flex: 1,
+  },
+  scheduleBreakdownPrice: {
+    color: '#34D399',
+    fontSize: 21,
+    fontWeight: '800',
+  },
+  scheduleBreakdownDivider: {
+    height: 1,
+    backgroundColor: '#1E293B',
+    marginTop: 14,
+    marginBottom: 4,
+  },
+  syncCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 18,
+    paddingHorizontal: 18,
+    paddingVertical: 15,
+    marginBottom: 16,
+  },
+  syncCardTitle: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  syncCardSub: {
+    color: '#94A3B8',
     fontSize: 12,
-    fontWeight: '600',
+    marginTop: 3,
+  },
+  refreshOutlineBtn: {
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.55)',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    minWidth: 84,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refreshOutlineText: {
+    color: '#34D399',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  disclaimerText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  openRefLink: {
+    alignSelf: 'flex-start',
+    marginTop: 14,
+  },
+  openRefLinkText: {
+    color: '#38BDF8',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
