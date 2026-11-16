@@ -67,13 +67,14 @@ function formatSyncTimestamp(iso: string | null): string {
   if (!iso) return 'Using offline baseline';
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return iso;
-  return dt.toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = dt.getDate();
+  const mon = months[dt.getMonth()];
+  const h24 = dt.getHours();
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const min = String(dt.getMinutes()).padStart(2, '0');
+  const ampm = h24 >= 12 ? 'pm' : 'am';
+  return `${day} ${mon}, ${h12}:${min} ${ampm}`;
 }
 
 function BackButton({ onPress, label }: { onPress: () => void; label: string }) {
@@ -1204,187 +1205,175 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
               )}
 
               {/* Sub-screen 3: Replacement schedule */}
-              {activeSubScreen === 'schedule' && (
-                <>
-                  <View style={styles.header}>
-                    <BackButton onPress={onCloseSubScreen} label="Back to Service reminder" />
-                    <Text style={styles.headerTitle}>Replacement schedule</Text>
-                  </View>
+              {activeSubScreen === 'schedule' && (() => {
+                const scheduleMilestones = milestones.filter(
+                  (m) => m.km <= Math.max(150000, serviceStatus.nextMilestone.km)
+                );
+                const foundIdx = scheduleMilestones.findIndex((m) => m.km === inspectKm);
+                const nextIdx = scheduleMilestones.findIndex(
+                  (m) => m.km === serviceStatus.nextMilestone.km
+                );
+                const currentIdx =
+                  foundIdx >= 0 ? foundIdx : nextIdx >= 0 ? nextIdx : 0;
+                const inspectedMilestone =
+                  scheduleMilestones[currentIdx] || serviceStatus.nextMilestone;
+                const inspectedCost = computeMilestoneCost(inspectedMilestone, catalog);
+                const canStepPrev = currentIdx > 0;
+                const canStepNext = currentIdx < scheduleMilestones.length - 1;
 
-                  <Text style={styles.pageIntro}>
-                    What gets replaced at each service, and roughly what it costs. Tap any interval to see parts and labour.
-                  </Text>
-
-                  {/* Live Sync Status Strip */}
-                  <View style={styles.syncCard}>
-                    <View style={{ flex: 1, paddingRight: 12 }}>
-                      <Text
-                        style={[
-                          styles.syncCardTitle,
-                          catalog.source === 'live' && { color: '#34D399' },
-                          Boolean(catalogSyncError) && { color: '#FCD34D' },
-                        ]}
-                      >
-                        {isSyncingCatalog
-                          ? 'Updating live costs...'
-                          : catalog.source === 'live'
-                            ? 'Live costs synced'
-                            : catalog.source === 'cached'
-                              ? 'Cached live costs'
-                              : 'Offline baseline costs'}
-                      </Text>
-                      <Text style={styles.syncCardSub}>
-                        {catalogSyncError || formatSyncTimestamp(catalog.fetchedAt)}
-                      </Text>
+                return (
+                  <>
+                    <View style={styles.header}>
+                      <BackButton onPress={onCloseSubScreen} label="Back to Service reminder" />
+                      <Text style={styles.headerTitle}>Replacement schedule</Text>
                     </View>
-                    <TouchableOpacity
-                      style={styles.refreshOutlineBtn}
-                      onPress={onRefreshCatalog}
-                      disabled={isSyncingCatalog}
-                      activeOpacity={0.75}
-                    >
-                      {isSyncingCatalog ? (
-                        <ActivityIndicator size="small" color="#34D399" />
+
+                    <Text style={styles.pageIntro}>
+                      What gets replaced at each service, and roughly what it costs.
+                    </Text>
+
+                    {/* Arrow Milestone Selector Card */}
+                    <View style={styles.scheduleSelectorCard}>
+                      <TouchableOpacity
+                        style={[
+                          styles.scheduleArrowBtn,
+                          !canStepPrev && styles.scheduleArrowBtnDisabled,
+                        ]}
+                        onPress={() => {
+                          if (canStepPrev) {
+                            setInspectKm(scheduleMilestones[currentIdx - 1].km);
+                          }
+                        }}
+                        disabled={!canStepPrev}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel="Previous service milestone"
+                      >
+                        <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                          <Path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" />
+                        </Svg>
+                      </TouchableOpacity>
+
+                      <View style={styles.scheduleSelectorCenter}>
+                        <Text style={styles.scheduleSelectorEyebrow}>SERVICE AT</Text>
+                        <Text style={styles.scheduleSelectorKm} numberOfLines={1} adjustsFontSizeToFit>
+                          {formatKmNumber(inspectedMilestone.km)} km
+                        </Text>
+                        <Text style={styles.scheduleSelectorYears} numberOfLines={1}>
+                          {inspectedMilestone.timeLabel.toLowerCase()}
+                        </Text>
+                      </View>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.scheduleArrowBtn,
+                          !canStepNext && styles.scheduleArrowBtnDisabled,
+                        ]}
+                        onPress={() => {
+                          if (canStepNext) {
+                            setInspectKm(scheduleMilestones[currentIdx + 1].km);
+                          }
+                        }}
+                        disabled={!canStepNext}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel="Next service milestone"
+                      >
+                        <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#F8FAFC" strokeWidth={2.4}>
+                          <Path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+                        </Svg>
+                      </TouchableOpacity>
+                    </View>
+
+                    <Text style={styles.scheduleArrowHint}>
+                      Use the arrows to browse other services.
+                    </Text>
+
+                    {/* Selected Milestone Breakdown Card */}
+                    <View style={styles.card}>
+                      <View style={styles.scheduleBreakdownTop}>
+                        <Text style={styles.scheduleBreakdownTitle}>
+                          {formatKmNumber(inspectedMilestone.km)} km ·{' '}
+                          {inspectedMilestone.timeLabel.toLowerCase()}
+                        </Text>
+                        <Text style={styles.scheduleBreakdownPrice}>
+                          {formatInrAmount(inspectedCost.totalInr)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.scheduleBreakdownDivider} />
+
+                      {inspectedCost.lineItems.length === 0 ? (
+                        <Text style={styles.mutedLineText}>
+                          No scheduled replacements — inspection / check items only.
+                        </Text>
                       ) : (
-                        <Text style={styles.refreshOutlineText}>Refresh</Text>
+                        inspectedCost.lineItems.map((li, idx) => (
+                          <View
+                            key={li.name}
+                            style={[
+                              styles.costLineRow,
+                              idx === inspectedCost.lineItems.length - 1 && {
+                                borderBottomWidth: 0,
+                                paddingBottom: 2,
+                              },
+                            ]}
+                          >
+                            <Text style={styles.costLineLabel}>{li.name}</Text>
+                            <Text style={styles.costLineVal}>{formatInrAmount(li.amountInr)}</Text>
+                          </View>
+                        ))
                       )}
-                    </TouchableOpacity>
-                  </View>
+                    </View>
 
-                  {/* Vertical Expandable Schedule List (no horizontal scrolling) */}
-                  <View style={styles.scheduleListWrap}>
-                    {milestones.slice(0, 12).map((m) => {
-                      const cost = computeMilestoneCost(m, catalog);
-                      const isExpanded = inspectKm === m.km;
-                      const isNext = m.km === serviceStatus.nextMilestone.km;
-                      const isDone =
-                        !isNext &&
-                        (settings.lastServiceMilestoneKm !== null
-                          ? settings.lastServiceMilestoneKm > 0 &&
-                            m.km <= settings.lastServiceMilestoneKm
-                          : odometerKm !== null && m.km < serviceStatus.nextMilestone.km);
-
-                      const summaryItems =
-                        m.replacements.length > 0
-                          ? cost.serviceChargeInr > 0
-                            ? `${m.replacements.join(' · ')} + Paid service`
-                            : m.replacements.join(' · ')
-                          : 'Inspection & checks only';
-
-                      return (
-                        <View
-                          key={m.km}
+                    {/* Live Sync Status Card */}
+                    <View style={styles.syncCard}>
+                      <View style={{ flex: 1, paddingRight: 12 }}>
+                        <Text
                           style={[
-                            styles.scheduleCard,
-                            isNext && styles.scheduleCardNext,
-                            isExpanded && styles.scheduleCardExpanded,
+                            styles.syncCardTitle,
+                            catalog.source === 'live' && { color: '#34D399' },
+                            Boolean(catalogSyncError) && { color: '#FCD34D' },
                           ]}
                         >
-                          <TouchableOpacity
-                            style={styles.scheduleCardHeader}
-                            onPress={() => setInspectKm(isExpanded ? -1 : m.km)}
-                            activeOpacity={0.75}
-                            accessibilityRole="button"
-                            accessibilityLabel={`${formatKmNumber(m.km)} km service schedule, ${formatInrAmount(
-                              cost.totalInr
-                            )}. Tap to ${isExpanded ? 'collapse' : 'expand'}.`}
-                          >
-                            <View style={{ flex: 1, minWidth: 0, paddingRight: 10 }}>
-                              <View style={styles.scheduleTitleRow}>
-                                <Text style={styles.scheduleCardTitle}>
-                                  {formatKmNumber(m.km)} km · {m.timeLabel.toLowerCase()}
-                                </Text>
-                                {isNext && (
-                                  <View style={styles.scheduleNextBadge}>
-                                    <Text style={styles.scheduleNextBadgeText}>Next</Text>
-                                  </View>
-                                )}
-                                {isDone && (
-                                  <View style={styles.scheduleDoneBadge}>
-                                    <Text style={styles.scheduleDoneBadgeText}>Done</Text>
-                                  </View>
-                                )}
-                              </View>
-                              {!isExpanded && (
-                                <Text style={styles.scheduleCardSummary} numberOfLines={1}>
-                                  {summaryItems}
-                                </Text>
-                              )}
-                            </View>
+                          {isSyncingCatalog
+                            ? 'Updating live costs...'
+                            : catalog.source === 'live'
+                              ? 'Live costs synced'
+                              : catalog.source === 'cached'
+                                ? 'Cached live costs'
+                                : 'Offline baseline costs'}
+                        </Text>
+                        <Text style={styles.syncCardSub}>
+                          {catalogSyncError || formatSyncTimestamp(catalog.fetchedAt)}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.refreshOutlineBtn}
+                        onPress={onRefreshCatalog}
+                        disabled={isSyncingCatalog}
+                        activeOpacity={0.75}
+                      >
+                        {isSyncingCatalog ? (
+                          <ActivityIndicator size="small" color="#34D399" />
+                        ) : (
+                          <Text style={styles.refreshOutlineText}>Refresh</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
 
-                            <View style={styles.scheduleHeaderRight}>
-                              <Text
-                                style={[
-                                  styles.scheduleCardCost,
-                                  (isNext || isExpanded) && { color: '#34D399' },
-                                  cost.totalInr === 0 && !isNext && !isExpanded && { color: '#94A3B8' },
-                                ]}
-                              >
-                                {formatInrAmount(cost.totalInr)}
-                              </Text>
-                              <View
-                                style={{
-                                  transform: [{ rotate: isExpanded ? '180deg' : '0deg' }],
-                                }}
-                              >
-                                <Svg
-                                  width={16}
-                                  height={16}
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="#94A3B8"
-                                  strokeWidth={2.2}
-                                >
-                                  <Path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-                                </Svg>
-                              </View>
-                            </View>
-                          </TouchableOpacity>
+                    <Text style={styles.disclaimerText}>{scheduleDisclaimerText}</Text>
 
-                          {isExpanded && (
-                            <View style={styles.scheduleCardBody}>
-                              <View style={styles.scheduleBreakdownDivider} />
-                              {cost.lineItems.length === 0 ? (
-                                <Text style={styles.mutedLineText}>
-                                  No scheduled replacements — inspection / check items only.
-                                </Text>
-                              ) : (
-                                cost.lineItems.map((li, idx) => (
-                                  <View
-                                    key={li.name}
-                                    style={[
-                                      styles.costLineRow,
-                                      idx === cost.lineItems.length - 1 && {
-                                        borderBottomWidth: 0,
-                                        paddingBottom: 2,
-                                      },
-                                    ]}
-                                  >
-                                    <Text style={styles.costLineLabel}>{li.name}</Text>
-                                    <Text style={styles.costLineVal}>
-                                      {formatInrAmount(li.amountInr)}
-                                    </Text>
-                                  </View>
-                                ))
-                              )}
-                            </View>
-                          )}
-                        </View>
-                      );
-                    })}
-                  </View>
-
-                  <Text style={styles.disclaimerText}>{scheduleDisclaimerText}</Text>
-
-                  <TouchableOpacity
-                    style={styles.openRefLink}
-                    onPress={() => Linking.openURL(SERVICE_SCHEDULE_SOURCE_URL).catch(() => {})}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.openRefLinkText}>Open price reference  ↗</Text>
-                  </TouchableOpacity>
-                </>
-              )}
+                    <TouchableOpacity
+                      style={styles.openRefLink}
+                      onPress={() => Linking.openURL(SERVICE_SCHEDULE_SOURCE_URL).catch(() => {})}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.openRefLinkText}>Open price reference  ↗</Text>
+                    </TouchableOpacity>
+                  </>
+                );
+              })()}
             </ScrollView>
           </SafeAreaView>
         </Animated.View>
@@ -2007,88 +1996,84 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
   },
-  scheduleListWrap: {
-    gap: 10,
-    marginBottom: 18,
-  },
-  scheduleCard: {
+  scheduleSelectorCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     backgroundColor: '#111827',
     borderWidth: 1,
     borderColor: '#1E293B',
     borderRadius: 18,
-    overflow: 'hidden',
-  },
-  scheduleCardNext: {
-    borderColor: 'rgba(52, 211, 153, 0.35)',
-  },
-  scheduleCardExpanded: {
-    borderColor: 'rgba(52, 211, 153, 0.6)',
-  },
-  scheduleCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 15,
+    paddingVertical: 14,
   },
-  scheduleTitleRow: {
-    flexDirection: 'row',
+  scheduleArrowBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#131B2A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  scheduleCardTitle: {
-    color: '#F8FAFC',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  scheduleNextBadge: {
-    backgroundColor: 'rgba(16, 185, 129, 0.16)',
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  scheduleNextBadgeText: {
-    color: '#34D399',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  scheduleDoneBadge: {
-    backgroundColor: '#1E293B',
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  scheduleDoneBadgeText: {
-    color: '#94A3B8',
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  scheduleCardSummary: {
-    color: '#94A3B8',
-    fontSize: 12,
-    marginTop: 4,
-  },
-  scheduleHeaderRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
     flexShrink: 0,
   },
-  scheduleCardCost: {
-    color: '#F8FAFC',
-    fontSize: 16,
-    fontWeight: '800',
+  scheduleArrowBtnDisabled: {
+    opacity: 0.32,
   },
-  scheduleCardBody: {
-    paddingHorizontal: 16,
-    paddingBottom: 14,
+  scheduleSelectorCenter: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  scheduleSelectorEyebrow: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.9,
+  },
+  scheduleSelectorKm: {
+    color: '#F8FAFC',
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: 2,
+    letterSpacing: -0.3,
+  },
+  scheduleSelectorYears: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  scheduleArrowHint: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 10,
+    marginBottom: 16,
+  },
+  scheduleBreakdownTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  scheduleBreakdownTitle: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+    flex: 1,
+  },
+  scheduleBreakdownPrice: {
+    color: '#34D399',
+    fontSize: 21,
+    fontWeight: '800',
   },
   scheduleBreakdownDivider: {
     height: 1,
     backgroundColor: '#1E293B',
+    marginTop: 14,
     marginBottom: 4,
   },
   syncCard: {
