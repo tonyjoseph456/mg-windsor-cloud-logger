@@ -120,10 +120,14 @@ import {
   getWindsorVariantById,
   resolveWindsorSunroofState,
   ServiceReminderSettings,
+  ServiceScheduleCatalog,
   WheelServiceKey,
   WHEEL_SERVICE_META,
   createDefaultServiceReminderSettings,
+  fetchLatestServiceCatalog,
+  getDefaultServiceScheduleCatalog,
   sanitizeServiceReminderSettings,
+  sanitizeServiceScheduleCatalog,
   computeNextServiceStatus,
   computeWheelServicesStatus,
   formatInrAmount,
@@ -167,6 +171,7 @@ const GOOGLE_MAPS_API_KEY_KEY = 'mg_ismart_google_maps_api_key_v1';
 const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const VARIANT_OVERRIDE_KEY = 'mg_windsor_selected_variant_v1';
 const SERVICE_REMINDER_KEY = 'mg_windsor_service_reminder_v1';
+const SERVICE_CATALOG_CACHE_KEY = 'mg_windsor_service_catalog_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const API_TOKEN_KEY = 'mg_pwa_api_token_v1';
@@ -2454,6 +2459,44 @@ export default function App() {
   const [variantOverridesByVin, setVariantOverridesByVin] = useState<Record<string, WindsorVariantId>>({});
   const [serviceReminderByVin, setServiceReminderByVin] = useState<Record<string, ServiceReminderSettings>>({});
   const [serviceTodayKey, setServiceTodayKey] = useState<string>(() => getTodayLocalIsoDate());
+  const [serviceCatalog, setServiceCatalog] = useState<ServiceScheduleCatalog>(() =>
+    getDefaultServiceScheduleCatalog()
+  );
+  const [isSyncingServiceCatalog, setIsSyncingServiceCatalog] = useState<boolean>(false);
+  const [serviceCatalogSyncError, setServiceCatalogSyncError] = useState<string | null>(null);
+  const lastCatalogFetchAttemptRef = useRef<number>(0);
+
+  const syncServiceCatalog = useCallback(async (opts?: { force?: boolean; quiet?: boolean }) => {
+    const now = Date.now();
+    if (!opts?.force && now - lastCatalogFetchAttemptRef.current < 15000) {
+      return;
+    }
+    lastCatalogFetchAttemptRef.current = now;
+    setIsSyncingServiceCatalog(true);
+    setServiceCatalogSyncError(null);
+    try {
+      const live = await fetchLatestServiceCatalog({ timeoutMs: 8000 });
+      if (live) {
+        setServiceCatalog(live);
+        SecureStore.setItemAsync(SERVICE_CATALOG_CACHE_KEY, JSON.stringify(live)).catch(() => {});
+        if (!opts?.quiet) {
+          showBanner('ok', 'Service costs updated from mgwindsor_service');
+        }
+      } else {
+        setServiceCatalogSyncError('Could not refresh live prices (using cached/baseline costs)');
+        if (!opts?.quiet) {
+          showBanner('err', 'Could not reach mgwindsor_service; keeping current prices.');
+        }
+      }
+    } catch {
+      setServiceCatalogSyncError('Could not refresh live prices (using cached/baseline costs)');
+      if (!opts?.quiet) {
+        showBanner('err', 'Could not refresh live prices.');
+      }
+    } finally {
+      setIsSyncingServiceCatalog(false);
+    }
+  }, []);
   const [showColorPicker, setShowColorPicker] = useState<boolean>(false);
   const [draftCarColorOverride, setDraftCarColorOverride] = useState<string | null>(null);
   const colorSheetSlideAnim = useRef(new Animated.Value(0)).current;
@@ -2813,6 +2856,7 @@ export default function App() {
 
   const handleOpenServiceReminderScreen = () => {
     setServiceTodayKey(getTodayLocalIsoDate());
+    syncServiceCatalog({ quiet: true });
     setIsServiceReminderVisible(true);
     serviceReminderSlideAnim.stopAnimation();
     serviceReminderSlideAnim.setValue(0);
@@ -3592,23 +3636,54 @@ export default function App() {
         // ignore invalid stored service reminder map
       }
     }).catch(() => {});
+
+    // Hydrate cached service cost catalog immediately, then fetch fresh costs on launch
+    SecureStore.getItemAsync(SERVICE_CATALOG_CACHE_KEY)
+      .then((rawCatalog) => {
+        if (!rawCatalog) return;
+        try {
+          const cached = sanitizeServiceScheduleCatalog(JSON.parse(rawCatalog), 'cached');
+          setServiceCatalog((prev) => (prev.source === 'live' ? prev : cached));
+        } catch {
+          // ignore invalid stored catalog
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        syncServiceCatalog({ force: true, quiet: true });
+      });
   }, []);
 
-  // Keep daily countdown current across foreground resume and midnight boundary
+  // Keep daily countdown & live service costs fresh across foreground resume and midnight boundary
   useEffect(() => {
     const syncToday = () => {
       const next = getTodayLocalIsoDate();
       setServiceTodayKey((prev) => (prev === next ? prev : next));
     };
+    const handleResume = () => {
+      syncToday();
+      syncServiceCatalog({ quiet: true });
+    };
     const sub = AppState.addEventListener?.('change', (nextState) => {
-      if (nextState === 'active') syncToday();
+      if (nextState === 'active') handleResume();
     });
+    const onWebVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        handleResume();
+      }
+    };
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onWebVisibilityChange);
+    }
     const timer = setInterval(syncToday, 60000);
     return () => {
       sub?.remove?.();
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onWebVisibilityChange);
+      }
       clearInterval(timer);
     };
-  }, []);
+  }, [syncServiceCatalog]);
 
   // Trip History Date Filter & Calendar State
   const [selectedTripDate, setSelectedTripDate] = useState<string>(() => getTodayDateKey());
@@ -6921,6 +6996,7 @@ export default function App() {
     odometerKm: liveServiceOdometerKm,
     settings: activeServiceSettings,
     todayIsoDate: serviceTodayKey,
+    catalog: serviceCatalog,
   });
 
   const wheelStatuses = computeWheelServicesStatus({
@@ -13147,6 +13223,10 @@ export default function App() {
         <ServiceReminderScreen
           translateX={serviceReminderTranslateX}
           odometerKm={liveServiceOdometerKm}
+          catalog={serviceCatalog}
+          isSyncingCatalog={isSyncingServiceCatalog}
+          catalogSyncError={serviceCatalogSyncError}
+          onRefreshCatalog={() => syncServiceCatalog({ force: true, quiet: false })}
           settings={activeServiceSettings}
           serviceStatus={serviceStatus}
           wheelStatuses={wheelStatuses}

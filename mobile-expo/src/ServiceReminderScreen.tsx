@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Linking,
   Platform,
@@ -25,10 +26,10 @@ import {
   getServiceMilestonesUpTo,
   getTodayLocalIsoDate,
   isValidIsoDateString,
-  SERVICE_PRICE_REFERENCE_NOTE,
   SERVICE_SCHEDULE_SOURCE_URL,
   ServiceMilestoneDefinition,
   ServiceReminderSettings,
+  ServiceScheduleCatalog,
   WHEEL_SERVICE_META,
   WheelServiceKey,
 } from './sdk';
@@ -36,6 +37,10 @@ import {
 interface ServiceReminderScreenProps {
   translateX: Animated.AnimatedInterpolation<string | number>;
   odometerKm: number | null;
+  catalog: ServiceScheduleCatalog;
+  isSyncingCatalog: boolean;
+  catalogSyncError: string | null;
+  onRefreshCatalog: () => void;
   settings: ServiceReminderSettings;
   serviceStatus: ComputedNextServiceStatus;
   wheelStatuses: ComputedWheelServiceItemStatus[];
@@ -54,6 +59,10 @@ function formatAutoDateInput(raw: string): string {
 export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
   translateX,
   odometerKm,
+  catalog,
+  isSyncingCatalog,
+  catalogSyncError,
+  onRefreshCatalog,
   settings,
   serviceStatus,
   wheelStatuses,
@@ -145,12 +154,30 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
   }, [settings.wheelServices]);
 
   const milestones = getServiceMilestonesUpTo(
-    Math.max(odometerKm ?? 0, serviceStatus.nextMilestone.km + 15000)
+    Math.max(odometerKm ?? 0, serviceStatus.nextMilestone.km + 15000),
+    catalog
   );
 
   const inspectedMilestone: ServiceMilestoneDefinition =
     milestones.find((m) => m.km === inspectKm) || serviceStatus.nextMilestone;
-  const inspectedCost = computeMilestoneCost(inspectedMilestone);
+  const inspectedCost = computeMilestoneCost(inspectedMilestone, catalog);
+
+  const formatCatalogSyncLabel = () => {
+    if (catalog.fetchedAt) {
+      const dt = new Date(catalog.fetchedAt);
+      const timeStr = Number.isNaN(dt.getTime())
+        ? catalog.fetchedAt
+        : dt.toLocaleString(undefined, {
+            day: '2-digit',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+      if (catalog.source === 'live') return `Live costs synced · ${timeStr}`;
+      return `Cached live costs · ${timeStr}`;
+    }
+    return 'Bundled baseline estimate (offline fallback)';
+  };
 
   const urgencyBadge =
     serviceStatus.urgency === 'overdue'
@@ -913,7 +940,7 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
             {showScheduleList && (
               <View style={{ marginTop: 12, gap: 8 }}>
                 {milestones.slice(0, 12).map((m) => {
-                  const c = computeMilestoneCost(m);
+                  const c = computeMilestoneCost(m, catalog);
                   return (
                     <View key={m.km} style={styles.scheduleTableRow}>
                       <View style={{ flex: 1 }}>
@@ -931,7 +958,36 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
               </View>
             )}
 
-            <Text style={styles.sourceNote}>{SERVICE_PRICE_REFERENCE_NOTE}</Text>
+            <View style={styles.catalogSyncBar}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
+                <Text
+                  style={[
+                    styles.catalogSyncTitle,
+                    catalog.source === 'live' && { color: '#34D399' },
+                    catalogSyncError && { color: '#FCD34D' },
+                  ]}
+                >
+                  {isSyncingCatalog ? 'Updating costs from mgwindsor_service...' : formatCatalogSyncLabel()}
+                </Text>
+                {Boolean(catalogSyncError) && (
+                  <Text style={styles.catalogSyncErr}>{catalogSyncError}</Text>
+                )}
+              </View>
+              <TouchableOpacity
+                style={styles.refreshCatalogBtn}
+                onPress={onRefreshCatalog}
+                disabled={isSyncingCatalog}
+                activeOpacity={0.75}
+              >
+                {isSyncingCatalog ? (
+                  <ActivityIndicator size="small" color="#34D399" />
+                ) : (
+                  <Text style={styles.refreshCatalogBtnText}>↻ Refresh costs</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.sourceNote}>{catalog.priceNote}</Text>
             <TouchableOpacity
               onPress={() => Linking.openURL(SERVICE_SCHEDULE_SOURCE_URL).catch(() => {})}
               style={{ marginTop: 8 }}
@@ -1430,6 +1486,43 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     marginTop: 12,
+  },
+  catalogSyncBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0B1120',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 14,
+  },
+  catalogSyncTitle: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  catalogSyncErr: {
+    color: '#FCA5A5',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  refreshCatalogBtn: {
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 102,
+    alignItems: 'center',
+  },
+  refreshCatalogBtnText: {
+    color: '#34D399',
+    fontSize: 11,
+    fontWeight: '700',
   },
   sourceUrl: {
     color: '#38BDF8',

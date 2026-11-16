@@ -2,11 +2,12 @@ export type ScheduledReplacementItem =
   | 'AC filter'
   | 'Coolant'
   | 'Brake fluid'
-  | 'Reducer oil';
+  | 'Reducer oil'
+  | (string & {});
 
 export type WheelServiceKey = 'balancing' | 'alignment' | 'rotation';
 
-export const SERVICE_REPLACEMENT_PRICES_INR: Record<ScheduledReplacementItem, number> = {
+export const SERVICE_REPLACEMENT_PRICES_INR: Record<string, number> = {
   'AC filter': 796,
   Coolant: 821,
   'Brake fluid': 515,
@@ -29,6 +30,16 @@ export interface ServiceMilestoneDefinition {
   monthsFromDelivery: number;
   timeLabel: string;
   replacements: ScheduledReplacementItem[];
+}
+
+export interface ServiceScheduleCatalog {
+  prices: Record<string, number>;
+  paidServiceStartKm: number;
+  paidServiceChargeInr: number;
+  milestones: ServiceMilestoneDefinition[];
+  priceNote: string;
+  fetchedAt: string | null;
+  source: 'live' | 'cached' | 'default';
 }
 
 export const WINDSOR_SERVICE_MILESTONES: readonly ServiceMilestoneDefinition[] = [
@@ -238,11 +249,333 @@ export function formatKmNumber(km: number): string {
   return `${sign}${rest},${lastThree}`;
 }
 
-export function getMilestoneForKm(km: number): ServiceMilestoneDefinition {
-  const preset = WINDSOR_SERVICE_MILESTONES.find((m) => m.km === km);
+export function getDefaultServiceScheduleCatalog(): ServiceScheduleCatalog {
+  return {
+    prices: { ...SERVICE_REPLACEMENT_PRICES_INR },
+    paidServiceStartKm: SERVICE_PAID_CHARGE_START_KM,
+    paidServiceChargeInr: SERVICE_PAID_CHARGE_INR,
+    milestones: WINDSOR_SERVICE_MILESTONES.map((m) => ({
+      ...m,
+      replacements: [...m.replacements],
+    })),
+    priceNote: SERVICE_PRICE_REFERENCE_NOTE,
+    fetchedAt: null,
+    source: 'default',
+  };
+}
+
+export function parseTimeLabelToMonths(timeLabel: string, fallbackKm?: number): number {
+  const clean = (timeLabel || '').trim().toLowerCase();
+  const yrMatch = clean.match(/(\d+(?:\.\d+)?)\s*year/);
+  if (yrMatch) {
+    return Math.max(1, Math.round(Number(yrMatch[1]) * 12));
+  }
+  const moMatch = clean.match(/(\d+(?:\.\d+)?)\s*month/);
+  if (moMatch) {
+    return Math.max(1, Math.round(Number(moMatch[1])));
+  }
+  if (typeof fallbackKm === 'number' && Number.isFinite(fallbackKm) && fallbackKm > 0) {
+    if (fallbackKm <= 1000) return 1;
+    if (fallbackKm <= 5000) return 6;
+    return Math.max(12, Math.round(fallbackKm / 15000) * 12);
+  }
+  return 12;
+}
+
+function decodeBasicHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#8377;/gi, '₹');
+}
+
+function stripTagsAndNormalizeWhitespace(htmlFragment: string): string {
+  return decodeBasicHtmlEntities(htmlFragment.replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractBalancedBlock(source: string, openIdx: number, openChar: string, closeChar: string): string | null {
+  if (openIdx < 0 || source[openIdx] !== openChar) return null;
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let i = openIdx; i < source.length; i++) {
+    const ch = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === openChar) depth += 1;
+    else if (ch === closeChar) {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(openIdx, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function parsePriceObjectLiteral(block: string): Record<string, number> | null {
+  const prices: Record<string, number> = {};
+  const entryRegex = /(?:"([^"\\]+)"|'([^'\\]+)'|([A-Za-z_][A-Za-z0-9_\- ]*))\s*:\s*([0-9]+(?:\.[0-9]+)?)/g;
+  let match: RegExpExecArray | null;
+  while ((match = entryRegex.exec(block)) !== null) {
+    const key = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+    const val = Number(match[4]);
+    if (key && Number.isFinite(val) && val >= 0) {
+      prices[key] = Math.round(val);
+    }
+  }
+  return Object.keys(prices).length > 0 ? prices : null;
+}
+
+function parseServicesArrayLiteral(block: string): ServiceMilestoneDefinition[] | null {
+  const milestones: ServiceMilestoneDefinition[] = [];
+  const rowRegex =
+    /\{\s*km\s*:\s*([0-9]+)\s*,\s*time\s*:\s*(?:"([^"]*)"|'([^']*)')\s*,\s*replacements\s*:\s*(\[[^\]]*\])\s*\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = rowRegex.exec(block)) !== null) {
+    const km = Number(match[1]);
+    const timeLabel = (match[2] ?? match[3] ?? '').trim();
+    const arrBody = match[4];
+    if (!Number.isFinite(km) || km <= 0 || !timeLabel) continue;
+    const replacements: ScheduledReplacementItem[] = [];
+    const itemRegex = /"([^"\\]+)"|'([^'\\]+)'/g;
+    let itemMatch: RegExpExecArray | null;
+    while ((itemMatch = itemRegex.exec(arrBody)) !== null) {
+      const name = (itemMatch[1] ?? itemMatch[2] ?? '').trim();
+      if (name) replacements.push(name);
+    }
+    milestones.push({
+      km: Math.round(km),
+      monthsFromDelivery: parseTimeLabelToMonths(timeLabel, km),
+      timeLabel,
+      replacements,
+    });
+  }
+  if (milestones.length === 0) return null;
+  milestones.sort((a, b) => a.km - b.km);
+  return milestones;
+}
+
+export function parseServiceCatalogFromHtml(
+  html: string,
+  fetchedAt: string = new Date().toISOString()
+): ServiceScheduleCatalog | null {
+  if (!html || typeof html !== 'string') return null;
+
+  // 1. Parse `const prices = { ... }` from inline <script>
+  const pricesAssignMatch = /\b(?:const|let|var)\s+prices\s*=\s*\{/.exec(html);
+  if (!pricesAssignMatch) return null;
+  const pricesOpenIdx = html.indexOf('{', pricesAssignMatch.index);
+  const pricesBlock = extractBalancedBlock(html, pricesOpenIdx, '{', '}');
+  const parsedPrices = pricesBlock ? parsePriceObjectLiteral(pricesBlock) : null;
+  if (!parsedPrices) return null;
+
+  // 2. Parse `const services = [ ... ]` from inline <script> (fallback to bundled milestones)
+  let parsedMilestones: ServiceMilestoneDefinition[] | null = null;
+  const servicesAssignMatch = /\b(?:const|let|var)\s+services\s*=\s*\[/.exec(html);
+  if (servicesAssignMatch) {
+    const servicesOpenIdx = html.indexOf('[', servicesAssignMatch.index);
+    const servicesBlock = extractBalancedBlock(html, servicesOpenIdx, '[', ']');
+    if (servicesBlock) {
+      parsedMilestones = parseServicesArrayLiteral(servicesBlock);
+    }
+  }
+
+  // 3. Parse paid service charge rule (`s.km>=30000 ? 2301 : 0`) or fallback note in HTML
+  let paidStartKm = SERVICE_PAID_CHARGE_START_KM;
+  let paidChargeInr = SERVICE_PAID_CHARGE_INR;
+  const scriptChargeMatch =
+    /s\.km\s*>=\s*([0-9]+)\s*\?\s*([0-9]+(?:\.[0-9]+)?)\s*:\s*0/.exec(html) ||
+    /serviceCharge\s*=\s*[^;?\n]*>=\s*([0-9]+)\s*\?\s*([0-9]+(?:\.[0-9]+)?)\s*:\s*0/.exec(html);
+  if (scriptChargeMatch) {
+    const sKm = Number(scriptChargeMatch[1]);
+    const sAmt = Number(scriptChargeMatch[2]);
+    if (Number.isFinite(sKm) && sKm >= 0) paidStartKm = Math.round(sKm);
+    if (Number.isFinite(sAmt) && sAmt >= 0) paidChargeInr = Math.round(sAmt);
+  } else {
+    const notesChargeMatch = /From the\s+([\d,]+)\s*km service onward[^₹\n]*₹\s*([\d,]+)/i.exec(
+      stripTagsAndNormalizeWhitespace(html)
+    );
+    if (notesChargeMatch) {
+      const sKm = Number(notesChargeMatch[1].replace(/,/g, ''));
+      const sAmt = Number(notesChargeMatch[2].replace(/,/g, ''));
+      if (Number.isFinite(sKm) && sKm >= 0) paidStartKm = Math.round(sKm);
+      if (Number.isFinite(sAmt) && sAmt >= 0) paidChargeInr = Math.round(sAmt);
+    }
+  }
+
+  // 4. Parse "Price information:" note if present in source-box
+  let priceNote = SERVICE_PRICE_REFERENCE_NOTE;
+  const priceInfoMatch = /<strong>\s*Price information:\s*<\/strong>([\s\S]*?)(?:<br\s*\/?>\s*<br\s*\/?>|<\/div>)/i.exec(
+    html
+  );
+  if (priceInfoMatch && priceInfoMatch[1]) {
+    const cleanedNote = stripTagsAndNormalizeWhitespace(priceInfoMatch[1]);
+    if (cleanedNote.length >= 20) {
+      priceNote = cleanedNote;
+    }
+  }
+
+  return {
+    prices: parsedPrices,
+    paidServiceStartKm: paidStartKm,
+    paidServiceChargeInr: paidChargeInr,
+    milestones:
+      parsedMilestones ||
+      WINDSOR_SERVICE_MILESTONES.map((m) => ({ ...m, replacements: [...m.replacements] })),
+    priceNote,
+    fetchedAt: typeof fetchedAt === 'string' && fetchedAt ? fetchedAt : new Date().toISOString(),
+    source: 'live',
+  };
+}
+
+export function sanitizeServiceScheduleCatalog(
+  raw: unknown,
+  sourceOverride?: ServiceScheduleCatalog['source']
+): ServiceScheduleCatalog {
+  const def = getDefaultServiceScheduleCatalog();
+  if (!raw || typeof raw !== 'object') return def;
+  const obj = raw as Record<string, any>;
+
+  const prices: Record<string, number> = {};
+  if (obj.prices && typeof obj.prices === 'object') {
+    for (const [k, v] of Object.entries(obj.prices)) {
+      const key = String(k || '').trim();
+      const val = Number(v);
+      if (key && Number.isFinite(val) && val >= 0) {
+        prices[key] = Math.round(val);
+      }
+    }
+  }
+  const hasValidPrices = Object.keys(prices).length > 0;
+
+  const milestones: ServiceMilestoneDefinition[] = [];
+  if (Array.isArray(obj.milestones)) {
+    for (const row of obj.milestones) {
+      if (!row || typeof row !== 'object') continue;
+      const km = Number(row.km);
+      const timeLabel = typeof row.timeLabel === 'string' ? row.timeLabel.trim() : '';
+      const monthsFromDelivery = Number(row.monthsFromDelivery);
+      if (!Number.isFinite(km) || km <= 0 || !timeLabel) continue;
+      const replacements = Array.isArray(row.replacements)
+        ? row.replacements
+            .map((x: unknown) => String(x || '').trim())
+            .filter(Boolean)
+        : [];
+      milestones.push({
+        km: Math.round(km),
+        timeLabel,
+        monthsFromDelivery:
+          Number.isFinite(monthsFromDelivery) && monthsFromDelivery >= 1
+            ? Math.round(monthsFromDelivery)
+            : parseTimeLabelToMonths(timeLabel, km),
+        replacements,
+      });
+    }
+  }
+  milestones.sort((a, b) => a.km - b.km);
+
+  const paidStart = Number(obj.paidServiceStartKm);
+  const paidCharge = Number(obj.paidServiceChargeInr);
+  const fetchedAt =
+    typeof obj.fetchedAt === 'string' && obj.fetchedAt.trim() ? obj.fetchedAt.trim() : null;
+  const source: ServiceScheduleCatalog['source'] =
+    sourceOverride ||
+    (obj.source === 'live' || obj.source === 'cached' || obj.source === 'default'
+      ? obj.source
+      : fetchedAt
+        ? 'cached'
+        : 'default');
+
+  return {
+    prices: hasValidPrices ? prices : def.prices,
+    paidServiceStartKm:
+      Number.isFinite(paidStart) && paidStart >= 0 ? Math.round(paidStart) : def.paidServiceStartKm,
+    paidServiceChargeInr:
+      Number.isFinite(paidCharge) && paidCharge >= 0
+        ? Math.round(paidCharge)
+        : def.paidServiceChargeInr,
+    milestones: milestones.length > 0 ? milestones : def.milestones,
+    priceNote:
+      typeof obj.priceNote === 'string' && obj.priceNote.trim() ? obj.priceNote.trim() : def.priceNote,
+    fetchedAt,
+    source,
+  };
+}
+
+export async function fetchLatestServiceCatalog(options?: {
+  timeoutMs?: number;
+  url?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<ServiceScheduleCatalog | null> {
+  const fetchFn = options?.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  if (!fetchFn) return null;
+
+  const baseUrl = options?.url || SERVICE_SCHEDULE_SOURCE_URL;
+  const sep = baseUrl.includes('?') ? '&' : '?';
+  const requestUrl = `${baseUrl}${sep}_=${Date.now()}`;
+  const timeoutMs = Math.max(1000, options?.timeoutMs ?? 8000);
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const res = await fetchFn(requestUrl, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller?.signal,
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    return parseServiceCatalogFromHtml(html, new Date().toISOString());
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function lookupCatalogItemPrice(item: string, prices: Record<string, number>): number {
+  if (Object.prototype.hasOwnProperty.call(prices, item)) {
+    return prices[item];
+  }
+  const lower = item.trim().toLowerCase();
+  for (const [k, v] of Object.entries(prices)) {
+    if (k.trim().toLowerCase() === lower) return v;
+  }
+  return SERVICE_REPLACEMENT_PRICES_INR[item] ?? 0;
+}
+
+export function getMilestoneForKm(
+  km: number,
+  catalog?: ServiceScheduleCatalog
+): ServiceMilestoneDefinition {
+  const activeCatalog = catalog || getDefaultServiceScheduleCatalog();
+  const preset = activeCatalog.milestones.find((m) => m.km === km);
   if (preset) return preset;
 
-  const normalizedKm = Math.max(150000, Math.round(km / 15000) * 15000);
+  const lastDefined =
+    activeCatalog.milestones[activeCatalog.milestones.length - 1] ||
+    WINDSOR_SERVICE_MILESTONES[WINDSOR_SERVICE_MILESTONES.length - 1];
+  const minKm = lastDefined?.km ?? 150000;
+  const normalizedKm = Math.max(minKm, Math.round(km / 15000) * 15000);
   const years = Math.round(normalizedKm / 15000);
   const isMajor = normalizedKm % 30000 === 0;
   return {
@@ -255,24 +588,37 @@ export function getMilestoneForKm(km: number): ServiceMilestoneDefinition {
   };
 }
 
-export function getServiceMilestonesUpTo(maxKm: number): ServiceMilestoneDefinition[] {
-  const result = [...WINDSOR_SERVICE_MILESTONES];
-  let km = 165000;
-  while (km <= Math.max(150000, maxKm + 30000)) {
-    result.push(getMilestoneForKm(km));
+export function getServiceMilestonesUpTo(
+  maxKm: number,
+  catalog?: ServiceScheduleCatalog
+): ServiceMilestoneDefinition[] {
+  const activeCatalog = catalog || getDefaultServiceScheduleCatalog();
+  const result = activeCatalog.milestones.map((m) => ({
+    ...m,
+    replacements: [...m.replacements],
+  }));
+  const lastDefinedKm = result.length > 0 ? result[result.length - 1].km : 150000;
+  let km = lastDefinedKm + 15000;
+  while (km <= Math.max(lastDefinedKm, maxKm + 30000)) {
+    result.push(getMilestoneForKm(km, activeCatalog));
     km += 15000;
   }
   return result;
 }
 
-export function computeMilestoneCost(milestone: Pick<ServiceMilestoneDefinition, 'km' | 'replacements'>): ServiceCostBreakdown {
+export function computeMilestoneCost(
+  milestone: Pick<ServiceMilestoneDefinition, 'km' | 'replacements'>,
+  catalog?: ServiceScheduleCatalog
+): ServiceCostBreakdown {
+  const activeCatalog = catalog || getDefaultServiceScheduleCatalog();
   const lineItems: ServiceCostLineItem[] = milestone.replacements.map((item) => ({
     name: item,
-    amountInr: SERVICE_REPLACEMENT_PRICES_INR[item],
+    amountInr: lookupCatalogItemPrice(item, activeCatalog.prices),
     kind: 'part',
   }));
   const partsTotalInr = lineItems.reduce((sum, x) => sum + x.amountInr, 0);
-  const serviceChargeInr = milestone.km >= SERVICE_PAID_CHARGE_START_KM ? SERVICE_PAID_CHARGE_INR : 0;
+  const serviceChargeInr =
+    milestone.km >= activeCatalog.paidServiceStartKm ? activeCatalog.paidServiceChargeInr : 0;
   if (serviceChargeInr > 0) {
     lineItems.push({
       name: 'Paid service charge',
@@ -288,8 +634,11 @@ export function computeMilestoneCost(milestone: Pick<ServiceMilestoneDefinition,
   };
 }
 
-export function findCompletedMilestoneIndexForOdo(odometerKm: number): number {
-  const list = getServiceMilestonesUpTo(odometerKm);
+export function findCompletedMilestoneIndexForOdo(
+  odometerKm: number,
+  catalog?: ServiceScheduleCatalog
+): number {
+  const list = getServiceMilestonesUpTo(odometerKm, catalog);
   let lastIndex = -1;
   for (let i = 0; i < list.length; i++) {
     if (list[i].km <= odometerKm) {
@@ -324,8 +673,10 @@ export function computeNextServiceStatus(params: {
   odometerKm: number | null | undefined;
   settings: ServiceReminderSettings;
   todayIsoDate?: string;
+  catalog?: ServiceScheduleCatalog;
 }): ComputedNextServiceStatus {
-  const { odometerKm, settings } = params;
+  const { odometerKm, settings, catalog } = params;
+  const activeCatalog = catalog || getDefaultServiceScheduleCatalog();
   const odo =
     typeof odometerKm === 'number' && Number.isFinite(odometerKm) && odometerKm >= 0
       ? odometerKm
@@ -340,7 +691,7 @@ export function computeNextServiceStatus(params: {
     settings.lastServiceOdoKm ?? 0,
     settings.lastServiceMilestoneKm ?? 0
   );
-  const milestones = getServiceMilestonesUpTo(referenceMaxKm);
+  const milestones = getServiceMilestonesUpTo(referenceMaxKm, activeCatalog);
 
   let prevIdx = -1;
   if (
@@ -355,7 +706,7 @@ export function computeNextServiceStatus(params: {
       if (exactIdx >= 0) {
         prevIdx = exactIdx;
       } else {
-        prevIdx = findCompletedMilestoneIndexForOdo(settings.lastServiceMilestoneKm);
+        prevIdx = findCompletedMilestoneIndexForOdo(settings.lastServiceMilestoneKm, activeCatalog);
       }
     }
   } else if (
@@ -363,14 +714,16 @@ export function computeNextServiceStatus(params: {
     settings.lastServiceOdoKm !== undefined &&
     Number.isFinite(settings.lastServiceOdoKm)
   ) {
-    prevIdx = findCompletedMilestoneIndexForOdo(settings.lastServiceOdoKm);
+    prevIdx = findCompletedMilestoneIndexForOdo(settings.lastServiceOdoKm, activeCatalog);
   } else if (odo !== null) {
-    prevIdx = findCompletedMilestoneIndexForOdo(odo);
+    prevIdx = findCompletedMilestoneIndexForOdo(odo, activeCatalog);
   }
 
   const previousMilestone = prevIdx >= 0 ? milestones[prevIdx] : null;
-  const nextMilestone = milestones[Math.min(prevIdx + 1, milestones.length - 1)] || getMilestoneForKm(150000);
-  const cost = computeMilestoneCost(nextMilestone);
+  const nextMilestone =
+    milestones[Math.min(prevIdx + 1, milestones.length - 1)] ||
+    getMilestoneForKm(150000, activeCatalog);
+  const cost = computeMilestoneCost(nextMilestone, activeCatalog);
 
   const kmRemainingRaw = odo !== null ? nextMilestone.km - odo : null;
   const kmRemaining = kmRemainingRaw !== null ? Math.round(kmRemainingRaw) : null;

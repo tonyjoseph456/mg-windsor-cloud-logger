@@ -8,10 +8,13 @@ import {
   computeWheelServicesStatus,
   createDefaultServiceReminderSettings,
   diffIsoDateDays,
+  fetchLatestServiceCatalog,
   formatInrAmount,
   formatKmNumber,
   getMilestoneForKm,
+  parseServiceCatalogFromHtml,
   sanitizeServiceReminderSettings,
+  sanitizeServiceScheduleCatalog,
 } from '../serviceSchedule';
 
 test('milestone replacement items and INR costs match mgwindsor_service schedule', () => {
@@ -203,4 +206,84 @@ test('formatting and settings sanitization preserve valid bounds', () => {
   assert.equal(sanitized.warningKm, 20000);
   assert.equal(sanitized.wheelServices.balancing.intervalKm, 500);
   assert.equal(sanitized.wheelServices.balancing.lastDoneKm, 30000);
+});
+
+test('parseServiceCatalogFromHtml extracts updated prices, service charge, and price note', () => {
+  const updatedHtml = `
+    <div class="source-box">
+      <strong>Price information:</strong> The approximate prices shown on this page are based on the user's most recent <strong>45,000 km service on 10/05/2027 at Fortune MG Muvattupuzha</strong>.<br><br>
+    </div>
+    <script>
+      const prices = {
+        "AC filter": 890,
+        "Coolant": 910,
+        "Brake fluid": 560,
+        "Reducer oil": 1700
+      };
+      const services = [
+        {km:1000, time:"1 Month", replacements:[]},
+        {km:5000, time:"6 Months", replacements:["Reducer oil"]},
+        {km:15000, time:"1 Year", replacements:["AC filter"]},
+        {km:30000, time:"2 Years", replacements:["AC filter","Brake fluid","Coolant","Reducer oil"]},
+        {km:45000, time:"3 Years", replacements:["AC filter"]}
+      ];
+      function render() {
+        const serviceCharge=s.km>=30000 ? 2550 : 0;
+      }
+    </script>
+  `;
+
+  const parsed = parseServiceCatalogFromHtml(updatedHtml, '2026-11-16T01:28:00.000Z');
+  assert.ok(parsed);
+  assert.equal(parsed.source, 'live');
+  assert.equal(parsed.prices['AC filter'], 890);
+  assert.equal(parsed.prices['Reducer oil'], 1700);
+  assert.equal(parsed.paidServiceStartKm, 30000);
+  assert.equal(parsed.paidServiceChargeInr, 2550);
+  assert.equal(parsed.milestones.length, 5);
+  assert.match(parsed.priceNote, /45,000 km service on 10\/05\/2027/);
+
+  const status = computeNextServiceStatus({
+    odometerKm: 32000,
+    todayIsoDate: '2026-11-16',
+    settings: { ...createDefaultServiceReminderSettings(), lastServiceDate: '2026-05-25' },
+    catalog: parsed,
+  });
+  assert.equal(status.nextMilestone.km, 45000);
+  assert.equal(status.cost.partsTotalInr, 890);
+  assert.equal(status.cost.serviceChargeInr, 2550);
+  assert.equal(status.cost.totalInr, 3440);
+});
+
+test('fetchLatestServiceCatalog handles live fetch success and network/404 fallback cleanly', async () => {
+  const sampleHtml = `
+    <script>
+      const prices = { "AC filter": 825, "Coolant": 821, "Brake fluid": 515, "Reducer oil": 1556 };
+      const services = [{km:15000, time:"1 Year", replacements:["AC filter"]}];
+      const serviceCharge=s.km>=30000 ? 2400 : 0;
+    </script>
+  `;
+  const okCatalog = await fetchLatestServiceCatalog({
+    fetchImpl: (async () =>
+      ({
+        ok: true,
+        text: async () => sampleHtml,
+      }) as Response) as typeof fetch,
+  });
+  assert.ok(okCatalog);
+  assert.equal(okCatalog.source, 'live');
+  assert.equal(okCatalog.prices['AC filter'], 825);
+  assert.equal(okCatalog.paidServiceChargeInr, 2400);
+
+  const errCatalog = await fetchLatestServiceCatalog({
+    fetchImpl: (async () => ({ ok: false, status: 500, text: async () => '' }) as Response) as typeof fetch,
+  });
+  assert.equal(errCatalog, null);
+
+  assert.equal(parseServiceCatalogFromHtml('<html>Not found</html>'), null);
+
+  const cached = sanitizeServiceScheduleCatalog(okCatalog, 'cached');
+  assert.equal(cached.source, 'cached');
+  assert.equal(cached.prices['AC filter'], 825);
+  assert.equal(cached.paidServiceChargeInr, 2400);
 });
