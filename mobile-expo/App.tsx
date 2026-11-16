@@ -6928,47 +6928,41 @@ export default function App() {
     settings: activeServiceSettings,
   });
 
-  const handleUpdateServiceReminderSettings = useCallback(
-    async (nextSettings: ServiceReminderSettings) => {
-      const sanitized = sanitizeServiceReminderSettings(nextSettings);
-      setServiceReminderByVin((prev) => {
-        const nextMap = {
-          ...prev,
-          [activeVariantVinKey]: sanitized,
-        };
-        SecureStore.setItemAsync(SERVICE_REMINDER_KEY, JSON.stringify(nextMap)).catch(() => {});
-        return nextMap;
-      });
-    },
-    [activeVariantVinKey]
-  );
-
-  const handleMarkWheelServiceDoneNow = useCallback(
-    async (key: WheelServiceKey) => {
-      if (liveServiceOdometerKm === null || !Number.isFinite(liveServiceOdometerKm)) {
-        showBanner('err', 'Sync live odometer first before marking done.');
-        return;
-      }
-      triggerHapticFeedback('tap');
-      const roundedOdo = Math.round(liveServiceOdometerKm);
-      const todayIso = getTodayLocalIsoDate();
-      const next: ServiceReminderSettings = {
-        ...activeServiceSettings,
-        wheelServices: {
-          ...activeServiceSettings.wheelServices,
-          [key]: {
-            ...activeServiceSettings.wheelServices[key],
-            enabled: true,
-            lastDoneKm: roundedOdo,
-            lastDoneDate: todayIso,
-          },
-        },
+  const handleUpdateServiceReminderSettings = async (nextSettings: ServiceReminderSettings) => {
+    const sanitized = sanitizeServiceReminderSettings(nextSettings);
+    setServiceReminderByVin((prev) => {
+      const nextMap = {
+        ...prev,
+        [activeVariantVinKey]: sanitized,
       };
-      await handleUpdateServiceReminderSettings(next);
-      showBanner('ok', `${WHEEL_SERVICE_META[key].label} marked done at ${formatKmNumber(roundedOdo)} km`);
-    },
-    [liveServiceOdometerKm, activeServiceSettings, handleUpdateServiceReminderSettings]
-  );
+      SecureStore.setItemAsync(SERVICE_REMINDER_KEY, JSON.stringify(nextMap)).catch(() => {});
+      return nextMap;
+    });
+  };
+
+  const handleMarkWheelServiceDoneNow = async (key: WheelServiceKey) => {
+    if (liveServiceOdometerKm === null || !Number.isFinite(liveServiceOdometerKm)) {
+      showBanner('err', 'Sync live odometer first before marking done.');
+      return;
+    }
+    triggerHapticFeedback('tap');
+    const roundedOdo = Math.round(liveServiceOdometerKm);
+    const todayIso = getTodayLocalIsoDate();
+    const next: ServiceReminderSettings = {
+      ...activeServiceSettings,
+      wheelServices: {
+        ...activeServiceSettings.wheelServices,
+        [key]: {
+          ...activeServiceSettings.wheelServices[key],
+          enabled: true,
+          lastDoneKm: roundedOdo,
+          lastDoneDate: todayIso,
+        },
+      },
+    };
+    await handleUpdateServiceReminderSettings(next);
+    showBanner('ok', `${WHEEL_SERVICE_META[key].label} marked done at ${formatKmNumber(roundedOdo)} km`);
+  };
 
   // Screen Width for Horizontal Tween Animations between Home, Tyres, Location, and Remote Commands
   const screenWidth = Math.max(windowWidth || 420, 500);
