@@ -956,3 +956,480 @@ export function sanitizeServiceReminderSettings(raw: unknown): ServiceReminderSe
     },
   };
 }
+
+export const DEFAULT_PACE_PRIMARY_WEEKS = 4;
+export const DEFAULT_PACE_FALLBACK_WEEKS = 8;
+export const MIN_FORECAST_WEEKLY_KM = 5;
+export const MAX_FORECAST_DAYS = 3650;
+
+const SHORT_MONTH_MAP: Record<string, string> = {
+  jan: '01',
+  feb: '02',
+  mar: '03',
+  apr: '04',
+  may: '05',
+  jun: '06',
+  jul: '07',
+  aug: '08',
+  sep: '09',
+  oct: '10',
+  nov: '11',
+  dec: '12',
+};
+
+export interface TripPaceInput {
+  id?: string | null;
+  distanceKm: number;
+  startDateTime?: string | null;
+  startTimestampSec?: number | null;
+  endTimestampSec?: number | null;
+  status?: string | null;
+}
+
+export interface WeeklyRunningAverageSummary {
+  weeklyKm: number | null;
+  dailyKm: number | null;
+  tripCount: number;
+  totalDistanceKm: number;
+  windowDays: number;
+  windowWeeks: number;
+  windowLabel: string;
+  source: 'trips' | 'none';
+}
+
+export interface KmDateProjection {
+  estimatedDate: string;
+  estimatedDays: number;
+}
+
+export interface RegularServiceForecast {
+  distanceEstimatedDate: string | null;
+  distanceEstimatedDays: number | null;
+  recommendedDate: string | null;
+  recommendedDays: number | null;
+  likelyTrigger: 'distance' | 'time' | 'both' | 'overdue' | 'unknown';
+  daysEarlierThanDueDate: number | null;
+}
+
+export interface WheelServiceForecastItem {
+  key: WheelServiceKey;
+  label: string;
+  shortLabel: string;
+  enabled: boolean;
+  isConfigured: boolean;
+  isDueNow: boolean;
+  nextDueKm: number | null;
+  kmRemaining: number | null;
+  estimatedDate: string | null;
+  estimatedDays: number | null;
+}
+
+export interface MaintenanceForecast {
+  runningAverage: WeeklyRunningAverageSummary;
+  regularService: RegularServiceForecast;
+  wheelServices: WheelServiceForecastItem[];
+  advisorTip: string | null;
+}
+
+/**
+ * Adds a signed whole number of calendar days to a `YYYY-MM-DD` string in UTC.
+ */
+export function addCalendarDaysToIsoDate(isoDate: string, days: number): string | null {
+  if (!isValidIsoDateString(isoDate) || !Number.isFinite(days)) return null;
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + Math.round(days)));
+  const yy = String(dt.getUTCFullYear()).padStart(4, '0');
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+/**
+ * Extracts a local `YYYY-MM-DD` date key from a trip record, matching `getTripDateKey`.
+ */
+export function extractTripIsoDate(
+  trip: Pick<TripPaceInput, 'startDateTime' | 'startTimestampSec' | 'endTimestampSec'>
+): string | null {
+  if (typeof trip.startDateTime === 'string' && trip.startDateTime.trim()) {
+    const raw = trip.startDateTime.trim();
+    const isoMatch = raw.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) {
+      const candidate = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+      if (isValidIsoDateString(candidate)) return candidate;
+    }
+    const namedMonthMatch = raw.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
+    if (namedMonthMatch) {
+      const mon = SHORT_MONTH_MAP[namedMonthMatch[2].toLowerCase()];
+      if (mon) {
+        const candidate = `${namedMonthMatch[3]}-${mon}-${namedMonthMatch[1].padStart(2, '0')}`;
+        if (isValidIsoDateString(candidate)) return candidate;
+      }
+    }
+    const dmyMatch = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (dmyMatch) {
+      const candidate = `${dmyMatch[3]}-${dmyMatch[2].padStart(2, '0')}-${dmyMatch[1].padStart(2, '0')}`;
+      if (isValidIsoDateString(candidate)) return candidate;
+    }
+  }
+
+  const ts =
+    typeof trip.startTimestampSec === 'number' && Number.isFinite(trip.startTimestampSec) && trip.startTimestampSec > 0
+      ? trip.startTimestampSec
+      : typeof trip.endTimestampSec === 'number' && Number.isFinite(trip.endTimestampSec) && trip.endTimestampSec > 0
+        ? trip.endTimestampSec
+        : null;
+  if (ts !== null) {
+    const dt = new Date(ts * 1000);
+    if (!Number.isNaN(dt.getTime())) {
+      return getTodayLocalIsoDate(dt);
+    }
+  }
+  return null;
+}
+
+function formatPaceWindowLabel(windowDays: number): string {
+  if (windowDays % 7 === 0) {
+    const weeks = windowDays / 7;
+    return weeks === 1 ? 'last 7 days' : `last ${weeks} weeks`;
+  }
+  return `last ${windowDays} days`;
+}
+
+/**
+ * Computes weekly running average km strictly from logged completed trips over recent weeks
+ * (4 weeks by default, widening to 8 weeks only if the last 4 weeks have 0 trips).
+ * Never synthesizes pace from odometer deltas or last service records.
+ */
+export function computeWeeklyRunningAverageFromTrips(params: {
+  trips: ReadonlyArray<TripPaceInput>;
+  todayIsoDate?: string;
+  primaryWindowWeeks?: number;
+  fallbackWindowWeeks?: number;
+}): WeeklyRunningAverageSummary {
+  const todayIso =
+    params.todayIsoDate && isValidIsoDateString(params.todayIsoDate)
+      ? params.todayIsoDate
+      : getTodayLocalIsoDate();
+  const primaryWeeks = Math.max(1, Math.round(params.primaryWindowWeeks ?? DEFAULT_PACE_PRIMARY_WEEKS));
+  const fallbackWeeks = Math.max(
+    primaryWeeks,
+    Math.round(params.fallbackWindowWeeks ?? DEFAULT_PACE_FALLBACK_WEEKS)
+  );
+
+  const seenIds = new Set<string>();
+  const validTrips: Array<{ distanceKm: number; daysAgo: number }> = [];
+  let maxDaysAgoSeen = 0;
+
+  for (const trip of params.trips || []) {
+    if (!trip || trip.status === 'driving') continue;
+    const id = typeof trip.id === 'string' ? trip.id.trim() : '';
+    if (id) {
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+    }
+    const dist = Number(trip.distanceKm);
+    if (!Number.isFinite(dist) || dist <= 0) continue;
+    const tripIso = extractTripIsoDate(trip);
+    if (!tripIso) continue;
+    const daysAgo = diffIsoDateDays(tripIso, todayIso);
+    if (daysAgo === null || daysAgo < 0) continue;
+    if (daysAgo > maxDaysAgoSeen) maxDaysAgoSeen = daysAgo;
+    validTrips.push({ distanceKm: dist, daysAgo });
+  }
+
+  const evaluateWindow = (weeks: number): WeeklyRunningAverageSummary | null => {
+    const maxDays = weeks * 7;
+    let totalDist = 0;
+    let count = 0;
+    for (const item of validTrips) {
+      if (item.daysAgo < maxDays) {
+        totalDist += item.distanceKm;
+        count += 1;
+      }
+    }
+    if (count === 0 || totalDist <= 0) return null;
+
+    // Avoid diluting a brand-new logger's first few weeks across an empty 28-day denominator,
+    // while clamping to >= 7 days so a single day's long drive isn't multiplied 7x.
+    const observedDays = Math.min(maxDays, Math.max(7, maxDaysAgoSeen + 1));
+    const dailyKm = totalDist / observedDays;
+    const weeklyKm = Number((dailyKm * 7).toFixed(1));
+    return {
+      weeklyKm,
+      dailyKm,
+      tripCount: count,
+      totalDistanceKm: Number(totalDist.toFixed(1)),
+      windowDays: observedDays,
+      windowWeeks: Number((observedDays / 7).toFixed(2)),
+      windowLabel: formatPaceWindowLabel(observedDays),
+      source: 'trips',
+    };
+  };
+
+  const primary = evaluateWindow(primaryWeeks);
+  if (primary) return primary;
+
+  if (fallbackWeeks > primaryWeeks) {
+    const fallback = evaluateWindow(fallbackWeeks);
+    if (fallback) return fallback;
+  }
+
+  return {
+    weeklyKm: null,
+    dailyKm: null,
+    tripCount: 0,
+    totalDistanceKm: 0,
+    windowDays: primaryWeeks * 7,
+    windowWeeks: primaryWeeks,
+    windowLabel: formatPaceWindowLabel(primaryWeeks * 7),
+    source: 'none',
+  };
+}
+
+/**
+ * Projects a future calendar date for covering `kmRemaining` at the observed trip pace.
+ */
+export function projectDateFromRemainingKm(params: {
+  kmRemaining: number | null;
+  dailyKm: number | null;
+  weeklyKm: number | null;
+  todayIsoDate?: string;
+}): KmDateProjection | null {
+  const { kmRemaining, dailyKm, weeklyKm } = params;
+  if (kmRemaining === null || !Number.isFinite(kmRemaining) || kmRemaining <= 0) return null;
+  if (dailyKm === null || !Number.isFinite(dailyKm) || dailyKm <= 0) return null;
+  if (weeklyKm === null || !Number.isFinite(weeklyKm) || weeklyKm < MIN_FORECAST_WEEKLY_KM) {
+    return null;
+  }
+  const todayIso =
+    params.todayIsoDate && isValidIsoDateString(params.todayIsoDate)
+      ? params.todayIsoDate
+      : getTodayLocalIsoDate();
+  const estimatedDays = Math.round(kmRemaining / dailyKm);
+  if (!Number.isFinite(estimatedDays) || estimatedDays < 0 || estimatedDays > MAX_FORECAST_DAYS) {
+    return null;
+  }
+  const estimatedDate = addCalendarDaysToIsoDate(todayIso, estimatedDays);
+  if (!estimatedDate) return null;
+  return { estimatedDate, estimatedDays };
+}
+
+function formatNaturalList(items: string[]): string {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} & ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')} & ${items[items.length - 1]}`;
+}
+
+/**
+ * Computes approximate projected due dates for regular periodic service and wheel care
+ * strictly from recent weeks of logged trips.
+ */
+export function computeMaintenanceForecast(params: {
+  trips: ReadonlyArray<TripPaceInput>;
+  serviceStatus: ComputedNextServiceStatus;
+  wheelStatuses: ReadonlyArray<ComputedWheelServiceItemStatus>;
+  todayIsoDate?: string;
+  primaryWindowWeeks?: number;
+  fallbackWindowWeeks?: number;
+}): MaintenanceForecast {
+  const todayIso =
+    params.todayIsoDate && isValidIsoDateString(params.todayIsoDate)
+      ? params.todayIsoDate
+      : getTodayLocalIsoDate();
+
+  const runningAverage = computeWeeklyRunningAverageFromTrips({
+    trips: params.trips,
+    todayIsoDate: todayIso,
+    primaryWindowWeeks: params.primaryWindowWeeks,
+    fallbackWindowWeeks: params.fallbackWindowWeeks,
+  });
+
+  const { serviceStatus, wheelStatuses } = params;
+
+  let regularService: RegularServiceForecast;
+  if (
+    serviceStatus.isOverdue ||
+    serviceStatus.kmRemaining === 0 ||
+    serviceStatus.daysRemaining === 0
+  ) {
+    regularService = {
+      distanceEstimatedDate: null,
+      distanceEstimatedDays: null,
+      recommendedDate: null,
+      recommendedDays: null,
+      likelyTrigger: 'overdue',
+      daysEarlierThanDueDate: null,
+    };
+  } else {
+    const distProj = projectDateFromRemainingKm({
+      kmRemaining: serviceStatus.kmRemaining,
+      dailyKm: runningAverage.dailyKm,
+      weeklyKm: runningAverage.weeklyKm,
+      todayIsoDate: todayIso,
+    });
+    const calDate = serviceStatus.nextDueDate;
+    const calDays = serviceStatus.daysRemaining;
+
+    if (distProj && calDate && calDays !== null) {
+      const deltaDays = diffIsoDateDays(distProj.estimatedDate, calDate) ?? 0;
+      if (deltaDays > 0) {
+        regularService = {
+          distanceEstimatedDate: distProj.estimatedDate,
+          distanceEstimatedDays: distProj.estimatedDays,
+          recommendedDate: distProj.estimatedDate,
+          recommendedDays: distProj.estimatedDays,
+          likelyTrigger: 'distance',
+          daysEarlierThanDueDate: deltaDays,
+        };
+      } else if (deltaDays < 0) {
+        regularService = {
+          distanceEstimatedDate: distProj.estimatedDate,
+          distanceEstimatedDays: distProj.estimatedDays,
+          recommendedDate: calDate,
+          recommendedDays: calDays,
+          likelyTrigger: 'time',
+          daysEarlierThanDueDate: deltaDays,
+        };
+      } else {
+        regularService = {
+          distanceEstimatedDate: distProj.estimatedDate,
+          distanceEstimatedDays: distProj.estimatedDays,
+          recommendedDate: distProj.estimatedDate,
+          recommendedDays: distProj.estimatedDays,
+          likelyTrigger: 'both',
+          daysEarlierThanDueDate: 0,
+        };
+      }
+    } else if (distProj) {
+      regularService = {
+        distanceEstimatedDate: distProj.estimatedDate,
+        distanceEstimatedDays: distProj.estimatedDays,
+        recommendedDate: distProj.estimatedDate,
+        recommendedDays: distProj.estimatedDays,
+        likelyTrigger: 'distance',
+        daysEarlierThanDueDate: null,
+      };
+    } else if (calDate && calDays !== null) {
+      regularService = {
+        distanceEstimatedDate: null,
+        distanceEstimatedDays: null,
+        recommendedDate: calDate,
+        recommendedDays: calDays,
+        likelyTrigger: 'time',
+        daysEarlierThanDueDate: null,
+      };
+    } else {
+      regularService = {
+        distanceEstimatedDate: null,
+        distanceEstimatedDays: null,
+        recommendedDate: null,
+        recommendedDays: null,
+        likelyTrigger: 'unknown',
+        daysEarlierThanDueDate: null,
+      };
+    }
+  }
+
+  const wheelServices: WheelServiceForecastItem[] = wheelStatuses.map((w) => {
+    const proj =
+      w.enabled && w.isConfigured && !w.isDueNow
+        ? projectDateFromRemainingKm({
+            kmRemaining: w.kmRemaining,
+            dailyKm: runningAverage.dailyKm,
+            weeklyKm: runningAverage.weeklyKm,
+            todayIsoDate: todayIso,
+          })
+        : null;
+    return {
+      key: w.key,
+      label: w.label,
+      shortLabel: w.shortLabel,
+      enabled: w.enabled,
+      isConfigured: w.isConfigured,
+      isDueNow: w.isDueNow,
+      nextDueKm: w.nextDueKm,
+      kmRemaining: w.kmRemaining,
+      estimatedDate: proj?.estimatedDate ?? null,
+      estimatedDays: proj?.estimatedDays ?? null,
+    };
+  });
+
+  let advisorTip: string | null = null;
+  if (runningAverage.weeklyKm !== null && runningAverage.weeklyKm >= MIN_FORECAST_WEEKLY_KM) {
+    const upcomingWheels = wheelServices
+      .filter((w) => w.estimatedDate !== null && w.estimatedDays !== null)
+      .sort((a, b) => (a.estimatedDays ?? 0) - (b.estimatedDays ?? 0));
+
+    let wheelCluster: WheelServiceForecastItem[] = [];
+    if (upcomingWheels.length >= 2) {
+      // Find the earliest tight cluster (within 7 days)
+      for (let i = 0; i < upcomingWheels.length; i++) {
+        const anchor = upcomingWheels[i];
+        const group = upcomingWheels.filter(
+          (w) => Math.abs((w.estimatedDays ?? 0) - (anchor.estimatedDays ?? 0)) <= 7
+        );
+        if (group.length > wheelCluster.length) {
+          wheelCluster = group;
+        }
+      }
+    }
+
+    const svcDays = regularService.recommendedDays;
+    const svcDate = regularService.recommendedDate;
+    const svcTitle = `${formatKmNumber(serviceStatus.nextMilestone.km)} km service`;
+
+    if (
+      wheelCluster.length >= 2 &&
+      svcDays !== null &&
+      svcDate &&
+      Math.abs((wheelCluster[0].estimatedDays ?? 0) - svcDays) <= 14
+    ) {
+      const names = formatNaturalList([...wheelCluster.map((w) => w.shortLabel), svcTitle]);
+      advisorTip = `${names} all fall around ${formatIsoDateShort(
+        wheelCluster[0].estimatedDate
+      )} — consider bundling them in one visit.`;
+    } else if (wheelCluster.length >= 2) {
+      const names = formatNaturalList(wheelCluster.map((w) => w.shortLabel));
+      advisorTip = `${names} all fall around ${formatIsoDateShort(
+        wheelCluster[0].estimatedDate
+      )} — you can get them done in one visit.`;
+    } else if (
+      upcomingWheels.length === 1 &&
+      svcDays !== null &&
+      svcDate &&
+      Math.abs((upcomingWheels[0].estimatedDays ?? 0) - svcDays) <= 14
+    ) {
+      advisorTip = `${upcomingWheels[0].label} (~${formatIsoDateShort(
+        upcomingWheels[0].estimatedDate
+      )}) lines up closely with your ${svcTitle} — easy to combine.`;
+    } else if (
+      regularService.likelyTrigger === 'distance' &&
+      (regularService.daysEarlierThanDueDate ?? 0) >= 14 &&
+      serviceStatus.nextDueDate
+    ) {
+      advisorTip = `At ~${formatKmNumber(
+        runningAverage.weeklyKm
+      )} km/wk, you'll hit ${formatKmNumber(serviceStatus.nextMilestone.km)} km about ${
+        regularService.daysEarlierThanDueDate
+      } days before your ${formatIsoDateShort(serviceStatus.nextDueDate)} due date.`;
+    } else if (
+      regularService.likelyTrigger === 'time' &&
+      serviceStatus.nextDueDate &&
+      regularService.distanceEstimatedDays !== null
+    ) {
+      advisorTip = `At ~${formatKmNumber(
+        runningAverage.weeklyKm
+      )} km/wk, your ${formatIsoDateShort(
+        serviceStatus.nextDueDate
+      )} due date arrives before the ${formatKmNumber(serviceStatus.nextMilestone.km)} km mark.`;
+    }
+  }
+
+  return {
+    runningAverage,
+    regularService,
+    wheelServices,
+    advisorTip,
+  };
+}

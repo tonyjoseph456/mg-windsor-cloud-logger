@@ -8,12 +8,14 @@ import {
   formatIsoDateShort,
   formatKmNumber,
   formatServiceDaysCountdownText,
+  MaintenanceForecast,
   WheelServiceKey,
 } from './sdk';
 
 interface HomeServiceAlertCardProps {
   serviceStatus: ComputedNextServiceStatus;
   wheelStatuses: ComputedWheelServiceItemStatus[];
+  forecast?: MaintenanceForecast;
   onPressManage: () => void;
   onMarkWheelDone: (key: WheelServiceKey) => void;
 }
@@ -30,6 +32,7 @@ function formatKmCountdown(kmRemaining: number | null): string {
 export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
   serviceStatus,
   wheelStatuses,
+  forecast,
   onPressManage,
   onMarkWheelDone,
 }) => {
@@ -151,6 +154,13 @@ export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
               <Text style={styles.countdownSub}>
                 At {formatKmNumber(serviceStatus.nextMilestone.km)} km
               </Text>
+              {Boolean(
+                forecast?.regularService.distanceEstimatedDate && !serviceStatus.isOverdue
+              ) && (
+                <Text style={styles.countdownEst}>
+                  Est. ~{formatIsoDateShort(forecast?.regularService.distanceEstimatedDate)}
+                </Text>
+              )}
             </View>
           </View>
         </View>
@@ -162,6 +172,11 @@ export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
           {activeWheelAlerts.map((item) => {
             const isOverdue = item.isDueNow;
             const dotColor = isOverdue ? '#F87171' : '#FBBF24';
+            const wheelForecast = forecast?.wheelServices.find((w) => w.key === item.key);
+            const estPart =
+              wheelForecast?.estimatedDate && !isOverdue
+                ? ` · ~${formatIsoDateShort(wheelForecast.estimatedDate)}`
+                : '';
             return (
               <View key={item.key} style={styles.wheelRow}>
                 <View style={styles.wheelIconWrap}>
@@ -179,7 +194,7 @@ export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
                       ? item.kmRemaining === 0
                         ? `Due now at ${formatKmNumber(item.nextDueKm ?? 0)} km`
                         : `${formatKmNumber(Math.abs(item.kmRemaining))} km overdue`
-                      : `${formatKmNumber(item.kmRemaining ?? 0)} km left · due at ${formatKmNumber(
+                      : `${formatKmNumber(item.kmRemaining ?? 0)} km left${estPart} · due at ${formatKmNumber(
                           item.nextDueKm ?? 0
                         )} km`}
                   </Text>
@@ -200,6 +215,23 @@ export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
             );
           })}
         </View>
+      )}
+
+      {Boolean(
+        forecast?.runningAverage.weeklyKm &&
+          ((showServiceAlert &&
+            forecast?.regularService.distanceEstimatedDate &&
+            !serviceStatus.isOverdue) ||
+            activeWheelAlerts.some(
+              (item) =>
+                !item.isDueNow &&
+                Boolean(forecast?.wheelServices.find((w) => w.key === item.key)?.estimatedDate)
+            ))
+      ) && (
+        <Text style={styles.paceFooter}>
+          Est. at ~{formatKmNumber(forecast!.runningAverage.weeklyKm!)} km/wk (
+          {forecast!.runningAverage.windowLabel})
+        </Text>
       )}
     </TouchableOpacity>
   );
@@ -305,6 +337,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
+  countdownEst: {
+    color: '#7DD3FC',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+  },
   wheelWrap: {
     gap: 8,
   },
@@ -345,5 +383,11 @@ const styles = StyleSheet.create({
     color: '#34D399',
     fontSize: 11,
     fontWeight: '700',
+  },
+  paceFooter: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 10,
   },
 });

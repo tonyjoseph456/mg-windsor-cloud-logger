@@ -2,19 +2,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  addCalendarDaysToIsoDate,
   addCalendarMonthsToIsoDate,
+  computeMaintenanceForecast,
   computeMilestoneCost,
   computeNextServiceStatus,
   computeServiceIntervalProgress,
+  computeWeeklyRunningAverageFromTrips,
   computeWheelServicesStatus,
   createDefaultServiceReminderSettings,
   diffIsoDateDays,
+  extractTripIsoDate,
   fetchLatestServiceCatalog,
   formatInrAmount,
   formatKmNumber,
   formatServiceDaysCountdownText,
   getMilestoneForKm,
   parseServiceCatalogFromHtml,
+  projectDateFromRemainingKm,
   sanitizeServiceReminderSettings,
   sanitizeServiceScheduleCatalog,
 } from '../serviceSchedule';
@@ -334,4 +339,139 @@ test('computeServiceIntervalProgress and formatServiceDaysCountdownText handle a
   assert.equal(formatServiceDaysCountdownText(0), 'Due today');
   assert.equal(formatServiceDaysCountdownText(-3), '3 days overdue');
   assert.equal(formatServiceDaysCountdownText(null, 'Add date'), 'Add date');
+});
+
+test('addCalendarDaysToIsoDate and extractTripIsoDate handle calendar boundaries and formats', () => {
+  assert.equal(addCalendarDaysToIsoDate('2026-11-17', 9), '2026-11-26');
+  assert.equal(addCalendarDaysToIsoDate('2026-11-17', 104), '2027-03-01');
+  assert.equal(addCalendarDaysToIsoDate('2024-02-28', 2), '2024-03-01');
+  assert.equal(addCalendarDaysToIsoDate('2025-02-28', 1), '2025-03-01');
+
+  assert.equal(extractTripIsoDate({ startDateTime: '16 Nov 2026, 10:30 am' }), '2026-11-16');
+  assert.equal(extractTripIsoDate({ startDateTime: '2026-10-25T08:15:00' }), '2026-10-25');
+  assert.equal(extractTripIsoDate({ startDateTime: '05/11/2026' }), '2026-11-05');
+  assert.equal(extractTripIsoDate({ startDateTime: 'invalid' }), null);
+});
+
+test('computeWeeklyRunningAverageFromTrips computes weekly pace strictly from recent logged trips', () => {
+  // Steady-state 4-week rolling window (oldest trip > 28d ago sets full 28-day denominator)
+  const trips = [
+    { id: 'old-1', distanceKm: 500, startDateTime: '01 Sep 2026, 09:00 am', status: 'completed' },
+    { id: 't1', distanceKm: 370, startDateTime: '15 Nov 2026, 09:00 am', status: 'completed' },
+    { id: 't2', distanceKm: 370, startDateTime: '08 Nov 2026, 09:00 am', status: 'completed' },
+    { id: 't3', distanceKm: 370, startDateTime: '01 Nov 2026, 09:00 am', status: 'completed' },
+    { id: 't4', distanceKm: 370, startDateTime: '25 Oct 2026, 09:00 am', status: 'completed' },
+    // Duplicate id and ongoing driving trip should both be ignored
+    { id: 't4', distanceKm: 999, startDateTime: '25 Oct 2026, 09:00 am', status: 'completed' },
+    { id: 'live', distanceKm: 80, startDateTime: '17 Nov 2026, 09:00 am', status: 'driving' },
+  ];
+  const avg4w = computeWeeklyRunningAverageFromTrips({ trips, todayIsoDate: '2026-11-17' });
+  assert.equal(avg4w.source, 'trips');
+  assert.equal(avg4w.tripCount, 4);
+  assert.equal(avg4w.totalDistanceKm, 1480);
+  assert.equal(avg4w.windowDays, 28);
+  assert.equal(avg4w.weeklyKm, 370);
+  assert.equal(avg4w.windowLabel, 'last 4 weeks');
+
+  // New logger with only 14 days of history uses observed 14-day (2-week) span
+  const newLoggerAvg = computeWeeklyRunningAverageFromTrips({
+    trips: [
+      { id: 'n1', distanceKm: 300, startDateTime: '04 Nov 2026, 08:00 am', status: 'completed' },
+      { id: 'n2', distanceKm: 400, startDateTime: '16 Nov 2026, 08:00 am', status: 'completed' },
+    ],
+    todayIsoDate: '2026-11-17',
+  });
+  assert.equal(newLoggerAvg.windowDays, 14);
+  assert.equal(newLoggerAvg.weeklyKm, 350);
+  assert.equal(newLoggerAvg.windowLabel, 'last 2 weeks');
+
+  // 0 trips in last 4 weeks widens cleanly to last 8 weeks
+  const avg8w = computeWeeklyRunningAverageFromTrips({
+    trips: [
+      { id: 'a0', distanceKm: 300, startDateTime: '01 Aug 2026, 08:00 am', status: 'completed' },
+      { id: 'a1', distanceKm: 800, startDateTime: '10 Oct 2026, 08:00 am', status: 'completed' },
+    ],
+    todayIsoDate: '2026-11-17',
+  });
+  assert.equal(avg8w.source, 'trips');
+  assert.equal(avg8w.windowDays, 56);
+  assert.equal(avg8w.weeklyKm, 100);
+  assert.equal(avg8w.windowLabel, 'last 8 weeks');
+
+  // Empty or stale >8-week trips return source: 'none' (no odometer delta fallback)
+  const emptyAvg = computeWeeklyRunningAverageFromTrips({
+    trips: [{ id: 'stale', distanceKm: 1200, startDateTime: '01 Aug 2026, 08:00 am', status: 'completed' }],
+    todayIsoDate: '2026-11-17',
+  });
+  assert.equal(emptyAvg.source, 'none');
+  assert.equal(emptyAvg.weeklyKm, null);
+});
+
+test('computeMaintenanceForecast projects regular service and wheel care dates and triggers', () => {
+  const settings = createDefaultServiceReminderSettings();
+  settings.lastServiceDate = '2026-05-25';
+  settings.lastServiceOdoKm = 30207;
+  settings.wheelServices.balancing.lastDoneKm = 35000;
+  settings.wheelServices.alignment.lastDoneKm = 35000;
+  settings.wheelServices.rotation.lastDoneKm = 30000;
+
+  const serviceStatus = computeNextServiceStatus({
+    odometerKm: 39518,
+    settings,
+    todayIsoDate: '2026-11-17',
+  });
+  const wheelStatuses = computeWheelServicesStatus({ odometerKm: 39518, settings });
+
+  // ~370 km/wk over last 4 weeks => 482 km wheel care ~26 Nov 2026; 5482 km service ~01 Mar 2027 (before 25 May 2027)
+  const fastForecast = computeMaintenanceForecast({
+    trips: [
+      { id: 'o', distanceKm: 100, startDateTime: '01 Oct 2026, 09:00 am', status: 'completed' },
+      { id: 'w1', distanceKm: 370.3, startDateTime: '22 Oct 2026, 09:00 am', status: 'completed' },
+      { id: 'w2', distanceKm: 370.3, startDateTime: '29 Oct 2026, 09:00 am', status: 'completed' },
+      { id: 'w3', distanceKm: 370.3, startDateTime: '05 Nov 2026, 09:00 am', status: 'completed' },
+      { id: 'w4', distanceKm: 370.3, startDateTime: '12 Nov 2026, 09:00 am', status: 'completed' },
+    ],
+    serviceStatus,
+    wheelStatuses,
+    todayIsoDate: '2026-11-17',
+  });
+  assert.equal(fastForecast.runningAverage.weeklyKm, 370.3);
+  assert.equal(fastForecast.regularService.distanceEstimatedDate, '2027-03-01');
+  assert.equal(fastForecast.regularService.recommendedDate, '2027-03-01');
+  assert.equal(fastForecast.regularService.likelyTrigger, 'distance');
+  assert.equal(fastForecast.regularService.daysEarlierThanDueDate, 85);
+
+  for (const key of ['balancing', 'alignment', 'rotation'] as const) {
+    const wf = fastForecast.wheelServices.find((w) => w.key === key)!;
+    assert.equal(wf.estimatedDate, '2026-11-26');
+    assert.equal(wf.estimatedDays, 9);
+  }
+  assert.ok(fastForecast.advisorTip && fastForecast.advisorTip.includes('26 Nov 2026'));
+
+  // Low weekly pace (70 km/wk = 10 km/day) => calendar due date 25 May 2027 arrives before 45,000 km
+  const slowForecast = computeMaintenanceForecast({
+    trips: [
+      { id: 's0', distanceKm: 100, startDateTime: '01 Oct 2026, 09:00 am', status: 'completed' },
+      { id: 's1', distanceKm: 280, startDateTime: '10 Nov 2026, 09:00 am', status: 'completed' },
+    ],
+    serviceStatus,
+    wheelStatuses,
+    todayIsoDate: '2026-11-17',
+  });
+  assert.equal(slowForecast.runningAverage.weeklyKm, 70);
+  assert.equal(slowForecast.regularService.likelyTrigger, 'time');
+  assert.equal(slowForecast.regularService.recommendedDate, '2027-05-25');
+  assert.equal(slowForecast.regularService.recommendedDays, 189);
+  assert.equal(slowForecast.wheelServices[0].estimatedDate, '2027-01-04'); // 482 / 10 = 48 days
+
+  // Negligible pace (< 5 km/wk) guards against absurd multi-decade date projections
+  assert.equal(
+    projectDateFromRemainingKm({
+      kmRemaining: 5000,
+      dailyKm: 2 / 7,
+      weeklyKm: 2,
+      todayIsoDate: '2026-11-17',
+    }),
+    null
+  );
 });

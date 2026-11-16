@@ -131,7 +131,9 @@ import {
   computeNextServiceStatus,
   computeServiceIntervalProgress,
   computeWheelServicesStatus,
+  computeMaintenanceForecast,
   formatInrAmount,
+  formatIsoDateShort,
   formatKmNumber,
   formatServiceDaysCountdownText,
   getTodayLocalIsoDate,
@@ -7064,6 +7066,13 @@ export default function App() {
     settings: activeServiceSettings,
   });
 
+  const maintenanceForecast = computeMaintenanceForecast({
+    trips,
+    serviceStatus,
+    wheelStatuses,
+    todayIsoDate: serviceTodayKey,
+  });
+
   const handleUpdateServiceReminderSettings = async (nextSettings: ServiceReminderSettings) => {
     const sanitized = sanitizeServiceReminderSettings(nextSettings);
     setServiceReminderByVin((prev) => {
@@ -8090,6 +8099,7 @@ export default function App() {
             <HomeServiceAlertCard
               serviceStatus={serviceStatus}
               wheelStatuses={wheelStatuses}
+              forecast={maintenanceForecast}
               onPressManage={handleOpenServiceReminderScreen}
               onMarkWheelDone={handleMarkWheelServiceDoneNow}
             />
@@ -9035,6 +9045,16 @@ export default function App() {
                             <Text style={styles.profileServiceSub}>
                               {kmLeftStr} · {daysLeftStr}
                             </Text>
+                            {Boolean(
+                              maintenanceForecast.regularService.recommendedDate &&
+                                maintenanceForecast.runningAverage.weeklyKm &&
+                                !serviceStatus.isOverdue
+                            ) && (
+                              <Text style={styles.profileServiceEstSub} numberOfLines={1}>
+                                Est. ~{formatIsoDateShort(maintenanceForecast.regularService.recommendedDate)} ·{' '}
+                                {formatKmNumber(maintenanceForecast.runningAverage.weeklyKm!)} km/wk
+                              </Text>
+                            )}
                           </View>
                           <Text
                             style={[
@@ -9090,6 +9110,9 @@ export default function App() {
                                     : w.kmRemaining === 0
                                       ? 'Due now'
                                       : `${formatKmNumber(w.kmRemaining)} km`;
+                            const wheelForecast = maintenanceForecast.wheelServices.find(
+                              (wf) => wf.key === w.key
+                            );
                             return (
                               <View key={w.key} style={styles.profileServiceWheelCol}>
                                 <View style={styles.profileServiceWheelLabelRow}>
@@ -9101,6 +9124,11 @@ export default function App() {
                                 <Text style={[styles.profileServiceWheelVal, { color: valColor }]} numberOfLines={1}>
                                   {valText}
                                 </Text>
+                                {Boolean(wheelForecast?.estimatedDate && !w.isDueNow) && (
+                                  <Text style={styles.profileServiceWheelEst} numberOfLines={1}>
+                                    ~{formatIsoDateShort(wheelForecast?.estimatedDate)}
+                                  </Text>
+                                )}
                               </View>
                             );
                           })}
@@ -13347,6 +13375,7 @@ export default function App() {
           settings={activeServiceSettings}
           serviceStatus={serviceStatus}
           wheelStatuses={wheelStatuses}
+          forecast={maintenanceForecast}
           onChangeSettings={handleUpdateServiceReminderSettings}
           onClose={handleCloseServiceReminderScreen}
           activeSubScreen={activeServiceSubScreen}
@@ -21409,6 +21438,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginTop: 2,
   },
+  profileServiceEstSub: {
+    color: '#7DD3FC',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 3,
+  },
   profileServiceCostVal: {
     fontSize: 15,
     fontWeight: '700',
@@ -21459,6 +21494,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     marginTop: 4,
+  },
+  profileServiceWheelEst: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '500',
+    marginTop: 2,
   },
   profileRowChevron: {
     color: '#64748B',
