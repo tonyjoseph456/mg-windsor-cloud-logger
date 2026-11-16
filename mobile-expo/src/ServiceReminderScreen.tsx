@@ -29,7 +29,6 @@ import {
   getTodayLocalIsoDate,
   isValidIsoDateString,
   SERVICE_SCHEDULE_SOURCE_URL,
-  ServiceMilestoneDefinition,
   ServiceReminderSettings,
   ServiceScheduleCatalog,
   WHEEL_SERVICE_META,
@@ -128,6 +127,7 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
 
   // ---- Alerts & tyre care state (live updates) ----
   const [warnDaysDraft, setWarnDaysDraft] = useState<string>(String(settings.warningDays));
+  const [isWarnDaysFocused, setIsWarnDaysFocused] = useState<boolean>(false);
   const [warnKmDraft, setWarnKmDraft] = useState<string>(String(settings.warningKm));
   const [isWarnKmFocused, setIsWarnKmFocused] = useState<boolean>(false);
   const [expandedWheelKey, setExpandedWheelKey] = useState<WheelServiceKey | null>('balancing');
@@ -175,6 +175,7 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
     } else if (activeSubScreen === 'alerts') {
       setWarnDaysDraft(String(settings.warningDays));
       setWarnKmDraft(String(settings.warningKm));
+      setIsWarnDaysFocused(false);
       setIsWarnKmFocused(false);
       setExpandedWheelKey((prev) => prev || 'balancing');
     } else if (activeSubScreen === 'schedule') {
@@ -226,10 +227,6 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
     ? milestones.slice(0, 12)
     : milestones.filter((m) => m.km <= lastServiceMilestoneCap);
   const hasHiddenMilestones = !showAllLastMilestones && milestones.length > visibleLastServiceMilestones.length;
-
-  const inspectedMilestone: ServiceMilestoneDefinition =
-    milestones.find((m) => m.km === inspectKm) || serviceStatus.nextMilestone;
-  const inspectedCost = computeMilestoneCost(inspectedMilestone, catalog);
 
   const intervalProgress = computeServiceIntervalProgress({
     odometerKm,
@@ -890,23 +887,55 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
                       <View style={styles.limitStepperRow}>
                         <TouchableOpacity
                           style={styles.circleStepBtn}
-                          onPress={() => handleStepWarnDays(-5)}
+                          onPress={() => {
+                            setIsWarnDaysFocused(false);
+                            handleStepWarnDays(-5);
+                          }}
                           activeOpacity={0.7}
                           accessibilityLabel="Decrease warning days"
                         >
                           <Text style={styles.circleStepBtnText}>−</Text>
                         </TouchableOpacity>
-                        <TextInput
-                          style={styles.limitStepperInput}
-                          value={warnDaysDraft}
-                          onChangeText={handleWarnDaysText}
-                          keyboardType="number-pad"
-                          maxLength={3}
-                          accessibilityLabel="Warning days limit"
-                        />
+                        <View style={styles.limitValueWrap}>
+                          {isWarnDaysFocused ? (
+                            <TextInput
+                              autoFocus
+                              style={styles.limitStepperInput}
+                              value={warnDaysDraft}
+                              onChangeText={handleWarnDaysText}
+                              onBlur={() => {
+                                setIsWarnDaysFocused(false);
+                                if (!warnDaysDraft) {
+                                  setWarnDaysDraft(String(settings.warningDays));
+                                }
+                              }}
+                              keyboardType="number-pad"
+                              maxLength={3}
+                              accessibilityLabel="Warning days limit"
+                            />
+                          ) : (
+                            <TouchableOpacity
+                              style={styles.limitValueTap}
+                              onPress={() => {
+                                setWarnDaysDraft(String(settings.warningDays));
+                                setIsWarnDaysFocused(true);
+                              }}
+                              activeOpacity={0.7}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Warning days ${settings.warningDays}. Tap to edit.`}
+                            >
+                              <Text style={styles.limitValueText} numberOfLines={1} adjustsFontSizeToFit>
+                                {settings.warningDays}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
                         <TouchableOpacity
                           style={styles.circleStepBtn}
-                          onPress={() => handleStepWarnDays(5)}
+                          onPress={() => {
+                            setIsWarnDaysFocused(false);
+                            handleStepWarnDays(5);
+                          }}
                           activeOpacity={0.7}
                           accessibilityLabel="Increase warning days"
                         >
@@ -921,29 +950,55 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
                       <View style={styles.limitStepperRow}>
                         <TouchableOpacity
                           style={styles.circleStepBtn}
-                          onPress={() => handleStepWarnKm(-100)}
+                          onPress={() => {
+                            setIsWarnKmFocused(false);
+                            handleStepWarnKm(-100);
+                          }}
                           activeOpacity={0.7}
                           accessibilityLabel="Decrease warning distance"
                         >
                           <Text style={styles.circleStepBtnText}>−</Text>
                         </TouchableOpacity>
-                        <TextInput
-                          style={styles.limitStepperInputKm}
-                          value={
-                            !isWarnKmFocused && warnKmDraft
-                              ? `${formatKmNumber(Number(warnKmDraft))} km`
-                              : warnKmDraft
-                          }
-                          onFocus={() => setIsWarnKmFocused(true)}
-                          onBlur={() => setIsWarnKmFocused(false)}
-                          onChangeText={handleWarnKmText}
-                          keyboardType="number-pad"
-                          maxLength={9}
-                          accessibilityLabel="Warning distance limit in km"
-                        />
+                        <View style={styles.limitValueWrap}>
+                          {isWarnKmFocused ? (
+                            <TextInput
+                              autoFocus
+                              style={styles.limitStepperInput}
+                              value={warnKmDraft}
+                              onChangeText={handleWarnKmText}
+                              onBlur={() => {
+                                setIsWarnKmFocused(false);
+                                if (!warnKmDraft) {
+                                  setWarnKmDraft(String(settings.warningKm));
+                                }
+                              }}
+                              keyboardType="number-pad"
+                              maxLength={5}
+                              accessibilityLabel="Warning distance limit in km"
+                            />
+                          ) : (
+                            <TouchableOpacity
+                              style={styles.limitValueTap}
+                              onPress={() => {
+                                setWarnKmDraft(String(settings.warningKm));
+                                setIsWarnKmFocused(true);
+                              }}
+                              activeOpacity={0.7}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Warning distance ${formatKmNumber(settings.warningKm)} km. Tap to edit.`}
+                            >
+                              <Text style={styles.limitValueKmText} numberOfLines={1} adjustsFontSizeToFit>
+                                {formatKmNumber(settings.warningKm)} km
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
                         <TouchableOpacity
                           style={styles.circleStepBtn}
-                          onPress={() => handleStepWarnKm(100)}
+                          onPress={() => {
+                            setIsWarnKmFocused(false);
+                            handleStepWarnKm(100);
+                          }}
                           activeOpacity={0.7}
                           accessibilityLabel="Increase warning distance"
                         >
@@ -1157,74 +1212,10 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
                   </View>
 
                   <Text style={styles.pageIntro}>
-                    What gets replaced at each service, and roughly what it costs.
+                    What gets replaced at each service, and roughly what it costs. Tap any interval to see parts and labour.
                   </Text>
 
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.schedulePillsRow}
-                  >
-                    {milestones.slice(0, 12).map((m) => {
-                      const selected = inspectedMilestone.km === m.km;
-                      return (
-                        <TouchableOpacity
-                          key={m.km}
-                          style={[styles.choicePill, selected && styles.choicePillActive]}
-                          onPress={() => setInspectKm(m.km)}
-                          activeOpacity={0.75}
-                        >
-                          <Text
-                            style={[
-                              styles.choicePillText,
-                              selected && styles.choicePillTextActive,
-                            ]}
-                          >
-                            {formatKmNumber(m.km)}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-
-                  {/* Breakdown Card */}
-                  <View style={styles.card}>
-                    <View style={styles.scheduleBreakdownTop}>
-                      <Text style={styles.scheduleBreakdownTitle}>
-                        {formatKmNumber(inspectedMilestone.km)} km ·{' '}
-                        {inspectedMilestone.timeLabel.toLowerCase()}
-                      </Text>
-                      <Text style={styles.scheduleBreakdownPrice}>
-                        {formatInrAmount(inspectedCost.totalInr)}
-                      </Text>
-                    </View>
-
-                    <View style={styles.scheduleBreakdownDivider} />
-
-                    {inspectedCost.lineItems.length === 0 ? (
-                      <Text style={styles.mutedLineText}>
-                        No scheduled replacements — inspection / check items only.
-                      </Text>
-                    ) : (
-                      inspectedCost.lineItems.map((li, idx) => (
-                        <View
-                          key={li.name}
-                          style={[
-                            styles.costLineRow,
-                            idx === inspectedCost.lineItems.length - 1 && {
-                              borderBottomWidth: 0,
-                              paddingBottom: 2,
-                            },
-                          ]}
-                        >
-                          <Text style={styles.costLineLabel}>{li.name}</Text>
-                          <Text style={styles.costLineVal}>{formatInrAmount(li.amountInr)}</Text>
-                        </View>
-                      ))
-                    )}
-                  </View>
-
-                  {/* Sync Status Card */}
+                  {/* Live Sync Status Strip */}
                   <View style={styles.syncCard}>
                     <View style={{ flex: 1, paddingRight: 12 }}>
                       <Text
@@ -1258,6 +1249,129 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
                         <Text style={styles.refreshOutlineText}>Refresh</Text>
                       )}
                     </TouchableOpacity>
+                  </View>
+
+                  {/* Vertical Expandable Schedule List (no horizontal scrolling) */}
+                  <View style={styles.scheduleListWrap}>
+                    {milestones.slice(0, 12).map((m) => {
+                      const cost = computeMilestoneCost(m, catalog);
+                      const isExpanded = inspectKm === m.km;
+                      const isNext = m.km === serviceStatus.nextMilestone.km;
+                      const isDone =
+                        !isNext &&
+                        (settings.lastServiceMilestoneKm !== null
+                          ? settings.lastServiceMilestoneKm > 0 &&
+                            m.km <= settings.lastServiceMilestoneKm
+                          : odometerKm !== null && m.km < serviceStatus.nextMilestone.km);
+
+                      const summaryItems =
+                        m.replacements.length > 0
+                          ? cost.serviceChargeInr > 0
+                            ? `${m.replacements.join(' · ')} + Paid service`
+                            : m.replacements.join(' · ')
+                          : 'Inspection & checks only';
+
+                      return (
+                        <View
+                          key={m.km}
+                          style={[
+                            styles.scheduleCard,
+                            isNext && styles.scheduleCardNext,
+                            isExpanded && styles.scheduleCardExpanded,
+                          ]}
+                        >
+                          <TouchableOpacity
+                            style={styles.scheduleCardHeader}
+                            onPress={() => setInspectKm(isExpanded ? -1 : m.km)}
+                            activeOpacity={0.75}
+                            accessibilityRole="button"
+                            accessibilityLabel={`${formatKmNumber(m.km)} km service schedule, ${formatInrAmount(
+                              cost.totalInr
+                            )}. Tap to ${isExpanded ? 'collapse' : 'expand'}.`}
+                          >
+                            <View style={{ flex: 1, minWidth: 0, paddingRight: 10 }}>
+                              <View style={styles.scheduleTitleRow}>
+                                <Text style={styles.scheduleCardTitle}>
+                                  {formatKmNumber(m.km)} km · {m.timeLabel.toLowerCase()}
+                                </Text>
+                                {isNext && (
+                                  <View style={styles.scheduleNextBadge}>
+                                    <Text style={styles.scheduleNextBadgeText}>Next</Text>
+                                  </View>
+                                )}
+                                {isDone && (
+                                  <View style={styles.scheduleDoneBadge}>
+                                    <Text style={styles.scheduleDoneBadgeText}>Done</Text>
+                                  </View>
+                                )}
+                              </View>
+                              {!isExpanded && (
+                                <Text style={styles.scheduleCardSummary} numberOfLines={1}>
+                                  {summaryItems}
+                                </Text>
+                              )}
+                            </View>
+
+                            <View style={styles.scheduleHeaderRight}>
+                              <Text
+                                style={[
+                                  styles.scheduleCardCost,
+                                  (isNext || isExpanded) && { color: '#34D399' },
+                                  cost.totalInr === 0 && !isNext && !isExpanded && { color: '#94A3B8' },
+                                ]}
+                              >
+                                {formatInrAmount(cost.totalInr)}
+                              </Text>
+                              <View
+                                style={{
+                                  transform: [{ rotate: isExpanded ? '180deg' : '0deg' }],
+                                }}
+                              >
+                                <Svg
+                                  width={16}
+                                  height={16}
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="#94A3B8"
+                                  strokeWidth={2.2}
+                                >
+                                  <Path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                                </Svg>
+                              </View>
+                            </View>
+                          </TouchableOpacity>
+
+                          {isExpanded && (
+                            <View style={styles.scheduleCardBody}>
+                              <View style={styles.scheduleBreakdownDivider} />
+                              {cost.lineItems.length === 0 ? (
+                                <Text style={styles.mutedLineText}>
+                                  No scheduled replacements — inspection / check items only.
+                                </Text>
+                              ) : (
+                                cost.lineItems.map((li, idx) => (
+                                  <View
+                                    key={li.name}
+                                    style={[
+                                      styles.costLineRow,
+                                      idx === cost.lineItems.length - 1 && {
+                                        borderBottomWidth: 0,
+                                        paddingBottom: 2,
+                                      },
+                                    ]}
+                                  >
+                                    <Text style={styles.costLineLabel}>{li.name}</Text>
+                                    <Text style={styles.costLineVal}>
+                                      {formatInrAmount(li.amountInr)}
+                                    </Text>
+                                  </View>
+                                ))
+                              )}
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
                   </View>
 
                   <Text style={styles.disclaimerText}>{scheduleDisclaimerText}</Text>
@@ -1615,6 +1729,8 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 16,
     fontWeight: '700',
+    width: '100%',
+    minWidth: 0,
     padding: 0,
     margin: 0,
     ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
@@ -1673,11 +1789,13 @@ const styles = StyleSheet.create({
   },
   limitCard: {
     flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
     backgroundColor: '#111827',
     borderWidth: 1,
     borderColor: '#1E293B',
     borderRadius: 18,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 14,
   },
   limitCardLabel: {
@@ -1691,11 +1809,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 4,
+    minHeight: 34,
   },
   circleStepBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    flexShrink: 0,
     backgroundColor: '#152033',
     borderWidth: 1,
     borderColor: '#1E293B',
@@ -1708,19 +1828,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 18,
   },
-  limitStepperInput: {
+  limitValueWrap: {
     flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  limitValueTap: {
+    width: '100%',
+    minHeight: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  limitValueText: {
     color: '#F8FAFC',
     fontSize: 17,
     fontWeight: '800',
     textAlign: 'center',
-    padding: 0,
-    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
   },
-  limitStepperInputKm: {
-    flex: 1,
+  limitValueKmText: {
     color: '#F8FAFC',
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  limitStepperInput: {
+    width: '100%',
+    minWidth: 0,
+    color: '#F8FAFC',
+    fontSize: 16,
     fontWeight: '800',
     textAlign: 'center',
     padding: 0,
@@ -1813,6 +1950,7 @@ const styles = StyleSheet.create({
   },
   lastDoneInputWrap: {
     flex: 1,
+    minWidth: 0,
     backgroundColor: '#0A0E17',
     borderWidth: 1,
     borderColor: '#1E293B',
@@ -1822,6 +1960,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   lastDoneInput: {
+    width: '100%',
+    minWidth: 0,
     color: '#F8FAFC',
     fontSize: 15,
     fontWeight: '700',
@@ -1835,6 +1975,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    flexShrink: 0,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1866,31 +2007,88 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
   },
-  schedulePillsRow: {
-    gap: 8,
-    paddingBottom: 18,
-  },
-  scheduleBreakdownTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  scheduleListWrap: {
     gap: 10,
+    marginBottom: 18,
   },
-  scheduleBreakdownTitle: {
+  scheduleCard: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  scheduleCardNext: {
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+  },
+  scheduleCardExpanded: {
+    borderColor: 'rgba(52, 211, 153, 0.6)',
+  },
+  scheduleCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+  },
+  scheduleTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  scheduleCardTitle: {
     color: '#F8FAFC',
-    fontSize: 17,
-    fontWeight: '800',
-    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
   },
-  scheduleBreakdownPrice: {
+  scheduleNextBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  scheduleNextBadgeText: {
     color: '#34D399',
-    fontSize: 21,
+    fontSize: 10,
     fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  scheduleDoneBadge: {
+    backgroundColor: '#1E293B',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  scheduleDoneBadgeText: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  scheduleCardSummary: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  scheduleHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  scheduleCardCost: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  scheduleCardBody: {
+    paddingHorizontal: 16,
+    paddingBottom: 14,
   },
   scheduleBreakdownDivider: {
     height: 1,
     backgroundColor: '#1E293B',
-    marginTop: 14,
     marginBottom: 4,
   },
   syncCard: {
