@@ -194,7 +194,7 @@ const SERVICE_REMINDER_KEY = 'mg_windsor_service_reminder_v1';
 const SERVICE_CATALOG_CACHE_KEY = 'mg_windsor_service_catalog_v1';
 const TYRE_SETTINGS_KEY = 'mg_windsor_tyre_settings_v1';
 const TYRE_MORNING_CACHE_KEY = 'mg_windsor_tyre_morning_v1';
-const CHARGE_SHOW_DATE_KEY = 'mg_windsor_charge_show_date_v1';
+const CHARGE_SHOW_DATE_KEY = 'mg_windsor_charge_show_date_v2';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const API_TOKEN_KEY = 'mg_pwa_api_token_v1';
@@ -3776,7 +3776,9 @@ export default function App() {
     }).catch(() => {});
 
     SecureStore.getItemAsync(CHARGE_SHOW_DATE_KEY).then((val) => {
-      if (val === 'true') {
+      if (val === 'false') {
+        setShowChargeSessionDates(false);
+      } else if (val === 'true') {
         setShowChargeSessionDates(true);
       }
     }).catch(() => {});
@@ -4024,7 +4026,7 @@ export default function App() {
   // Charging History Date Filter & Calendar State
   const [selectedChargeDate, setSelectedChargeDate] = useState<string>(() => getTodayDateKey());
   const [showChargeCalendar, setShowChargeCalendar] = useState<boolean>(false);
-  const [showChargeSessionDates, setShowChargeSessionDates] = useState<boolean>(false);
+  const [showChargeSessionDates, setShowChargeSessionDates] = useState<boolean>(true);
 
   const handleToggleShowChargeSessionDates = () => {
     triggerHapticFeedback('tap');
@@ -9013,39 +9015,9 @@ export default function App() {
               </View>
             ) : (
               <View style={styles.chargeSessionsWrap}>
-                <View style={styles.chargeSessionsHeaderRow}>
-                  <Text style={styles.chargeSessionCountLabel}>
-                    {displayedCharges.length} {displayedCharges.length === 1 ? 'session' : 'sessions'}
-                  </Text>
-                  {(selectedChargeDate === 'all' || isMonthDateKey(selectedChargeDate)) && (
-                    <TouchableOpacity
-                      style={[
-                        styles.chargeShowDatePill,
-                        showChargeSessionDates && styles.chargeShowDatePillActive,
-                      ]}
-                      onPress={handleToggleShowChargeSessionDates}
-                      activeOpacity={0.75}
-                      accessibilityRole="switch"
-                      accessibilityState={{ checked: showChargeSessionDates }}
-                      accessibilityLabel="Show dates on charging sessions"
-                    >
-                      <View
-                        style={[
-                          styles.chargeShowDateDot,
-                          showChargeSessionDates && styles.chargeShowDateDotActive,
-                        ]}
-                      />
-                      <Text
-                        style={[
-                          styles.chargeShowDateText,
-                          showChargeSessionDates && styles.chargeShowDateTextActive,
-                        ]}
-                      >
-                        {showChargeSessionDates ? 'Dates shown' : 'Show date'}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
+                <Text style={styles.chargeSessionCountLabel}>
+                  {displayedCharges.length} {displayedCharges.length === 1 ? 'session' : 'sessions'}
+                </Text>
                 <View style={styles.chargeSessionListDivider} />
 
                 {displayedCharges.map((session, idx) => {
@@ -21759,50 +21731,11 @@ const styles = StyleSheet.create({
     width: '100%',
     marginTop: 4,
   },
-  chargeSessionsHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-    gap: 8,
-  },
   chargeSessionCountLabel: {
     fontSize: 13,
     fontWeight: '500',
     color: '#94A3B8',
-    marginBottom: 0,
-  },
-  chargeShowDatePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: '#0F172A',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  chargeShowDatePillActive: {
-    backgroundColor: '#0C4A6E33',
-    borderColor: '#38BDF866',
-  },
-  chargeShowDateDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#64748B',
-  },
-  chargeShowDateDotActive: {
-    backgroundColor: '#38BDF8',
-  },
-  chargeShowDateText: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    color: '#94A3B8',
-  },
-  chargeShowDateTextActive: {
-    color: '#7DD3FC',
+    marginBottom: 8,
   },
   chargeSessionListDivider: {
     height: StyleSheet.hairlineWidth,
