@@ -194,6 +194,7 @@ const SERVICE_REMINDER_KEY = 'mg_windsor_service_reminder_v1';
 const SERVICE_CATALOG_CACHE_KEY = 'mg_windsor_service_catalog_v1';
 const TYRE_SETTINGS_KEY = 'mg_windsor_tyre_settings_v1';
 const TYRE_MORNING_CACHE_KEY = 'mg_windsor_tyre_morning_v1';
+const CHARGE_SHOW_DATE_KEY = 'mg_windsor_charge_show_date_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const API_TOKEN_KEY = 'mg_pwa_api_token_v1';
@@ -770,6 +771,35 @@ function triggerHapticFeedback(kind: 'tap' | 'success' | 'error' = 'tap') {
   } catch {
     // Ignore when haptic hardware is unavailable
   }
+}
+
+function formatChargeListDateLabel(dateKey: string, todayKey: string): string {
+  if (!dateKey || dateKey === 'all') return '';
+  if (dateKey === todayKey) return `Today · ${formatShortDayMonth(dateKey)}`;
+  if (dateKey === getYesterdayDateKey()) return `Yesterday · ${formatShortDayMonth(dateKey)}`;
+  const parts = dateKey.split('-');
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    const d = new Date(y, m, day);
+    if (!Number.isNaN(d.getTime())) {
+      const currentYear = new Date().getFullYear();
+      if (y !== currentYear) {
+        return d.toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        });
+      }
+      return d.toLocaleDateString('en-IN', {
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+      });
+    }
+  }
+  return formatDisplayDateKey(dateKey);
 }
 
 function formatDisplayDateKey(dateKey: string): string {
@@ -1964,6 +1994,7 @@ type DataSheetIconKind =
   | 'sparkles'
   | 'add_circle'
   | 'spreadsheet'
+  | 'calendar'
   | 'trash';
 
 interface DataSheetOptionItem {
@@ -2038,6 +2069,15 @@ function renderDataSheetIcon(kind: DataSheetIconKind, destructive?: boolean) {
           <Rect x="4" y="4" width="16" height="16" rx="2" />
           <Line x1="4" y1="10" x2="20" y2="10" />
           <Line x1="10" y1="10" x2="10" y2="20" />
+        </Svg>
+      );
+    case 'calendar':
+      return (
+        <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={strokeColor} strokeWidth={2}>
+          <Rect x="3" y="4" width="18" height="17" rx="2.5" />
+          <Line x1="8" y1="2.5" x2="8" y2="6" strokeLinecap="round" />
+          <Line x1="16" y1="2.5" x2="16" y2="6" strokeLinecap="round" />
+          <Line x1="3" y1="9.5" x2="21" y2="9.5" />
         </Svg>
       );
     case 'trash':
@@ -3735,6 +3775,12 @@ export default function App() {
       }
     }).catch(() => {});
 
+    SecureStore.getItemAsync(CHARGE_SHOW_DATE_KEY).then((val) => {
+      if (val === 'true') {
+        setShowChargeSessionDates(true);
+      }
+    }).catch(() => {});
+
     // Hydrate cached service cost catalog immediately, then fetch fresh costs on launch
     SecureStore.getItemAsync(SERVICE_CATALOG_CACHE_KEY)
       .then((rawCatalog) => {
@@ -3978,6 +4024,16 @@ export default function App() {
   // Charging History Date Filter & Calendar State
   const [selectedChargeDate, setSelectedChargeDate] = useState<string>(() => getTodayDateKey());
   const [showChargeCalendar, setShowChargeCalendar] = useState<boolean>(false);
+  const [showChargeSessionDates, setShowChargeSessionDates] = useState<boolean>(false);
+
+  const handleToggleShowChargeSessionDates = () => {
+    triggerHapticFeedback('tap');
+    setShowChargeSessionDates((prev) => {
+      const next = !prev;
+      SecureStore.setItemAsync(CHARGE_SHOW_DATE_KEY, next ? 'true' : 'false').catch(() => {});
+      return next;
+    });
+  };
 
   useEffect(() => {
     setOpenChargeSwipeId(null);
@@ -8957,9 +9013,39 @@ export default function App() {
               </View>
             ) : (
               <View style={styles.chargeSessionsWrap}>
-                <Text style={styles.chargeSessionCountLabel}>
-                  {displayedCharges.length} {displayedCharges.length === 1 ? 'session' : 'sessions'}
-                </Text>
+                <View style={styles.chargeSessionsHeaderRow}>
+                  <Text style={styles.chargeSessionCountLabel}>
+                    {displayedCharges.length} {displayedCharges.length === 1 ? 'session' : 'sessions'}
+                  </Text>
+                  {(selectedChargeDate === 'all' || isMonthDateKey(selectedChargeDate)) && (
+                    <TouchableOpacity
+                      style={[
+                        styles.chargeShowDatePill,
+                        showChargeSessionDates && styles.chargeShowDatePillActive,
+                      ]}
+                      onPress={handleToggleShowChargeSessionDates}
+                      activeOpacity={0.75}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: showChargeSessionDates }}
+                      accessibilityLabel="Show dates on charging sessions"
+                    >
+                      <View
+                        style={[
+                          styles.chargeShowDateDot,
+                          showChargeSessionDates && styles.chargeShowDateDotActive,
+                        ]}
+                      />
+                      <Text
+                        style={[
+                          styles.chargeShowDateText,
+                          showChargeSessionDates && styles.chargeShowDateTextActive,
+                        ]}
+                      >
+                        {showChargeSessionDates ? 'Dates shown' : 'Show date'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
                 <View style={styles.chargeSessionListDivider} />
 
                 {displayedCharges.map((session, idx) => {
@@ -8994,6 +9080,14 @@ export default function App() {
                     session.status === 'charging'
                       ? `${startTimeStr} – In progress`
                       : `${startTimeStr} – ${endTimeStr}`;
+                  const sessionDateKey = getChargeDateKey(session);
+                  const showRowDate =
+                    showChargeSessionDates &&
+                    (selectedChargeDate === 'all' || isMonthDateKey(selectedChargeDate)) &&
+                    Boolean(sessionDateKey);
+                  const rowDateLabel = showRowDate
+                    ? formatChargeListDateLabel(sessionDateKey, todayKey)
+                    : '';
 
                   const durStr = formatDurationHm(computedDurationSec);
                   const catClean = (session.chargerCategory || '3.3 kW AC').trim();
@@ -9023,10 +9117,13 @@ export default function App() {
                         onPress={() => handleOpenChargeDetail(session)}
                         onPressDelete={() => handleDeleteChargeEntry(session)}
                         disabled={isD1Syncing}
-                        accessibilityLabel={`Charging session ${timeRangeStr}`}
+                        accessibilityLabel={`Charging session ${rowDateLabel ? `${rowDateLabel}, ` : ''}${timeRangeStr}`}
                         deleteAccessibilityLabel="Delete charging session"
                       >
                         <View style={{ flex: 1, paddingRight: 12 }}>
+                          {Boolean(rowDateLabel) && (
+                            <Text style={styles.chargeSessionDateText}>{rowDateLabel}</Text>
+                          )}
                           <Text style={styles.chargeSessionTimeText}>{timeRangeStr}</Text>
                           <Text style={styles.chargeSessionMetaText}>
                             {durStr} · {powerStr}
@@ -9061,6 +9158,13 @@ export default function App() {
               disabled={isD1Syncing}
               onClose={() => setShowChargeOptionsMenu(false)}
               options={[
+                {
+                  key: 'show_dates',
+                  title: showChargeSessionDates ? 'Hide session dates' : 'Show session dates',
+                  subtitle: 'Show date on each session in month & all-dates list',
+                  icon: 'calendar',
+                  onPress: handleToggleShowChargeSessionDates,
+                },
                 {
                   key: 'sync',
                   title: 'Sync to cloud',
@@ -10985,8 +11089,8 @@ export default function App() {
                     <Text style={{ color: '#34D399', fontWeight: '700' }}>✓ Google Maps Active · Tap to manage</Text>
                   ) : (
                     <Text>
-                      🌐 Free OpenStreetMap Active ·{' '}
-                      <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Tap to add Google Maps Key</Text>
+                      🌐 Free OpenStreetMap ·{' '}
+                      <Text style={{ color: '#38BDF8', fontWeight: '700' }}>Tap to add Maps Key</Text>
                     </Text>
                   )}
                 </Text>
@@ -18936,7 +19040,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: 60,
+    paddingBottom: Platform.OS === 'web' ? 120 : 130,
   },
   tyresHeader: {
     flexDirection: 'row',
@@ -19324,7 +19428,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: 40,
+    paddingBottom: Platform.OS === 'web' ? 120 : 130,
   },
   locHeader: {
     flexDirection: 'row',
@@ -19366,14 +19470,14 @@ const styles = StyleSheet.create({
   },
   locMapCard: {
     width: '100%',
-    height: 340,
+    height: 292,
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#0B111E',
     borderWidth: 1,
     borderColor: '#1E293B',
     position: 'relative',
-    marginBottom: 20,
+    marginBottom: 14,
   },
   locMapNativePlaceholder: {
     width: '100%',
@@ -19450,8 +19554,8 @@ const styles = StyleSheet.create({
   },
   locProviderBar: {
     alignSelf: 'center',
-    marginTop: -8,
-    marginBottom: 16,
+    marginTop: -6,
+    marginBottom: 12,
     paddingHorizontal: 12,
     paddingVertical: 6,
     backgroundColor: '#111827',
@@ -19463,11 +19567,12 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontSize: 11.5,
     fontWeight: '500',
+    textAlign: 'center',
   },
   locStatsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 20,
+    marginBottom: 14,
     paddingHorizontal: 4,
   },
   locStatCol: {
@@ -19498,8 +19603,8 @@ const styles = StyleSheet.create({
     borderColor: '#1E293B',
     borderRadius: 18,
     paddingHorizontal: 18,
-    paddingVertical: 16,
-    marginBottom: 24,
+    paddingVertical: 14,
+    marginBottom: 16,
   },
   locSummaryLine: {
     flexDirection: 'row',
@@ -19573,7 +19678,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: 40,
+    paddingBottom: Platform.OS === 'web' ? 120 : 130,
   },
   remHeader: {
     flexDirection: 'row',
@@ -21654,11 +21759,50 @@ const styles = StyleSheet.create({
     width: '100%',
     marginTop: 4,
   },
+  chargeSessionsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    gap: 8,
+  },
   chargeSessionCountLabel: {
     fontSize: 13,
     fontWeight: '500',
     color: '#94A3B8',
-    marginBottom: 8,
+    marginBottom: 0,
+  },
+  chargeShowDatePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  chargeShowDatePillActive: {
+    backgroundColor: '#0C4A6E33',
+    borderColor: '#38BDF866',
+  },
+  chargeShowDateDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#64748B',
+  },
+  chargeShowDateDotActive: {
+    backgroundColor: '#38BDF8',
+  },
+  chargeShowDateText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#94A3B8',
+  },
+  chargeShowDateTextActive: {
+    color: '#7DD3FC',
   },
   chargeSessionListDivider: {
     height: StyleSheet.hairlineWidth,
@@ -21670,6 +21814,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 13,
+  },
+  chargeSessionDateText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#38BDF8',
+    marginBottom: 2,
+    letterSpacing: 0.1,
   },
   chargeSessionTimeText: {
     fontSize: 16,
