@@ -11,10 +11,17 @@ import * as WebBrowser from 'expo-web-browser';
 import { Platform } from 'react-native';
 import { ChargeLogRecord, TripRecord } from './models';
 import {
+  deduplicateChargeList,
+  isValidChargeRecord,
+  mapD1ChargeToRecord,
+} from './chargeMeter';
+import {
   MorningTyreCheckRecord,
   TyreMonitorSettings,
   sanitizeTyreMonitorSettings,
 } from './tyreMonitor';
+
+export { deduplicateChargeList, isValidChargeRecord, mapD1ChargeToRecord };
 
 export const DEFAULT_GOOGLE_CLIENT_ID =
   '502353296708-qfj0bj8s52mqchbi9dr3dthss9hr8ugb.apps.googleusercontent.com';
@@ -409,102 +416,6 @@ export function deduplicateTripList(trips: TripRecord[]): TripRecord[] {
     }
   }
 
-  return clean;
-}
-
-/**
- * Strict validator for charging session records.
- * Discards ghost records with null/missing timestamps, corrupt 0.13% SOC, or zero energy added.
- */
-export function isValidChargeRecord(c: any): boolean {
-  if (!c || typeof c !== 'object') return false;
-  const id = String(c.id || '');
-  if (id === 'chg-1793725580' && (!c.startTimestampSec || Number(c.energyAddedToPackKwh || 0) <= 0)) {
-    return false;
-  }
-  const startSec = Number(c.startTimestampSec || 0);
-  const startSoc = Number(c.startSoc || 0);
-  const endSoc = Number(c.endSoc || 0);
-  const energyAdded = Number(c.energyAddedToPackKwh || 0);
-  const durSec = Number(c.durationSeconds || 0);
-  if (!startSec || startSec < 1704067200) {
-    if (!c.startDateTime || c.startDateTime === '--') return false;
-  }
-  if (endSoc <= 1 && startSoc > 5) return false;
-  if (energyAdded <= 0 && (endSoc - startSoc) <= 0.5 && durSec <= 60) {
-    if (c.status !== 'charging') return false;
-  }
-  if (c.endDateTime === 'Charging in progress...' && c.status === 'completed' && energyAdded <= 0) {
-    return false;
-  }
-  return true;
-}
-
-/**
- * Deduplicates charging records by ID, odometer, and timestamp.
- * When duplicates or overlapping intervals are found, the record with the higher energy
- * added and more complete data is preserved.
- */
-export function deduplicateChargeList(charges: ChargeLogRecord[]): ChargeLogRecord[] {
-  if (!charges || !charges.length) return [];
-  const valid = charges.filter(isValidChargeRecord);
-
-  valid.sort((a, b) => {
-    const timeA = Number(a.startTimestampSec || 0);
-    const timeB = Number(b.startTimestampSec || 0);
-    if (timeA !== timeB) return timeB - timeA;
-    return Number(b.energyAddedToPackKwh || 0) - Number(a.energyAddedToPackKwh || 0);
-  });
-
-  const clean: ChargeLogRecord[] = [];
-  for (const c of valid) {
-    const cId = String(c.id || '');
-    const cStartSec = Number(c.startTimestampSec || 0);
-    const cEndSec = Number(c.endTimestampSec || cStartSec);
-    const cOdo = Number(c.odometerKm || 0);
-    const cEndSoc = Number(c.endSoc || 0);
-    const cEnergy = Number(c.energyAddedToPackKwh || 0);
-
-    let isDup = false;
-    for (let i = 0; i < clean.length; i++) {
-      const x = clean[i];
-      const xId = String(x.id || '');
-      const xStartSec = Number(x.startTimestampSec || 0);
-      const xEndSec = Number(x.endTimestampSec || xStartSec);
-      const xOdo = Number(x.odometerKm || 0);
-      const xEndSoc = Number(x.endSoc || 0);
-      const xEnergy = Number(x.energyAddedToPackKwh || 0);
-
-      // 1. Exact ID match
-      if (cId && xId && cId === xId) {
-        if (cEnergy > xEnergy) clean[i] = c;
-        isDup = true;
-        break;
-      }
-
-      // 2. Same session by timestamp (within 15 minutes of start)
-      if (cStartSec > 0 && xStartSec > 0 && Math.abs(cStartSec - xStartSec) < 900) {
-        if (cEnergy > xEnergy) clean[i] = c;
-        isDup = true;
-        break;
-      }
-
-      // 3. Same vehicle odometer (within 0.5 km) and overlapping charge window
-      if (cOdo > 0 && xOdo > 0 && Math.abs(cOdo - xOdo) <= 0.5) {
-        const timeOverlaps = cStartSec <= xEndSec + 1800 && cEndSec >= xStartSec - 1800;
-        const socSimilar = Math.abs(cEndSoc - xEndSoc) <= 2;
-        if (timeOverlaps || socSimilar) {
-          if (cEnergy > xEnergy) clean[i] = c;
-          isDup = true;
-          break;
-        }
-      }
-    }
-
-    if (!isDup) {
-      clean.push(c);
-    }
-  }
   return clean;
 }
 
@@ -964,91 +875,6 @@ function durationSecToHours(sec: number): number {
   return sec > 0 ? sec / 3600 : 1;
 }
 
-export function mapD1ChargeToRecord(r: any): ChargeLogRecord {
-  const startSec = Number(r.start_time ?? r.start_timestamp) || 0;
-  const endSec = (r.end_time != null || r.end_timestamp != null) ? Number(r.end_time ?? r.end_timestamp) : null;
-  const startDt = startSec ? formatDateTimeSdk(startSec) : '';
-  const endDt = endSec ? formatDateTimeSdk(endSec) : '';
-  const startSoc = Number(r.start_soc) || 0;
-  const endSoc = Number(r.end_soc) || startSoc;
-  const socAdded = Number(r.soc_added) || Math.max(0, endSoc - startSoc);
-  const energyAdded = Number(r.kwh_added ?? r.energy_added_kwh) || Number(((socAdded / 100) * 38).toFixed(2));
-  const odo = Number(r.start_odometer_km ?? r.odometer_km) || 0;
-  const durationSeconds = Number(r.active_duration_seconds ?? r.duration_seconds) || (endSec ? Math.max(0, endSec - startSec) : 0);
-
-  // Classify charger type based on physical charging power (kW):
-  // - <= 4.0 kW: 3.3 kW AC (standard portable / 15A wall socket)
-  // - 4.1 kW to 11.0 kW: 7.4 kW AC (fast home wallbox / Type 2 AC public)
-  // - > 11.0 kW: DC Fast (CCS2 DC fast charging)
-  const rawPeak = Number(r.peak_power_kw ?? r.peak_kw);
-  const peakKw = Number.isFinite(rawPeak) && rawPeak > 0 ? rawPeak : 0;
-  const rawType = String(r.charge_type || r.charger_type || '').toUpperCase();
-
-  let chargerCategory: '3.3 kW AC' | '7.4 kW AC' | 'DC Fast';
-  if (peakKw > 11.0) {
-    chargerCategory = 'DC Fast';
-  } else if (peakKw > 4.0) {
-    chargerCategory = '7.4 kW AC';
-  } else if (peakKw > 0) {
-    chargerCategory = '3.3 kW AC';
-  } else if (rawType.includes('DC')) {
-    chargerCategory = 'DC Fast';
-  } else if (rawType.includes('7.4') || rawType.includes('7.2')) {
-    chargerCategory = '7.4 kW AC';
-  } else {
-    chargerCategory = '3.3 kW AC';
-  }
-
-  const effectivePeakKw = peakKw > 0 ? peakKw : (chargerCategory === 'DC Fast' ? 30 : (chargerCategory === '7.4 kW AC' ? 7.4 : 3.3));
-  const isDc = chargerCategory === 'DC Fast';
-  const effFactor = isDc ? 0.94 : (chargerCategory === '7.4 kW AC' ? 0.905 : 0.885);
-  const energyUsed = Number(r.energy_used_kwh) || Number((energyAdded / effFactor).toFixed(2));
-  const lossKwh = Number(r.charging_loss_kwh) || Math.max(0, Number((energyUsed - energyAdded).toFixed(2)));
-  const lossPct = energyUsed > 0 ? Number(((lossKwh / energyUsed) * 100).toFixed(1)) : (isDc ? 6.0 : (chargerCategory === '7.4 kW AC' ? 9.5 : 11.5));
-
-  const rawEndRange = Number(r.end_range_km) || 0;
-  const startRange = Number(r.start_range_km) || 0;
-  const validEndRange =
-    rawEndRange > 0 && !(endSoc >= 99 && rawEndRange < 250)
-      ? Math.round(rawEndRange)
-      : startRange > 0 && socAdded <= 1
-      ? Math.round(startRange)
-      : Math.round((endSoc / 100) * 320);
-
-  const rawLat = r.start_lat ?? r.lat;
-  const rawLng = r.start_lng ?? r.lng;
-  const lat = rawLat != null && Number(rawLat) !== 0 ? Number(rawLat) : null;
-  const lng = rawLng != null && Number(rawLng) !== 0 ? Number(rawLng) : null;
-  const location = r.location ? String(r.location) : undefined;
-
-  return {
-    id: String(r.id),
-    startTimestampSec: startSec,
-    endTimestampSec: endSec,
-    startDateTime: startDt,
-    endDateTime: endDt,
-    startSoc,
-    endSoc,
-    startEnergyKwh: Number(((startSoc / 100) * 38).toFixed(2)),
-    endEnergyKwh: Number(((endSoc / 100) * 38).toFixed(2)),
-    odometerKm: odo,
-    distanceToEmptyAfterKm: validEndRange,
-    chargerCategory,
-    maxChargingSpeedKw: effectivePeakKw,
-    energyAddedToPackKwh: Math.max(0, energyAdded),
-    energyConsumedKwh: Math.max(0, energyUsed),
-    energyLossPercent: lossPct,
-    distanceTravelledSinceLastChargeKm: 0,
-    energyUsedSinceLastChargeKwh: 0,
-    efficiencyKmPerKwh: 0,
-    durationSeconds,
-    location,
-    lat,
-    lng,
-    status: (r.status === 'ongoing' || r.status === 'paused' || r.status === 'charging') ? 'charging' : 'completed',
-  };
-}
-
 export async function fetchD1Trips(date?: string, vinOverride?: string): Promise<TripRecord[]> {
   try {
     const vin = (vinOverride || _activeD1Vin || '').trim();
@@ -1178,6 +1004,10 @@ export async function syncChargesToD1(charges: ChargeLogRecord[], vinOverride?: 
       start_soc: c.startSoc,
       end_soc: c.endSoc,
       energy_added_kwh: c.energyAddedToPackKwh,
+      meter_energy_kwh:
+        c.meterEnergyKwh != null && Number(c.meterEnergyKwh) > 0
+          ? Number(Number(c.meterEnergyKwh).toFixed(2))
+          : null,
       charger_type: c.chargerCategory,
       peak_kw: c.maxChargingSpeedKw,
       odometer_km: c.odometerKm,
@@ -1198,6 +1028,44 @@ export async function syncChargesToD1(charges: ChargeLogRecord[], vinOverride?: 
   } catch (err) {
     console.warn('syncChargesToD1 error:', err);
     return false;
+  }
+}
+
+export async function updateD1ChargeMeterEnergy(
+  session: ChargeLogRecord,
+  meterEnergyKwh: number | null,
+  vinOverride?: string
+): Promise<{ ok: boolean; meterEnergyKwh: number | null; error?: string }> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/charging/meter${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      method: 'POST',
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        id: session.id,
+        vin: vin || undefined,
+        meterEnergyKwh,
+        session,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      return {
+        ok: false,
+        meterEnergyKwh,
+        error: data?.error || `HTTP ${res.status}`,
+      };
+    }
+    return {
+      ok: true,
+      meterEnergyKwh:
+        data.meterEnergyKwh != null && Number(data.meterEnergyKwh) > 0
+          ? Number(Number(data.meterEnergyKwh).toFixed(2))
+          : null,
+    };
+  } catch (err: any) {
+    console.warn('updateD1ChargeMeterEnergy error:', err);
+    return { ok: false, meterEnergyKwh, error: err?.message || 'Network error' };
   }
 }
 
@@ -1264,6 +1132,7 @@ export interface ChargingSessionRecord {
   kwh_added: number;
   energy_used_kwh: number;
   charging_loss_kwh: number;
+  meter_energy_kwh?: number | null;
   charge_type: 'AC' | 'DC';
   peak_power_kw: number;
   last_power_kw: number;

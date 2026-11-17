@@ -193,6 +193,7 @@ export interface ChargeLogRecord {
   energyAddedToPackKwh: number;
   energyConsumedKwh: number;
   energyLossPercent: number;
+  meterEnergyKwh?: number | null;
   distanceTravelledSinceLastChargeKm: number;
   energyUsedSinceLastChargeKwh: number;
   efficiencyKmPerKwh: number;

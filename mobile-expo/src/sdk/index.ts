@@ -9,3 +9,4 @@ export * from './tripPlanner';
 export * from './windsorVariants';
 export * from './serviceSchedule';
 export * from './tyreMonitor';
+export * from './chargeMeter';

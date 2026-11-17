@@ -9570,6 +9570,15 @@ function resolveNewSessionStartAnchor(params) {
     fallbackLocation: sameOdoAsSession && params.lastSession?.location || sameOdoAsTrip && params.lastTrip?.end_location || null
   };
 }
+function sanitizeMeterEnergyKwh(raw) {
+  if (raw === null || raw === void 0) return null;
+  if (typeof raw === "string" && raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 500) {
+    return "invalid";
+  }
+  return Number(n.toFixed(2));
+}
 
 // cloudflare-worker/admin-portal.ts
 init_multi_user_auth();
@@ -12611,6 +12620,7 @@ var D1_TABLE_SCHEMAS = [
     start_soc INTEGER,
     end_soc INTEGER,
     energy_added_kwh REAL,
+    meter_energy_kwh REAL,
     charger_type TEXT,
     peak_kw REAL,
     odometer_km REAL,
@@ -12634,6 +12644,7 @@ var D1_TABLE_SCHEMAS = [
     kwh_added REAL DEFAULT 0,
     energy_used_kwh REAL DEFAULT 0,
     charging_loss_kwh REAL DEFAULT 0,
+    meter_energy_kwh REAL,
     charge_type TEXT DEFAULT 'AC',
     peak_power_kw REAL DEFAULT 0,
     last_power_kw REAL DEFAULT 0,
@@ -12726,7 +12737,8 @@ async function initD1(db) {
     "end_range_km REAL",
     "start_lat REAL",
     "start_lng REAL",
-    "location TEXT"
+    "location TEXT",
+    "meter_energy_kwh REAL"
   ];
   for (const col of chargingSessionCols) {
     try {
@@ -12734,7 +12746,7 @@ async function initD1(db) {
     } catch (_) {
     }
   }
-  const chargeCols = ["end_range_km REAL", "lat REAL", "lng REAL", "location TEXT"];
+  const chargeCols = ["end_range_km REAL", "lat REAL", "lng REAL", "location TEXT", "meter_energy_kwh REAL"];
   for (const col of chargeCols) {
     try {
       await db.prepare(`ALTER TABLE charges ADD COLUMN ${col}`).run();
@@ -13543,12 +13555,33 @@ async function d1BatchSyncCharges(env, rawCharges, defaultVin) {
         const id = charge.id || "chg_" + (charge.start_timestamp || Math.floor(Date.now() / 1e3)) + "_" + Math.random().toString(36).substring(2, 6);
         const date = charge.date || (charge.start_timestamp ? istDateString(Number(charge.start_timestamp)) : istDateString(Math.floor(Date.now() / 1e3)));
         const v = fallbackVin;
+        const sanitizedMeter = sanitizeMeterEnergyKwh(charge.meter_energy_kwh ?? charge.meterEnergyKwh);
+        const meterVal = typeof sanitizedMeter === "number" ? sanitizedMeter : null;
         await env.DB.prepare(`
-          INSERT OR REPLACE INTO charges (
+          INSERT INTO charges (
             id, vin, date, start_timestamp, end_timestamp, duration_seconds,
-            start_soc, end_soc, energy_added_kwh, charger_type, peak_kw, odometer_km,
+            start_soc, end_soc, energy_added_kwh, meter_energy_kwh, charger_type, peak_kw, odometer_km,
             end_range_km, lat, lng, location, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            vin = excluded.vin,
+            date = excluded.date,
+            start_timestamp = excluded.start_timestamp,
+            end_timestamp = excluded.end_timestamp,
+            duration_seconds = excluded.duration_seconds,
+            start_soc = excluded.start_soc,
+            end_soc = excluded.end_soc,
+            energy_added_kwh = excluded.energy_added_kwh,
+            meter_energy_kwh = COALESCE(excluded.meter_energy_kwh, charges.meter_energy_kwh),
+            charger_type = excluded.charger_type,
+            peak_kw = excluded.peak_kw,
+            odometer_km = excluded.odometer_km,
+            end_range_km = excluded.end_range_km,
+            lat = excluded.lat,
+            lng = excluded.lng,
+            location = excluded.location,
+            status = excluded.status
+          WHERE charges.vin = excluded.vin OR charges.vin IS NULL OR charges.vin = ''
         `).bind(
           id,
           v,
@@ -13559,6 +13592,7 @@ async function d1BatchSyncCharges(env, rawCharges, defaultVin) {
           charge.start_soc != null ? Number(charge.start_soc) : null,
           charge.end_soc != null ? Number(charge.end_soc) : null,
           charge.energy_added_kwh != null ? Number(charge.energy_added_kwh) : null,
+          meterVal,
           charge.charger_type || "AC 3.3 kW",
           charge.peak_kw != null ? Number(charge.peak_kw) : null,
           charge.odometer_km != null ? Number(charge.odometer_km) : null,
@@ -13583,8 +13617,12 @@ async function d1BatchSyncCharges(env, rawCharges, defaultVin) {
       }
       for (const c of rawCharges) {
         if (c?.id) {
+          const prev = map.get(c.id);
+          const sanitizedMeter = sanitizeMeterEnergyKwh(c.meter_energy_kwh ?? c.meterEnergyKwh);
+          const meterVal = typeof sanitizedMeter === "number" ? sanitizedMeter : prev?.meter_energy_kwh ?? null;
           map.set(c.id, {
             ...c,
+            meter_energy_kwh: meterVal,
             vin: normVin(c.vin) || fallbackVin || void 0,
             date: c.date || (c.start_timestamp ? istDateString(Number(c.start_timestamp)) : ""),
             status: c.status || "completed"
@@ -13732,6 +13770,9 @@ function d1DeduplicateChargeRows(charges) {
       const eEnergy = Number(e.energy_added_kwh || e.kwh_added || 0);
       const eEndSoc = Number(e.end_soc || e.endSoc || 0);
       if (cId && eId && cId === eId) {
+        if (c.meter_energy_kwh != null && e.meter_energy_kwh == null) {
+          e.meter_energy_kwh = c.meter_energy_kwh;
+        }
         isDuplicate = true;
         break;
       }
@@ -13739,11 +13780,15 @@ function d1DeduplicateChargeRows(charges) {
       const closeTime = Math.abs(cStartSec - eStartSec) < 1800;
       const sameEndSoc = cEndSoc > 0 && eEndSoc > 0 && Math.abs(cEndSoc - eEndSoc) <= 1;
       if (sameOdo && closeTime || closeTime && sameEndSoc) {
+        const preservedMeter = c.meter_energy_kwh ?? e.meter_energy_kwh ?? null;
         if (cEnergy > eEnergy || cEndSec > eEndSec) {
           if (eId) duplicateIds.push(eId);
-          clean[i] = c;
+          clean[i] = preservedMeter != null ? { ...c, meter_energy_kwh: preservedMeter } : c;
         } else {
           if (cId) duplicateIds.push(cId);
+          if (preservedMeter != null && e.meter_energy_kwh == null) {
+            e.meter_energy_kwh = preservedMeter;
+          }
         }
         isDuplicate = true;
         break;
@@ -13802,6 +13847,8 @@ function normalizeChargeSessionRow(r) {
   } else if (peakKw > 0) {
     r.charge_type = "AC";
   }
+  const rawMeter = sanitizeMeterEnergyKwh(r.meter_energy_kwh);
+  r.meter_energy_kwh = typeof rawMeter === "number" ? rawMeter : null;
   return r;
 }
 async function d1GetCharges(env, date, vin) {
@@ -14403,6 +14450,121 @@ async function d1GetChargingHistory(env, limit = 50, vin) {
     }
   }
   return [];
+}
+async function d1SetChargeMeterEnergy(env, params) {
+  const v = requireScopedVin(params.vin);
+  if (!v || !params.id) return { updated: false, session: null };
+  let updatedRow = null;
+  let updated = false;
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const existingSession = await env.DB.prepare(
+        "SELECT * FROM charging_sessions WHERE id = ? AND vin = ?"
+      ).bind(params.id, v).first();
+      if (existingSession) {
+        await env.DB.prepare(
+          "UPDATE charging_sessions SET meter_energy_kwh = ? WHERE id = ? AND vin = ?"
+        ).bind(params.meterEnergyKwh, params.id, v).run();
+        updated = true;
+      }
+      const existingLegacy = await env.DB.prepare(
+        "SELECT * FROM charges WHERE id = ? AND vin = ?"
+      ).bind(params.id, v).first();
+      if (existingLegacy) {
+        await env.DB.prepare(
+          "UPDATE charges SET meter_energy_kwh = ? WHERE id = ? AND vin = ?"
+        ).bind(params.meterEnergyKwh, params.id, v).run();
+        updated = true;
+      }
+      if (!existingSession && params.session && typeof params.session === "object") {
+        const s = params.session;
+        const startSec = Number(s.startTimestampSec ?? s.start_time ?? s.start_timestamp) || 0;
+        if (startSec > 0) {
+          const endSec = s.endTimestampSec ?? s.end_time ?? s.end_timestamp ?? null;
+          const startSoc = Number(s.startSoc ?? s.start_soc) || 0;
+          const endSoc = Number(s.endSoc ?? s.end_soc ?? startSoc);
+          const socAdded = Math.max(0, endSoc - startSoc);
+          const kwhAdded = Number(s.energyAddedToPackKwh ?? s.kwh_added ?? s.energy_added_kwh) || Number((socAdded / 100 * 38).toFixed(2));
+          const peakKw = Number(s.maxChargingSpeedKw ?? s.peak_power_kw ?? s.peak_kw) || 3.3;
+          const chargeType = peakKw > 11 ? "DC" : "AC";
+          const effFactor = chargeType === "DC" ? 0.94 : 0.88;
+          const energyUsed = Number(s.energyConsumedKwh ?? s.energy_used_kwh) || Number((kwhAdded / effFactor).toFixed(2));
+          const lossKwh = Math.max(0, Number((energyUsed - kwhAdded).toFixed(2)));
+          const durSec = Number(s.durationSeconds ?? s.active_duration_seconds) || (endSec ? Math.max(0, Number(endSec) - startSec) : 0);
+          const dateStr = s.date || istDateString(startSec);
+          const statusVal = s.status === "charging" ? "ongoing" : s.status || "completed";
+          await env.DB.prepare(`
+            INSERT INTO charging_sessions (
+              id, vin, status, start_time, end_time, start_soc, end_soc,
+              soc_added, kwh_added, energy_used_kwh, charging_loss_kwh,
+              meter_energy_kwh, charge_type, peak_power_kw, last_power_kw, start_odometer_km,
+              start_range_km, end_range_km, start_lat, start_lng, location,
+              outage_count, paused_at, active_duration_seconds,
+              last_poll_time, date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            params.id,
+            v,
+            statusVal,
+            startSec,
+            endSec ? Number(endSec) : null,
+            startSoc,
+            endSoc,
+            socAdded,
+            kwhAdded,
+            energyUsed,
+            lossKwh,
+            params.meterEnergyKwh,
+            chargeType,
+            peakKw,
+            peakKw,
+            Number(s.odometerKm ?? s.start_odometer_km) || 0,
+            Math.round(startSoc / 100 * BMS_FULL_RANGE_KM),
+            s.distanceToEmptyAfterKm ?? s.end_range_km ?? null,
+            s.lat ?? s.start_lat ?? null,
+            s.lng ?? s.start_lng ?? null,
+            s.location || null,
+            0,
+            null,
+            durSec,
+            endSec ? Number(endSec) : startSec,
+            dateStr
+          ).run();
+          updated = true;
+        }
+      }
+      if (updated) {
+        const refreshed = await env.DB.prepare("SELECT * FROM charging_sessions WHERE id = ? AND vin = ?").bind(params.id, v).first() || await env.DB.prepare("SELECT * FROM charges WHERE id = ? AND vin = ?").bind(params.id, v).first();
+        if (refreshed) {
+          updatedRow = normalizeChargeSessionRow(refreshed);
+        }
+      }
+    } catch (err) {
+      console.warn("d1SetChargeMeterEnergy error:", err);
+    }
+  }
+  if (env.TRIP_KV) {
+    try {
+      const activeSession = await env.TRIP_KV.get(`d1_fallback:active_charging_session:${v}`, "json");
+      if (activeSession && String(activeSession.id) === String(params.id)) {
+        const nextActive = { ...activeSession, meter_energy_kwh: params.meterEnergyKwh };
+        await env.TRIP_KV.put(`d1_fallback:active_charging_session:${v}`, JSON.stringify(nextActive));
+        updated = true;
+        if (!updatedRow) updatedRow = normalizeChargeSessionRow(nextActive);
+      }
+      const charges = await env.TRIP_KV.get("d1_fallback:charges", "json") || [];
+      const idx = charges.findIndex((c) => String(c.id) === String(params.id) && normVin(c.vin) === v);
+      if (idx !== -1) {
+        charges[idx] = { ...charges[idx], meter_energy_kwh: params.meterEnergyKwh };
+        await env.TRIP_KV.put("d1_fallback:charges", JSON.stringify(charges));
+        updated = true;
+        if (!updatedRow) updatedRow = normalizeChargeSessionRow({ ...charges[idx] });
+      }
+    } catch (_) {
+    }
+  }
+  return { updated, session: updatedRow };
 }
 async function d1ClearChargingHistory(env, vin) {
   const v = requireScopedVin(vin);
@@ -16117,6 +16279,41 @@ ${emptyMsg}`,
       return json({ success: true, session: session || null, sessions, charges: sessions });
     } catch (e) {
       return json({ success: false, error: e?.message || "Charging sync failed" }, 500);
+    }
+  }
+  if (path === "/api/charging/meter" && request.method === "POST") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const sessionId = String(body?.id || url.searchParams.get("id") || "").trim();
+    if (!sessionId) {
+      return json({ success: false, error: "Charging session id is required" }, 400);
+    }
+    const rawMeter = body?.meterEnergyKwh !== void 0 ? body.meterEnergyKwh : body?.meter_energy_kwh;
+    const meterEnergyKwh = sanitizeMeterEnergyKwh(rawMeter);
+    if (meterEnergyKwh === "invalid") {
+      return json(
+        { success: false, error: "Meter energy must be a positive number up to 500 kWh" },
+        400
+      );
+    }
+    try {
+      const res = await d1SetChargeMeterEnergy(env, {
+        id: sessionId,
+        vin: auth.vin,
+        meterEnergyKwh,
+        session: body?.session
+      });
+      if (!res.updated) {
+        return json({ success: false, error: "Charging session not found for this vehicle" }, 404);
+      }
+      return json({
+        success: true,
+        id: sessionId,
+        meterEnergyKwh,
+        session: res.session
+      });
+    } catch (e) {
+      return json({ success: false, error: e?.message || "Failed to save meter energy" }, 500);
     }
   }
   if (path === "/api/charging/test-start") {

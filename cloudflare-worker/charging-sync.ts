@@ -487,3 +487,17 @@ export function resolveNewSessionStartAnchor(params: {
       null,
   };
 }
+
+/**
+ * Validates user-entered external meter kWh (null/empty clears the reading;
+ * otherwise accepts positive finite values up to 500 kWh rounded to 2 decimals).
+ */
+export function sanitizeMeterEnergyKwh(raw: any): number | null | 'invalid' {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'string' && raw.trim() === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 500) {
+    return 'invalid';
+  }
+  return Number(n.toFixed(2));
+}

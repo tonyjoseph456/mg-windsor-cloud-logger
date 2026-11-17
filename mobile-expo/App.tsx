@@ -79,6 +79,7 @@ import {
   fetchD1Charges,
   fetchD1ChargeDates,
   syncChargesToD1,
+  updateD1ChargeMeterEnergy,
   deleteD1Charge,
   clearD1Charges,
   dedupD1Charges,
@@ -152,6 +153,11 @@ import {
   sanitizeTyreDropThresholdPct,
   sanitizeTyreMonitorSettings,
   saveTyreMonitorSettings,
+  getChargeEstimatedWallKwh,
+  getChargePackAddedKwh,
+  mergePendingMeterOverrides,
+  sanitizeMeterEnergyInput,
+  summarizeChargeMeterAnalytics,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 import { SwipeableDeleteRow } from './src/SwipeableDeleteRow';
@@ -195,6 +201,7 @@ const SERVICE_CATALOG_CACHE_KEY = 'mg_windsor_service_catalog_v1';
 const TYRE_SETTINGS_KEY = 'mg_windsor_tyre_settings_v1';
 const TYRE_MORNING_CACHE_KEY = 'mg_windsor_tyre_morning_v1';
 const CHARGE_SHOW_DATE_KEY = 'mg_windsor_charge_show_date_v2';
+const CHARGE_METER_OVERRIDES_KEY = 'mg_windsor_charge_meter_overrides_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const API_TOKEN_KEY = 'mg_pwa_api_token_v1';
@@ -2796,6 +2803,8 @@ export default function App() {
   const [isChargeDetailVisible, setIsChargeDetailVisible] = useState<boolean>(false);
   const [selectedChargeForDetail, setSelectedChargeForDetail] = useState<ChargeLogRecord | null>(null);
   const [chargeDetailResolvedAddress, setChargeDetailResolvedAddress] = useState<string>('');
+  const [chargeMeterInput, setChargeMeterInput] = useState<string>('');
+  const [isSavingChargeMeter, setIsSavingChargeMeter] = useState<boolean>(false);
 
   useEffect(() => {
     let mounted = true;
@@ -2818,6 +2827,11 @@ export default function App() {
 
   const handleOpenChargeDetail = (chargeSession: ChargeLogRecord) => {
     setChargeDetailResolvedAddress('');
+    setChargeMeterInput(
+      chargeSession.meterEnergyKwh != null && Number(chargeSession.meterEnergyKwh) > 0
+        ? String(Number(chargeSession.meterEnergyKwh.toFixed(2)))
+        : ''
+    );
     setSelectedChargeForDetail(chargeSession);
     setIsChargeDetailVisible(true);
     chargeDetailSlideAnim.stopAnimation();
@@ -2842,6 +2856,7 @@ export default function App() {
         setIsChargeDetailVisible(false);
         setSelectedChargeForDetail(null);
         setChargeDetailResolvedAddress('');
+        setChargeMeterInput('');
       }
     });
   };
@@ -3490,7 +3505,26 @@ export default function App() {
           ? `${locInfo.lat.toFixed(5)}, ${locInfo.lng.toFixed(5)}`
           : locInfo.address || 'Not recorded';
 
+      const meterKwh =
+        session.meterEnergyKwh != null && Number(session.meterEnergyKwh) > 0
+          ? Number(Number(session.meterEnergyKwh).toFixed(2))
+          : null;
+
       if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        const shareMetrics = [
+          { label: '1. Start Battery', value: `${session.startSoc}% (${session.startEnergyKwh || ((session.startSoc / 100) * 38).toFixed(1)} kWh)` },
+          { label: '2. End Battery', value: `${session.endSoc}% (${session.endEnergyKwh || ((session.endSoc / 100) * 38).toFixed(1)} kWh)` },
+          { label: '3. Duration', value: formatDurationDetailed(durSec) },
+          { label: '4. Charger Speed', value: session.chargerCategory || `${session.maxChargingSpeedKw || 3.3} kW AC` },
+          { label: '5. Energy Added', value: `+${addedKwh.toFixed(2)} kWh` },
+          { label: '6. Wall Energy (Est.)', value: `${wallKwh.toFixed(2)} kWh` },
+          ...(meterKwh != null
+            ? [{ label: '7. Meter Energy (Actual)', value: `${meterKwh.toFixed(2)} kWh` }]
+            : []),
+          { label: meterKwh != null ? '8. Odometer' : '7. Odometer', value: `${session.odometerKm.toLocaleString()} km` },
+          { label: meterKwh != null ? '9. Range After Charge' : '8. Range After Charge', value: `${session.distanceToEmptyAfterKm || Math.round((session.endSoc / 100) * 320)} km` },
+          { label: meterKwh != null ? '10. Location' : '9. Location', value: locDisplay },
+        ];
         const blob = await renderTelemetryCardToBlob({
           titleBadge: 'MG WINDSOR EV • CHARGE TELEMETRY',
           dateStr: `⚡  ${dateStr}`,
@@ -3499,22 +3533,14 @@ export default function App() {
           durationBadgeStr: `(${formatDurationDetailed(durSec)})`,
           pills: [
             { label: 'ENERGY ADDED', value: `+${addedKwh.toFixed(1)} kWh`, color: '#34D399' },
-            { label: 'WALL ENERGY', value: `${wallKwh.toFixed(1)} kWh` },
+            meterKwh != null
+              ? { label: 'METER ENERGY', value: `${meterKwh.toFixed(1)} kWh`, color: '#38BDF8' }
+              : { label: 'WALL ENERGY', value: `${wallKwh.toFixed(1)} kWh` },
             { label: 'BATTERY', value: `${Math.round(session.startSoc)}% → ${Math.round(session.endSoc)}%` },
             { label: 'CHARGER', value: session.chargerCategory || '3.3 kW AC' },
           ],
           heading: 'CHARGING SESSION DETAILS',
-          metrics: [
-            { label: '1. Start Battery', value: `${session.startSoc}% (${session.startEnergyKwh || ((session.startSoc / 100) * 38).toFixed(1)} kWh)` },
-            { label: '2. End Battery', value: `${session.endSoc}% (${session.endEnergyKwh || ((session.endSoc / 100) * 38).toFixed(1)} kWh)` },
-            { label: '3. Duration', value: formatDurationDetailed(durSec) },
-            { label: '4. Charger Speed', value: session.chargerCategory || `${session.maxChargingSpeedKw || 3.3} kW AC` },
-            { label: '5. Energy Added', value: `+${addedKwh.toFixed(2)} kWh` },
-            { label: '6. Grid Consumed', value: `${wallKwh.toFixed(2)} kWh` },
-            { label: '7. Odometer', value: `${session.odometerKm.toLocaleString()} km` },
-            { label: '8. Range After Charge', value: `${session.distanceToEmptyAfterKm || Math.round((session.endSoc / 100) * 320)} km` },
-            { label: '9. Location', value: locDisplay },
-          ],
+          metrics: shareMetrics,
         });
 
         if (blob) {
@@ -3530,9 +3556,10 @@ export default function App() {
         }
       } else {
         if (await Sharing.isAvailableAsync()) {
+          const meterLine = meterKwh != null ? `\n🧮 Meter Energy: ${meterKwh.toFixed(2)} kWh` : '';
           Share.share({
             title: 'MG Windsor EV Charging Session',
-            message: `⚡ MG Windsor EV Charging Telemetry\n🔋 +${addedKwh.toFixed(1)} kWh (${session.startSoc}% → ${session.endSoc}%)\n⏱️ ${formatDurationHm(durSec)} on ${session.chargerCategory || '3.3 kW AC'}\n🔌 Wall Energy: ${wallKwh.toFixed(1)} kWh\n📍 Location: ${locDisplay}`,
+            message: `⚡ MG Windsor EV Charging Telemetry\n🔋 +${addedKwh.toFixed(1)} kWh (${session.startSoc}% → ${session.endSoc}%)\n⏱️ ${formatDurationHm(durSec)} on ${session.chargerCategory || '3.3 kW AC'}\n🔌 Wall Energy: ${wallKwh.toFixed(1)} kWh${meterLine}\n📍 Location: ${locDisplay}`,
           });
         }
       }
@@ -3780,6 +3807,18 @@ export default function App() {
         setShowChargeSessionDates(false);
       } else if (val === 'true') {
         setShowChargeSessionDates(true);
+      }
+    }).catch(() => {});
+
+    SecureStore.getItemAsync(CHARGE_METER_OVERRIDES_KEY).then((rawMap) => {
+      if (!rawMap) return;
+      try {
+        const parsed = JSON.parse(rawMap);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          pendingChargeMeterOverridesRef.current = parsed;
+        }
+      } catch {
+        // ignore invalid stored charge meter overrides
       }
     }).catch(() => {});
 
@@ -4037,6 +4076,88 @@ export default function App() {
     });
   };
 
+  const pendingChargeMeterOverridesRef = useRef<Record<string, number | null>>({});
+
+  const commitNormalizedChargeLogs = (rawList: ChargeLogRecord[], persistCache = true): ChargeLogRecord[] => {
+    const cleaned = deduplicateChargeList(rawList);
+    const { merged, remainingPending, changedPending } = mergePendingMeterOverrides(
+      cleaned,
+      pendingChargeMeterOverridesRef.current
+    );
+    if (changedPending) {
+      pendingChargeMeterOverridesRef.current = remainingPending;
+      SecureStore.setItemAsync(
+        CHARGE_METER_OVERRIDES_KEY,
+        JSON.stringify(remainingPending)
+      ).catch(() => {});
+    }
+    const filtered = merged.filter((c) => !recentlyDeletedIdsRef.current.has(`charge:${c.id}`));
+    setChargeLogs(filtered);
+    chargeLogsRef.current = filtered;
+    if (persistCache) {
+      SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(filtered)).catch(() => {});
+    }
+    return filtered;
+  };
+
+  const handleSaveChargeMeterEnergy = async (targetSession: ChargeLogRecord, rawValue: string | null) => {
+    const sanitized = sanitizeMeterEnergyInput(rawValue);
+    if (sanitized === 'invalid') {
+      showBanner('err', 'Enter a valid meter reading between 0.01 and 500 kWh');
+      return;
+    }
+    triggerHapticFeedback('tap');
+    const nextVal = sanitized;
+    const sessionId = String(targetSession.id || '');
+    const updatedSession: ChargeLogRecord = { ...targetSession, meterEnergyKwh: nextVal };
+
+    pendingChargeMeterOverridesRef.current = {
+      ...pendingChargeMeterOverridesRef.current,
+      [sessionId]: nextVal,
+    };
+    SecureStore.setItemAsync(
+      CHARGE_METER_OVERRIDES_KEY,
+      JSON.stringify(pendingChargeMeterOverridesRef.current)
+    ).catch(() => {});
+
+    const currentList = chargeLogsRef.current;
+    const replaced = currentList.some((c) => c.id === sessionId)
+      ? currentList.map((c) => (c.id === sessionId ? updatedSession : c))
+      : [updatedSession, ...currentList];
+    commitNormalizedChargeLogs(replaced, true);
+    setSelectedChargeForDetail((prev) => (prev && prev.id === sessionId ? updatedSession : prev));
+    setChargeMeterInput(nextVal != null ? String(nextVal) : '');
+
+    setIsSavingChargeMeter(true);
+    try {
+      const activeVin = (vin || snapshot?.vehicle?.vin || '').trim().toUpperCase() || undefined;
+      const res = await updateD1ChargeMeterEnergy(updatedSession, nextVal, activeVin);
+      if (res.ok) {
+        const nextPending = { ...pendingChargeMeterOverridesRef.current };
+        delete nextPending[sessionId];
+        pendingChargeMeterOverridesRef.current = nextPending;
+        SecureStore.setItemAsync(
+          CHARGE_METER_OVERRIDES_KEY,
+          JSON.stringify(nextPending)
+        ).catch(() => {});
+        if (nextVal != null) {
+          showBanner('ok', `Saved ${nextVal} kWh meter reading to D1`);
+        } else {
+          showBanner('ok', 'Cleared meter reading in D1');
+        }
+      } else {
+        showBanner(
+          'err',
+          nextVal != null
+            ? `Saved ${nextVal} kWh locally — D1 sync pending (${res.error || 'offline'})`
+            : `Cleared locally — D1 sync pending (${res.error || 'offline'})`
+        );
+      }
+    } finally {
+      setIsSavingChargeMeter(false);
+    }
+  };
+
   useEffect(() => {
     setOpenChargeSwipeId(null);
   }, [selectedChargeDate]);
@@ -4051,10 +4172,7 @@ export default function App() {
       // Fetch all charges from Cloudflare D1
       fetchD1Charges('all').then((d1Charges) => {
         if (Array.isArray(d1Charges)) {
-          const filtered = d1Charges.filter((c) => !recentlyDeletedIdsRef.current.has(`charge:${c.id}`));
-          setChargeLogs(filtered);
-          chargeLogsRef.current = filtered;
-          SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(filtered)).catch(() => {});
+          commitNormalizedChargeLogs(d1Charges, true);
         }
       }).catch(() => {});
     }
@@ -4101,10 +4219,7 @@ export default function App() {
 
   const applyD1ChargingSessions = (sessions: ChargingSessionRecord[]) => {
     setD1ChargingSessions(sessions);
-    const mapped = deduplicateChargeList(sessions.map(mapD1ChargeToRecord));
-    setChargeLogs(mapped);
-    chargeLogsRef.current = mapped;
-    SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(mapped)).catch(() => {});
+    commitNormalizedChargeLogs(sessions.map(mapD1ChargeToRecord), true);
   };
 
   const refreshD1ChargingHistory = async (refreshFromVehicle = false) => {
@@ -4475,9 +4590,7 @@ export default function App() {
         await refreshD1ChargingHistory(true).catch(() => {});
         const d1Charges = await fetchD1Charges('all').catch(() => null);
         if (Array.isArray(d1Charges)) {
-          const filtered = d1Charges.filter((c) => !recentlyDeletedIdsRef.current.has(`charge:${c.id}`));
-          setChargeLogs(filtered);
-          chargeLogsRef.current = filtered;
+          commitNormalizedChargeLogs(d1Charges, false);
         }
       } finally {
         liveSyncInFlight = false;
@@ -5161,11 +5274,28 @@ export default function App() {
       setIsD1Syncing(true);
       const cleaned = deduplicateChargeList(chargeLogsRef.current);
       const ok = await syncChargesToD1(cleaned);
+      const pendingEntries = Object.entries(pendingChargeMeterOverridesRef.current);
+      if (pendingEntries.length > 0) {
+        const activeVin = (vin || snapshot?.vehicle?.vin || '').trim().toUpperCase() || undefined;
+        for (const [sid, val] of pendingEntries) {
+          const targetSession = cleaned.find((c) => String(c.id) === String(sid));
+          if (targetSession) {
+            const res = await updateD1ChargeMeterEnergy(targetSession, val, activeVin);
+            if (res.ok) {
+              const nextPending = { ...pendingChargeMeterOverridesRef.current };
+              delete nextPending[sid];
+              pendingChargeMeterOverridesRef.current = nextPending;
+              SecureStore.setItemAsync(
+                CHARGE_METER_OVERRIDES_KEY,
+                JSON.stringify(nextPending)
+              ).catch(() => {});
+            }
+          }
+        }
+      }
       const refreshed = await fetchD1Charges('all');
       if (refreshed && refreshed.length > 0) {
-        setChargeLogs(refreshed);
-        chargeLogsRef.current = refreshed;
-        SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(refreshed)).catch(() => {});
+        commitNormalizedChargeLogs(refreshed, true);
       }
       const dates = await fetchD1ChargeDates();
       if (dates && dates.length > 0) setD1ChargeDates(dates);
@@ -5188,10 +5318,7 @@ export default function App() {
       await refreshD1ChargingHistory(true);
       const refreshed = await fetchD1Charges('all');
       if (Array.isArray(refreshed)) {
-        const filtered = refreshed.filter((c) => !recentlyDeletedIdsRef.current.has(`charge:${c.id}`));
-        setChargeLogs(filtered);
-        chargeLogsRef.current = filtered;
-        SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(filtered)).catch(() => {});
+        commitNormalizedChargeLogs(refreshed, true);
       }
       const dates = await fetchD1ChargeDates();
       if (Array.isArray(dates)) setD1ChargeDates(dates);
@@ -8943,6 +9070,8 @@ export default function App() {
                   .toFixed(2)
               );
 
+              const meterSummary = summarizeChargeMeterAnalytics(summaryCharges);
+
               return (
                 <View style={styles.chargeTotalsRow}>
                   <View style={styles.chargeTotalColLeft}>
@@ -8956,6 +9085,11 @@ export default function App() {
                     <Text style={styles.chargeTotalValRight}>
                       {totalWallKwh > 0 ? `${totalWallKwh} kWh` : '0 kWh'}
                     </Text>
+                    {meterSummary.meterLoggedCount > 0 && (
+                      <Text style={styles.chargeTotalMeterSub}>
+                        Meter: {meterSummary.totalMeterKwh} kWh ({meterSummary.meterLoggedCount}/{summaryCharges.length})
+                      </Text>
+                    )}
                   </View>
                 </View>
               );
@@ -9103,6 +9237,11 @@ export default function App() {
                           {Boolean(itemPlace) && (
                             <Text style={styles.chargeSessionMetaText} numberOfLines={1}>
                               📍 {itemPlace}
+                            </Text>
+                          )}
+                          {session.meterEnergyKwh != null && Number(session.meterEnergyKwh) > 0 && (
+                            <Text style={styles.chargeSessionMeterMeta}>
+                              🧮 Meter: {Number(session.meterEnergyKwh.toFixed(2))} kWh
                             </Text>
                           )}
                         </View>
@@ -9870,6 +10009,7 @@ export default function App() {
                 const totalPackKwh = Number((packKwh33 + packKwh74 + packKwhDc).toFixed(2));
                 const totalWallKwh = Number((wallKwh33 + wallKwh74 + wallKwhDc).toFixed(2));
                 const totalLossKwh = Math.max(0, Number((totalWallKwh - totalPackKwh).toFixed(2)));
+                const meterAnalytics = summarizeChargeMeterAnalytics(mCharges);
 
                 return {
                   tripCount: mTrips.length,
@@ -9881,6 +10021,7 @@ export default function App() {
                   totalPackKwh,
                   totalWallKwh,
                   totalLossKwh,
+                  ...meterAnalytics,
                   count33,
                   packKwh33: Number(packKwh33.toFixed(2)),
                   wallKwh33: Number(wallKwh33.toFixed(2)),
@@ -10197,6 +10338,65 @@ export default function App() {
                     </View>
                   </View>
 
+                  {/* Actual Energy Meter Reading (Separate Parameter in Charging Card) */}
+                  <View
+                    style={{
+                      backgroundColor: '#0A0E17',
+                      padding: 11,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: stats.meterLoggedCount > 0 ? '#0369A155' : '#1E293B',
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 10,
+                    }}
+                  >
+                    <View style={{ flex: 1, paddingRight: 10 }}>
+                      <Text style={{ color: '#64748B', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 }}>
+                        ACTUAL METER ENERGY (HOME METER)
+                      </Text>
+                      <Text
+                        style={{
+                          color: stats.meterLoggedCount > 0 ? '#38BDF8' : '#64748B',
+                          fontSize: 16,
+                          fontWeight: '900',
+                          marginTop: 3,
+                        }}
+                      >
+                        {stats.meterLoggedCount > 0 ? `${stats.totalMeterKwh} kWh` : '-- kWh'}
+                      </Text>
+                      <Text style={{ color: '#94A3B8', fontSize: 10, marginTop: 2 }}>
+                        {stats.meterLoggedCount > 0
+                          ? `Logged on ${stats.meterLoggedCount} of ${stats.totalChargeCount} ${
+                              stats.totalChargeCount === 1 ? 'session' : 'sessions'
+                            }`
+                          : 'Tap any session in Charge to enter meter kWh'}
+                      </Text>
+                    </View>
+                    {stats.meterLoggedCount > 0 && (
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={{ color: '#38BDF8', fontSize: 11, fontWeight: '800' }}>
+                          Real Loss: {stats.meterRealLossPct.toFixed(1)}%
+                        </Text>
+                        <Text style={{ color: '#94A3B8', fontSize: 10, marginTop: 2 }}>
+                          {stats.meterRealLossKwh} kWh lost
+                        </Text>
+                        <Text
+                          style={{
+                            color: stats.meterDiffVsEstKwh >= 0 ? '#FBBF24' : '#34D399',
+                            fontSize: 10,
+                            fontWeight: '700',
+                            marginTop: 2,
+                          }}
+                        >
+                          {stats.meterDiffVsEstKwh >= 0 ? '+' : ''}
+                          {stats.meterDiffVsEstKwh} kWh vs est.
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
                   {/* 3 Charging Speed Cards: 3.3 kW AC, 7.4 kW AC, DC Fast */}
                   <View style={{ gap: 8, marginBottom: 14 }}>
                     {/* 3.3 kW AC */}
@@ -10407,6 +10607,11 @@ export default function App() {
                             <Text style={{ color: '#38BDF8', fontSize: 10, marginTop: 2 }}>
                               ⚡ +{d.totalPackKwh} kWh ({d.totalWallKwh} kWh wall)
                             </Text>
+                            {d.meterLoggedCount > 0 && (
+                              <Text style={{ color: '#7DD3FC', fontSize: 10, fontWeight: '700', marginTop: 1 }}>
+                                🧮 Meter: {d.totalMeterKwh} kWh ({d.meterLoggedCount})
+                              </Text>
+                            )}
                           </View>
                         </TouchableOpacity>
                       );
@@ -12485,7 +12690,8 @@ export default function App() {
 
       {/* Charge Detail Fullscreen Tween Screen */}
       {isChargeDetailVisible && selectedChargeForDetail && (() => {
-        const session = selectedChargeForDetail;
+        const session =
+          chargeLogs.find((c) => c.id === selectedChargeForDetail.id) || selectedChargeForDetail;
         const originalIndex = chargeLogs.findIndex((c) => c.id === session.id);
         const effectiveIndex = originalIndex >= 0 ? originalIndex : 0;
 
@@ -12637,6 +12843,7 @@ export default function App() {
               <ScrollView
                 style={{ flex: 1, width: '100%' }}
                 contentContainerStyle={styles.chargeDetailScrollContent}
+                keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
                 {/* 1. Header Row */}
@@ -12725,6 +12932,120 @@ export default function App() {
                     <Text style={styles.chargeDetailStatSub}>AC · max {chargerKwVal} kW</Text>
                   </View>
                 </View>
+
+                {/* 4b. External Energy Meter Input & D1 Sync Card */}
+                {(() => {
+                  const savedMeterKwh =
+                    session.meterEnergyKwh != null && Number(session.meterEnergyKwh) > 0
+                      ? Number(Number(session.meterEnergyKwh).toFixed(2))
+                      : null;
+                  const meterLossKwh =
+                    savedMeterKwh != null ? Math.max(0, Number((savedMeterKwh - addedKwh).toFixed(2))) : 0;
+                  const meterLossPct =
+                    savedMeterKwh != null && savedMeterKwh > 0
+                      ? Number(((meterLossKwh / savedMeterKwh) * 100).toFixed(1))
+                      : 0;
+                  const meterDiffVsEst =
+                    savedMeterKwh != null ? Number((savedMeterKwh - wallKwh).toFixed(2)) : 0;
+                  const normalizedSavedStr = savedMeterKwh != null ? String(savedMeterKwh) : '';
+                  const inputDirty = chargeMeterInput.trim() !== normalizedSavedStr;
+
+                  return (
+                    <View style={styles.chargeDetailCard}>
+                      <View style={styles.chargeDetailMeterHeader}>
+                        <View style={{ flex: 1, paddingRight: 8 }}>
+                          <Text style={styles.chargeDetailMeterTitle}>Actual meter energy</Text>
+                          <Text style={styles.chargeDetailMeterSub}>
+                            Enter kWh from your home / analog energy meter (saved to D1)
+                          </Text>
+                        </View>
+                        {savedMeterKwh != null && (
+                          <View style={styles.chargeDetailMeterSavedBadge}>
+                            <Text style={styles.chargeDetailMeterSavedBadgeText}>
+                              {savedMeterKwh.toFixed(2)} kWh
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+
+                      <View style={styles.chargeDetailMeterInputRow}>
+                        <View style={styles.chargeDetailMeterInputWrap}>
+                          <TextInput
+                            style={styles.chargeDetailMeterInput}
+                            value={chargeMeterInput}
+                            onChangeText={setChargeMeterInput}
+                            placeholder="e.g. 39.4"
+                            placeholderTextColor="#64748B"
+                            keyboardType="decimal-pad"
+                            returnKeyType="done"
+                            editable={!isSavingChargeMeter}
+                            onSubmitEditing={() => {
+                              if (chargeMeterInput.trim() !== '') {
+                                handleSaveChargeMeterEnergy(session, chargeMeterInput);
+                              }
+                            }}
+                            accessibilityLabel="Actual meter energy in kWh"
+                          />
+                          <Text style={styles.chargeDetailMeterUnit}>kWh</Text>
+                        </View>
+
+                        <TouchableOpacity
+                          style={[
+                            styles.chargeDetailMeterSaveBtn,
+                            (isSavingChargeMeter || (!inputDirty && chargeMeterInput.trim() === '')) && {
+                              opacity: 0.6,
+                            },
+                          ]}
+                          onPress={() => handleSaveChargeMeterEnergy(session, chargeMeterInput)}
+                          disabled={isSavingChargeMeter}
+                          activeOpacity={0.8}
+                          accessibilityRole="button"
+                          accessibilityLabel="Save meter energy reading"
+                        >
+                          <Text style={styles.chargeDetailMeterSaveBtnText}>
+                            {isSavingChargeMeter ? 'Saving...' : 'Save'}
+                          </Text>
+                        </TouchableOpacity>
+
+                        {savedMeterKwh != null && (
+                          <TouchableOpacity
+                            style={[styles.chargeDetailMeterClearBtn, isSavingChargeMeter && { opacity: 0.6 }]}
+                            onPress={() => handleSaveChargeMeterEnergy(session, null)}
+                            disabled={isSavingChargeMeter}
+                            activeOpacity={0.8}
+                            accessibilityRole="button"
+                            accessibilityLabel="Clear meter energy reading"
+                          >
+                            <Text style={styles.chargeDetailMeterClearBtnText}>Clear</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      {savedMeterKwh != null && (
+                        <View style={styles.chargeDetailMeterCompareRow}>
+                          <View style={styles.chargeDetailMeterCompareCell}>
+                            <Text style={styles.chargeDetailGridLabel}>Real loss</Text>
+                            <Text style={styles.chargeDetailMeterCompareVal}>
+                              {meterLossPct.toFixed(1)}% ({meterLossKwh.toFixed(2)} kWh)
+                            </Text>
+                          </View>
+                          <View style={styles.chargeDetailMeterCompareCell}>
+                            <Text style={styles.chargeDetailGridLabel}>vs Est. Wall</Text>
+                            <Text
+                              style={[
+                                styles.chargeDetailMeterCompareVal,
+                                { color: meterDiffVsEst >= 0 ? '#FBBF24' : '#34D399' },
+                              ]}
+                            >
+                              {meterDiffVsEst >= 0 ? '+' : ''}
+                              {meterDiffVsEst.toFixed(2)} kWh
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })()}
 
                 {/* 5. Timeline: Start & End */}
                 <View style={styles.chargeDetailTimelineRow}>
@@ -21688,6 +22009,13 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     marginTop: 3,
   },
+  chargeTotalMeterSub: {
+    color: '#38BDF8',
+    fontSize: 11.5,
+    fontWeight: '600',
+    textAlign: 'right',
+    marginTop: 3,
+  },
   chargeEmptyWrap: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -21765,6 +22093,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '400',
     color: '#94A3B8',
+    marginTop: 4,
+  },
+  chargeSessionMeterMeta: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#38BDF8',
     marginTop: 4,
   },
   chargeSessionKwhText: {
@@ -21908,6 +22242,108 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
     marginTop: 3,
+  },
+  chargeDetailMeterHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  chargeDetailMeterTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  chargeDetailMeterSub: {
+    color: '#64748B',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  chargeDetailMeterSavedBadge: {
+    backgroundColor: 'rgba(56, 189, 248, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  chargeDetailMeterSavedBadgeText: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  chargeDetailMeterInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chargeDetailMeterInputWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0A0E17',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 44,
+  },
+  chargeDetailMeterInput: {
+    flex: 1,
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    paddingVertical: 0,
+  },
+  chargeDetailMeterUnit: {
+    color: '#64748B',
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  chargeDetailMeterSaveBtn: {
+    backgroundColor: '#10B981',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chargeDetailMeterSaveBtnText: {
+    color: '#0A0E17',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  chargeDetailMeterClearBtn: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.35)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chargeDetailMeterClearBtnText: {
+    color: '#F87171',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  chargeDetailMeterCompareRow: {
+    flexDirection: 'row',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#1E293B',
+    gap: 12,
+  },
+  chargeDetailMeterCompareCell: {
+    flex: 1,
+  },
+  chargeDetailMeterCompareVal: {
+    color: '#F8FAFC',
+    fontSize: 13.5,
+    fontWeight: '700',
   },
   chargeDetailTimelineRow: {
     flexDirection: 'row',
