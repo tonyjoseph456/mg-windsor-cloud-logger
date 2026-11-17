@@ -11500,6 +11500,290 @@ function classifyChargingNotStartedReason(liveTelem) {
   };
 }
 
+// mobile-expo/src/sdk/tyreMonitor.ts
+var TYRE_RECOMMENDED_PSI = 36;
+var DEFAULT_MORNING_TYRE_DROP_PCT = 5;
+var MIN_MORNING_TYRE_DROP_PCT = 1;
+var MAX_MORNING_TYRE_DROP_PCT = 25;
+var MORNING_TYRE_CHECK_HOUR_IST = 6;
+var MORNING_TYRE_CHECK_WINDOW_MAX_MIN = 5;
+var MORNING_TYRE_STALE_AGE_SEC = 3600;
+var IST_OFFSET_SEC = 19800;
+var TYRE_POSITION_META = [
+  { key: "fl", shortLabel: "FL", label: "Front left", statusField: "front_left_tyre_psi" },
+  { key: "fr", shortLabel: "FR", label: "Front right", statusField: "front_right_tyre_psi" },
+  { key: "rl", shortLabel: "RL", label: "Rear left", statusField: "rear_left_tyre_psi" },
+  { key: "rr", shortLabel: "RR", label: "Rear right", statusField: "rear_right_tyre_psi" }
+];
+function roundToOneDecimal(val) {
+  return Math.round(val * 10) / 10;
+}
+function normalizePsiReading(raw) {
+  if (raw === null || raw === void 0 || raw === "") return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0 || num > 100) return null;
+  return roundToOneDecimal(num);
+}
+function sanitizeTyreDropThresholdPct(raw) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_MORNING_TYRE_DROP_PCT;
+  const clamped = Math.min(MAX_MORNING_TYRE_DROP_PCT, Math.max(MIN_MORNING_TYRE_DROP_PCT, parsed));
+  return roundToOneDecimal(clamped);
+}
+function sanitizeTyreMonitorSettings(raw) {
+  const obj = raw && typeof raw === "object" ? raw : {};
+  const morningCheckEnabled = obj.morningCheckEnabled !== false;
+  const dropThresholdPct = sanitizeTyreDropThresholdPct(obj.dropThresholdPct);
+  const rawRec = Number(obj.recommendedPsi);
+  const recommendedPsi = Number.isFinite(rawRec) && rawRec >= 20 && rawRec <= 60 ? roundToOneDecimal(rawRec) : TYRE_RECOMMENDED_PSI;
+  const updatedAtSec = typeof obj.updatedAtSec === "number" && Number.isFinite(obj.updatedAtSec) && obj.updatedAtSec > 0 ? Math.floor(obj.updatedAtSec) : void 0;
+  return {
+    morningCheckEnabled,
+    dropThresholdPct,
+    recommendedPsi,
+    ...updatedAtSec ? { updatedAtSec } : {}
+  };
+}
+function computeTyreThresholdPsi(dropPct, recommendedPsi = TYRE_RECOMMENDED_PSI) {
+  const cleanPct = sanitizeTyreDropThresholdPct(dropPct);
+  const cleanRec = Number.isFinite(recommendedPsi) && recommendedPsi > 0 ? recommendedPsi : TYRE_RECOMMENDED_PSI;
+  return Number((cleanRec * (1 - cleanPct / 100)).toFixed(2));
+}
+function extractTyreReadings(source) {
+  if (!source || typeof source !== "object") {
+    return { fl: null, fr: null, rl: null, rr: null };
+  }
+  return {
+    fl: normalizePsiReading(source.front_left_tyre_psi ?? source.fl),
+    fr: normalizePsiReading(source.front_right_tyre_psi ?? source.fr),
+    rl: normalizePsiReading(source.rear_left_tyre_psi ?? source.rl),
+    rr: normalizePsiReading(source.rear_right_tyre_psi ?? source.rr)
+  };
+}
+function evaluateTyreDrop(readings, dropThresholdPct, recommendedPsi = TYRE_RECOMMENDED_PSI) {
+  const cleanPct = sanitizeTyreDropThresholdPct(dropThresholdPct);
+  const cleanRec = Number.isFinite(recommendedPsi) && recommendedPsi > 0 ? recommendedPsi : TYRE_RECOMMENDED_PSI;
+  const thresholdPsi = computeTyreThresholdPsi(cleanPct, cleanRec);
+  const safeReadings = readings || { fl: null, fr: null, rl: null, rr: null };
+  const lowTyres = [];
+  let readingsCount = 0;
+  let lowestPsi = null;
+  for (const meta of TYRE_POSITION_META) {
+    const psi = normalizePsiReading(safeReadings[meta.key]);
+    if (psi === null) continue;
+    readingsCount += 1;
+    if (lowestPsi === null || psi < lowestPsi) {
+      lowestPsi = psi;
+    }
+    if (psi <= thresholdPsi + 1e-6) {
+      const dropPsi = roundToOneDecimal(Math.max(0, cleanRec - psi));
+      const dropPct = roundToOneDecimal(Math.max(0, (cleanRec - psi) / cleanRec * 100));
+      lowTyres.push({
+        key: meta.key,
+        shortLabel: meta.shortLabel,
+        label: meta.label,
+        psi,
+        dropPsi,
+        dropPct
+      });
+    }
+  }
+  return {
+    recommendedPsi: cleanRec,
+    dropThresholdPct: cleanPct,
+    thresholdPsi,
+    readingsCount,
+    lowTyres,
+    lowestPsi,
+    hasAlert: lowTyres.length > 0
+  };
+}
+function getIstDateAndTime(nowSec = Math.floor(Date.now() / 1e3)) {
+  const d = new Date((nowSec + IST_OFFSET_SEC) * 1e3);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return {
+    dateIst: `${y}-${m}-${day}`,
+    hourIst: d.getUTCHours(),
+    minuteIst: d.getUTCMinutes()
+  };
+}
+function formatIstClockTime(sec) {
+  if (!sec || !Number.isFinite(sec) || sec <= 0) return "--";
+  const d = new Date((Math.floor(sec) + IST_OFFSET_SEC) * 1e3);
+  let h = d.getUTCHours();
+  const m = String(d.getUTCMinutes()).padStart(2, "0");
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${h}:${m} ${ampm}`;
+}
+function shouldRunMorningTyreCron(params) {
+  if (params.morningCheckEnabled === false) return false;
+  const { dateIst, hourIst, minuteIst } = getIstDateAndTime(params.nowSec);
+  if (hourIst !== MORNING_TYRE_CHECK_HOUR_IST || minuteIst > MORNING_TYRE_CHECK_WINDOW_MAX_MIN) {
+    return false;
+  }
+  return (params.lastAttemptDateIst || "").trim() !== dateIst;
+}
+function isMorningCheckReadingFresh(params) {
+  const statusTime = params.statusTimeSec;
+  if (statusTime === null || statusTime === void 0 || !Number.isFinite(statusTime) || statusTime <= 0) {
+    return true;
+  }
+  const maxAge = params.maxAgeSec ?? MORNING_TYRE_STALE_AGE_SEC;
+  return params.checkedAtSec - statusTime <= maxAge;
+}
+function formatLowTyreListSummary(lowTyres) {
+  return lowTyres.map((t) => `${t.shortLabel} ${t.psi.toFixed(1)} PSI (-${t.dropPct}%)`).join(" \xB7 ");
+}
+function buildMorningTyreCheckFromStatus(params) {
+  const cleanSettings = sanitizeTyreMonitorSettings(params.settings);
+  const thresholdPsi = computeTyreThresholdPsi(
+    cleanSettings.dropThresholdPct,
+    cleanSettings.recommendedPsi
+  );
+  const { dateIst } = getIstDateAndTime(params.checkedAtSec);
+  const statusTimeSec = typeof params.statusTimeSec === "number" && Number.isFinite(params.statusTimeSec) && params.statusTimeSec > 0 ? Math.floor(params.statusTimeSec) : null;
+  const lastCanActivitySec = typeof params.lastCanActivitySec === "number" && Number.isFinite(params.lastCanActivitySec) && params.lastCanActivitySec > 0 ? Math.floor(params.lastCanActivitySec) : null;
+  const evalAll = evaluateTyreDrop(
+    params.readings,
+    cleanSettings.dropThresholdPct,
+    cleanSettings.recommendedPsi
+  );
+  if (evalAll.readingsCount === 0) {
+    return {
+      dateIst,
+      checkedAtSec: params.checkedAtSec,
+      statusTimeSec,
+      lastCanActivitySec,
+      isFreshReading: false,
+      outcome: "no_tyre_data",
+      detailText: `Vehicle responded at ${formatIstClockTime(params.checkedAtSec)} IST, but no tyre pressure readings were reported.`,
+      recommendedPsi: cleanSettings.recommendedPsi,
+      dropThresholdPct: cleanSettings.dropThresholdPct,
+      thresholdPsi,
+      readings: params.readings,
+      lowTyres: [],
+      dismissedAtSec: null
+    };
+  }
+  const isFresh = isMorningCheckReadingFresh({
+    checkedAtSec: params.checkedAtSec,
+    statusTimeSec
+  });
+  if (!isFresh) {
+    return {
+      dateIst,
+      checkedAtSec: params.checkedAtSec,
+      statusTimeSec,
+      lastCanActivitySec,
+      isFreshReading: false,
+      outcome: "stale",
+      detailText: `6:00 AM check returned an older vehicle frame from ${formatIstClockTime(statusTimeSec)} IST; waiting for a fresh reading.`,
+      recommendedPsi: cleanSettings.recommendedPsi,
+      dropThresholdPct: cleanSettings.dropThresholdPct,
+      thresholdPsi,
+      readings: params.readings,
+      lowTyres: [],
+      dismissedAtSec: null
+    };
+  }
+  const timeLabel = formatIstClockTime(statusTimeSec || params.checkedAtSec);
+  if (evalAll.hasAlert) {
+    return {
+      dateIst,
+      checkedAtSec: params.checkedAtSec,
+      statusTimeSec,
+      lastCanActivitySec,
+      isFreshReading: true,
+      outcome: "alert",
+      detailText: `${formatLowTyreListSummary(evalAll.lowTyres)} \xB7 below ${cleanSettings.dropThresholdPct}% limit (\u2264 ${thresholdPsi} PSI) at ${timeLabel} IST.`,
+      recommendedPsi: cleanSettings.recommendedPsi,
+      dropThresholdPct: cleanSettings.dropThresholdPct,
+      thresholdPsi,
+      readings: params.readings,
+      lowTyres: evalAll.lowTyres,
+      dismissedAtSec: null
+    };
+  }
+  return {
+    dateIst,
+    checkedAtSec: params.checkedAtSec,
+    statusTimeSec,
+    lastCanActivitySec,
+    isFreshReading: true,
+    outcome: "ok",
+    detailText: `Checked at ${timeLabel} IST \xB7 All tyres OK (lowest ${evalAll.lowestPsi?.toFixed(1)} PSI, alert at \u2264 ${thresholdPsi} PSI).`,
+    recommendedPsi: cleanSettings.recommendedPsi,
+    dropThresholdPct: cleanSettings.dropThresholdPct,
+    thresholdPsi,
+    readings: params.readings,
+    lowTyres: [],
+    dismissedAtSec: null
+  };
+}
+function buildMorningTyreCheckFailureRecord(params) {
+  const cleanSettings = sanitizeTyreMonitorSettings(params.settings);
+  const thresholdPsi = computeTyreThresholdPsi(
+    cleanSettings.dropThresholdPct,
+    cleanSettings.recommendedPsi
+  );
+  const { dateIst } = getIstDateAndTime(params.checkedAtSec);
+  const timeLabel = formatIstClockTime(params.checkedAtSec);
+  let detailText = "";
+  if (params.outcome === "asleep") {
+    detailText = `6:00 AM check (${timeLabel} IST) could not wake the vehicle (12V Sleep Mode).`;
+  } else if (params.outcome === "session_expired") {
+    detailText = `6:00 AM check (${timeLabel} IST) skipped \u2014 MG session expired. Tap Sync on Home to refresh your session.`;
+  } else {
+    detailText = `6:00 AM check (${timeLabel} IST) failed${params.reason ? `: ${params.reason}` : "."}`;
+  }
+  return {
+    dateIst,
+    checkedAtSec: params.checkedAtSec,
+    statusTimeSec: null,
+    lastCanActivitySec: null,
+    isFreshReading: false,
+    outcome: params.outcome,
+    detailText,
+    recommendedPsi: cleanSettings.recommendedPsi,
+    dropThresholdPct: cleanSettings.dropThresholdPct,
+    thresholdPsi,
+    readings: null,
+    lowTyres: [],
+    dismissedAtSec: null
+  };
+}
+function reevaluateMorningTyreCheck(existing, nextSettings) {
+  if (!existing) return null;
+  const cleanSettings = sanitizeTyreMonitorSettings(nextSettings);
+  const thresholdPsi = computeTyreThresholdPsi(
+    cleanSettings.dropThresholdPct,
+    cleanSettings.recommendedPsi
+  );
+  if (!existing.isFreshReading || !existing.readings) {
+    return {
+      ...existing,
+      recommendedPsi: cleanSettings.recommendedPsi,
+      dropThresholdPct: cleanSettings.dropThresholdPct,
+      thresholdPsi
+    };
+  }
+  const rebuilt = buildMorningTyreCheckFromStatus({
+    readings: existing.readings,
+    settings: cleanSettings,
+    checkedAtSec: existing.checkedAtSec,
+    statusTimeSec: existing.statusTimeSec,
+    lastCanActivitySec: existing.lastCanActivitySec
+  });
+  const keepDismissed = existing.outcome === "alert" && rebuilt.outcome === "alert" && existing.dropThresholdPct === cleanSettings.dropThresholdPct ? existing.dismissedAtSec ?? null : null;
+  return {
+    ...rebuilt,
+    dismissedAtSec: keepDismissed
+  };
+}
+
 // cloudflare-worker/multi-worker.ts
 var CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -13694,6 +13978,169 @@ async function fetchCarTelemetry(client, vin) {
   const status = await client.status(true);
   return parseTelemetryFromStatus(status);
 }
+var TYRE_SETTINGS_KEY = (vin) => `tyre_settings:${vin}`;
+var TYRE_MORNING_KEY = (vin) => `tyre_morning_check:${vin}`;
+var TYRE_MORNING_ATTEMPT_KEY = (vin) => `tyre_morning_attempt:${vin}`;
+async function getTyreSettingsForVin(env, vin) {
+  const v = requireScopedVin(vin);
+  if (!v) return sanitizeTyreMonitorSettings(null);
+  const stored = await d1KvGet(env, TYRE_SETTINGS_KEY(v));
+  return sanitizeTyreMonitorSettings(stored);
+}
+async function getMorningTyreCheckForVin(env, vin) {
+  const v = requireScopedVin(vin);
+  if (!v) return null;
+  const stored = await d1KvGet(env, TYRE_MORNING_KEY(v));
+  return stored && typeof stored === "object" ? stored : null;
+}
+async function registerSessionVinIndex(env, vin) {
+  const v = requireScopedVin(vin);
+  if (!v) return;
+  const raw = await d1KvGet(env, "mg_session_vins");
+  const set = new Set(Array.isArray(raw) ? raw.map((x) => normVin(String(x))).filter(Boolean) : []);
+  if (!set.has(v)) {
+    set.add(v);
+    await d1KvPut(env, "mg_session_vins", Array.from(set));
+  }
+}
+async function unregisterSessionVinIndex(env, vin) {
+  const v = requireScopedVin(vin);
+  if (!v) return;
+  const raw = await d1KvGet(env, "mg_session_vins");
+  if (!Array.isArray(raw)) return;
+  const next = raw.map((x) => normVin(String(x))).filter((x) => x && x !== v);
+  await d1KvPut(env, "mg_session_vins", next);
+}
+async function listRegisteredMgSessionVins(env) {
+  const vins = /* @__PURE__ */ new Set();
+  const indexed = await d1KvGet(env, "mg_session_vins");
+  if (Array.isArray(indexed)) {
+    for (const item of indexed) {
+      const v = requireScopedVin(String(item || ""));
+      if (v) vins.add(v);
+    }
+  }
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const res = await env.DB.prepare("SELECT key FROM kv_store WHERE key LIKE 'mg_session:%'").all();
+      for (const row of res?.results || []) {
+        const key = String(row?.key || "");
+        if (key.startsWith("mg_session:")) {
+          const v = requireScopedVin(key.slice("mg_session:".length));
+          if (v) vins.add(v);
+        }
+      }
+    } catch (_) {
+    }
+  }
+  if (env.TRIP_KV && typeof env.TRIP_KV.list === "function") {
+    try {
+      const listed = await env.TRIP_KV.list({ prefix: "mg_session:" });
+      for (const entry of listed?.keys || []) {
+        const key = String(entry?.name || "");
+        if (key.startsWith("mg_session:")) {
+          const v = requireScopedVin(key.slice("mg_session:".length));
+          if (v) vins.add(v);
+        }
+      }
+    } catch (_) {
+    }
+  }
+  return Array.from(vins);
+}
+function classifyMorningCheckErrorOutcome(err) {
+  const msg = err?.message ? String(err.message) : String(err || "");
+  if (/MG_SESSION_EXPIRED|login|token|session|invalid|expire|rejected|unauthorized|401|403/i.test(msg)) {
+    return "session_expired";
+  }
+  if (/not ready after polling|sleep|timeout|abort/i.test(msg)) {
+    return "asleep";
+  }
+  return "error";
+}
+async function runMorningTyreChecks(env, nowSec = Math.floor(Date.now() / 1e3), fetchStatusOverride) {
+  if (!env.DB && !env.TRIP_KV) return [];
+  const { db, isMaster } = workerAuthDeps(env);
+  const { isUserAuthorized: isUserAuthorized2 } = await Promise.resolve().then(() => (init_multi_user_auth(), multi_user_auth_exports));
+  const vins = await listRegisteredMgSessionVins(env);
+  const { dateIst: todayIst } = getIstDateAndTime(nowSec);
+  const results = [];
+  for (const v of vins) {
+    try {
+      const settings = await getTyreSettingsForVin(env, v);
+      const attempt = await d1KvGet(env, TYRE_MORNING_ATTEMPT_KEY(v));
+      if (!shouldRunMorningTyreCron({
+        nowSec,
+        lastAttemptDateIst: attempt?.dateIst,
+        morningCheckEnabled: settings.morningCheckEnabled
+      })) {
+        continue;
+      }
+      const mg = await getMgClientForVin(env, v);
+      if (!mg) continue;
+      if (mg.phone && !await isUserAuthorized2(db, mg.phone, isMaster)) continue;
+      await d1KvPut(env, TYRE_MORNING_ATTEMPT_KEY(v), {
+        dateIst: todayIst,
+        attemptedAtSec: nowSec
+      });
+      if (!mg.client.password) {
+        mg.client.login = async () => {
+          throw new Error("MG_SESSION_EXPIRED");
+        };
+      }
+      let record;
+      try {
+        const statusObj = fetchStatusOverride ? await fetchStatusOverride(mg.client, v) : await mg.client.status(false);
+        const readings = extractTyreReadings(statusObj);
+        record = buildMorningTyreCheckFromStatus({
+          readings,
+          settings,
+          checkedAtSec: nowSec,
+          statusTimeSec: statusObj?.status_time ?? null,
+          lastCanActivitySec: statusObj?.last_can_activity ?? null
+        });
+      } catch (err) {
+        const outcome = classifyMorningCheckErrorOutcome(err);
+        record = buildMorningTyreCheckFailureRecord({
+          outcome,
+          settings,
+          checkedAtSec: nowSec,
+          reason: outcome === "error" ? err?.message || String(err || "Status check failed") : void 0
+        });
+      }
+      await d1KvPut(env, TYRE_MORNING_KEY(v), record);
+      results.push(record);
+      if (record.outcome === "alert" && record.lowTyres.length > 0) {
+        const title = `\u26A0\uFE0F Low Tyre Pressure (6:00 AM)`;
+        const summary = formatLowTyreListSummary(record.lowTyres);
+        const message = `Dropped ${record.dropThresholdPct}%+ below recommended ${record.recommendedPsi} PSI at 6:00 AM: ${summary}. Inspect and inflate before driving.`;
+        await d1InsertNotification(env, {
+          id: `tyre_am_${v}_${todayIst}_${nowSec}`,
+          vin: v,
+          type: "tyre_morning_alert",
+          title,
+          message,
+          timestamp: nowSec,
+          date: todayIst,
+          is_read: 0,
+          metadata: JSON.stringify({
+            dateIst: todayIst,
+            thresholdPsi: record.thresholdPsi,
+            dropThresholdPct: record.dropThresholdPct,
+            recommendedPsi: record.recommendedPsi,
+            lowTyres: record.lowTyres
+          })
+        }).catch(() => {
+        });
+        await dispatchTripNotification(null, title, message, "warning,car", env, v).catch(() => {
+        });
+      }
+    } catch (_) {
+    }
+  }
+  return results;
+}
 async function d1GetActiveChargingSession(env, vin) {
   const v = requireScopedVin(vin);
   if (!v) return null;
@@ -15786,6 +16233,47 @@ ${emptyMsg}`,
     const dates = await d1GetChargeDates(env, auth.vin);
     return json({ success: true, dates });
   }
+  if (path === "/api/tyres/monitor") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const [settings, morningCheck] = await Promise.all([
+      getTyreSettingsForVin(env, auth.vin),
+      getMorningTyreCheckForVin(env, auth.vin)
+    ]);
+    return json({ success: true, vin: auth.vin, settings, morningCheck });
+  }
+  if (path === "/api/tyres/settings" && request.method === "POST") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const settings = sanitizeTyreMonitorSettings({
+      ...body && typeof body === "object" ? body : {},
+      updatedAtSec: nowSec
+    });
+    await d1KvPut(env, TYRE_SETTINGS_KEY(auth.vin), settings);
+    let morningCheck = await getMorningTyreCheckForVin(env, auth.vin);
+    const { dateIst: todayIst } = getIstDateAndTime(nowSec);
+    if (morningCheck && morningCheck.dateIst === todayIst) {
+      const reevaluated = reevaluateMorningTyreCheck(morningCheck, settings);
+      if (reevaluated) {
+        morningCheck = reevaluated;
+        await d1KvPut(env, TYRE_MORNING_KEY(auth.vin), morningCheck);
+      }
+    }
+    return json({ success: true, vin: auth.vin, settings, morningCheck });
+  }
+  if (path === "/api/tyres/morning-dismiss" && request.method === "POST") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const nowSec = Math.floor(Date.now() / 1e3);
+    let morningCheck = await getMorningTyreCheckForVin(env, auth.vin);
+    const requestedDate = typeof body?.dateIst === "string" ? body.dateIst.trim() : "";
+    if (morningCheck && (!requestedDate || morningCheck.dateIst === requestedDate)) {
+      morningCheck = { ...morningCheck, dismissedAtSec: nowSec };
+      await d1KvPut(env, TYRE_MORNING_KEY(auth.vin), morningCheck);
+    }
+    return json({ success: true, vin: auth.vin, morningCheck });
+  }
   if (path === "/api/register-car" || path === "/api/update-token") {
     const { store, db, isMaster } = workerAuthDeps(env);
     const check = await verifyCarRegistrationCaller(store, db, isMaster, request, body);
@@ -15803,6 +16291,7 @@ ${emptyMsg}`,
     };
     await d1KvPut(env, `mg_session:${cleanVin}`, sessionObj);
     await d1KvPut(env, `mg_session_phone:${cleanPhone}`, sessionObj);
+    await registerSessionVinIndex(env, cleanVin);
     const apiToken = await issueOrAdoptApiToken(store, {
       vin: cleanVin,
       phone: cleanPhone,
@@ -15836,6 +16325,10 @@ ${emptyMsg}`,
     await revokeTokensForVin(store, cleanVin);
     await d1KvDelete(env, `mg_session:${cleanVin}`);
     await d1KvDelete(env, `push_subs:${cleanVin}`);
+    await d1KvDelete(env, TYRE_SETTINGS_KEY(cleanVin));
+    await d1KvDelete(env, TYRE_MORNING_KEY(cleanVin));
+    await d1KvDelete(env, TYRE_MORNING_ATTEMPT_KEY(cleanVin));
+    await unregisterSessionVinIndex(env, cleanVin);
     if (cleanPhone) {
       const phoneSess = await d1KvGet(env, `mg_session_phone:${cleanPhone}`);
       if (!phoneSess || !phoneSess.vin || normVin(phoneSess.vin) === cleanVin) {
@@ -16132,11 +16625,10 @@ ${emptyMsg}`,
   }
   return json({ error: "Unknown API route" }, 404);
 }
-async function runCron(env) {
+async function runCron(env, nowSec = Math.floor(Date.now() / 1e3)) {
   if (!env.DB && !env.TRIP_KV) return;
-  const now = /* @__PURE__ */ new Date();
+  const now = new Date(nowSec * 1e3);
   const min = now.getUTCMinutes();
-  const nowSec = Math.floor(Date.now() / 1e3);
   const { db, isMaster } = workerAuthDeps(env);
   const { isUserAuthorized: isUserAuthorized2 } = await Promise.resolve().then(() => (init_multi_user_auth(), multi_user_auth_exports));
   const activeVins = /* @__PURE__ */ new Set();
@@ -16191,6 +16683,8 @@ async function runCron(env) {
     }
   } catch (_) {
   }
+  await runMorningTyreChecks(env, nowSec).catch(() => {
+  });
 }
 var multi_worker_default = {
   async fetch(request, env, ctx) {
@@ -16235,14 +16729,16 @@ var multi_worker_default = {
     }
   },
   async scheduled(event, env, ctx) {
-    await runCron(env).catch(() => {
+    const schedSec = event?.scheduledTime && Number.isFinite(Number(event.scheduledTime)) ? Math.floor(Number(event.scheduledTime) / 1e3) : Math.floor(Date.now() / 1e3);
+    await runCron(env, schedSec).catch(() => {
     });
     if (env.MG_PHONE) await silent_webhook_default.scheduled(event, env).catch(() => {
     });
   }
 };
 export {
-  multi_worker_default as default
+  multi_worker_default as default,
+  runMorningTyreChecks
 };
 /*! Bundled license information:
 

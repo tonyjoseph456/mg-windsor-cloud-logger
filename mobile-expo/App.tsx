@@ -137,10 +137,26 @@ import {
   formatKmNumber,
   formatServiceDaysCountdownText,
   getTodayLocalIsoDate,
+  MorningTyreCheckRecord,
+  TyreMonitorSettings,
+  computeTyreThresholdPsi,
+  dismissMorningTyreAlert,
+  evaluateSevereAirLoss,
+  evaluateTyreDrop,
+  extractTyreReadings,
+  fetchTyreMonitorState,
+  formatIstClockTime,
+  formatLowTyreListSummary,
+  getIstDateAndTime,
+  reevaluateMorningTyreCheck,
+  sanitizeTyreDropThresholdPct,
+  sanitizeTyreMonitorSettings,
+  saveTyreMonitorSettings,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 import { SwipeableDeleteRow } from './src/SwipeableDeleteRow';
 import { HomeServiceAlertCard } from './src/HomeServiceAlertCard';
+import { HomeTyreAlertCard } from './src/HomeTyreAlertCard';
 import { ServiceReminderScreen, ServiceSubScreenKey } from './src/ServiceReminderScreen';
 import {
   applyScreenOrientationPolicy,
@@ -176,6 +192,8 @@ const COLOR_OVERRIDE_KEY = 'mg_windsor_selected_color_v1';
 const VARIANT_OVERRIDE_KEY = 'mg_windsor_selected_variant_v1';
 const SERVICE_REMINDER_KEY = 'mg_windsor_service_reminder_v1';
 const SERVICE_CATALOG_CACHE_KEY = 'mg_windsor_service_catalog_v1';
+const TYRE_SETTINGS_KEY = 'mg_windsor_tyre_settings_v1';
+const TYRE_MORNING_CACHE_KEY = 'mg_windsor_tyre_morning_v1';
 const ACCESS_CODE_KEY = 'mg_pwa_saved_access_code_v1';
 const LICENSE_KEY = 'mg_pwa_license_token_v1';
 const API_TOKEN_KEY = 'mg_pwa_api_token_v1';
@@ -2462,6 +2480,11 @@ export default function App() {
   const [carColorOverride, setCarColorOverride] = useState<string | null>(null);
   const [variantOverridesByVin, setVariantOverridesByVin] = useState<Record<string, WindsorVariantId>>({});
   const [serviceReminderByVin, setServiceReminderByVin] = useState<Record<string, ServiceReminderSettings>>({});
+  const [tyreSettingsByVin, setTyreSettingsByVin] = useState<Record<string, TyreMonitorSettings>>({});
+  const [morningTyreCheckByVin, setMorningTyreCheckByVin] = useState<Record<string, MorningTyreCheckRecord | null>>({});
+  const [tyreThresholdInputText, setTyreThresholdInputText] = useState<string>('5');
+  const [isSavingTyreSettings, setIsSavingTyreSettings] = useState<boolean>(false);
+  const [tyreSettingsSyncNote, setTyreSettingsSyncNote] = useState<string | null>(null);
   const [serviceTodayKey, setServiceTodayKey] = useState<string>(() => getTodayLocalIsoDate());
   const [serviceCatalog, setServiceCatalog] = useState<ServiceScheduleCatalog>(() =>
     getDefaultServiceScheduleCatalog()
@@ -2535,6 +2558,9 @@ export default function App() {
 
   const handleOpenTyresScreen = () => {
     setIsTyresScreenVisible(true);
+    if (apiTokenRef.current || licenseTokenRef.current || apiToken || licenseToken) {
+      refreshTyreMonitorState().catch(() => {});
+    }
     Animated.timing(tyreSlideAnim, {
       toValue: 1,
       duration: 320,
@@ -3681,6 +3707,34 @@ export default function App() {
       }
     }).catch(() => {});
 
+    SecureStore.getItemAsync(TYRE_SETTINGS_KEY).then((rawMap) => {
+      if (!rawMap) return;
+      try {
+        const parsed = JSON.parse(rawMap);
+        if (parsed && typeof parsed === 'object') {
+          const sanitized: Record<string, TyreMonitorSettings> = {};
+          for (const [k, v] of Object.entries(parsed)) {
+            sanitized[k] = sanitizeTyreMonitorSettings(v);
+          }
+          setTyreSettingsByVin(sanitized);
+        }
+      } catch {
+        // ignore invalid stored tyre settings map
+      }
+    }).catch(() => {});
+
+    SecureStore.getItemAsync(TYRE_MORNING_CACHE_KEY).then((rawMap) => {
+      if (!rawMap) return;
+      try {
+        const parsed = JSON.parse(rawMap);
+        if (parsed && typeof parsed === 'object') {
+          setMorningTyreCheckByVin(parsed);
+        }
+      } catch {
+        // ignore invalid stored morning tyre check map
+      }
+    }).catch(() => {});
+
     // Hydrate cached service cost catalog immediately, then fetch fresh costs on launch
     SecureStore.getItemAsync(SERVICE_CATALOG_CACHE_KEY)
       .then((rawCatalog) => {
@@ -4027,13 +4081,42 @@ export default function App() {
     }
   };
 
+  const refreshTyreMonitorState = async (vinOverride?: string) => {
+    const targetVin = (vinOverride || snapshot?.vehicle?.vin || vin || '').trim().toUpperCase();
+    if (!targetVin && !(apiTokenRef.current || licenseTokenRef.current || apiToken || licenseToken)) {
+      return;
+    }
+    const res = await fetchTyreMonitorState(targetVin || undefined);
+    if (!res.ok) return;
+    const key = targetVin || 'default';
+    if (res.settings) {
+      const cleanSettings = sanitizeTyreMonitorSettings(res.settings);
+      setTyreSettingsByVin((prev) => {
+        const nextMap = { ...prev, [key]: cleanSettings };
+        SecureStore.setItemAsync(TYRE_SETTINGS_KEY, JSON.stringify(nextMap)).catch(() => {});
+        return nextMap;
+      });
+    }
+    if (res.morningCheck !== undefined) {
+      setMorningTyreCheckByVin((prev) => {
+        const nextMap = { ...prev, [key]: res.morningCheck ?? null };
+        SecureStore.setItemAsync(TYRE_MORNING_CACHE_KEY, JSON.stringify(nextMap)).catch(() => {});
+        return nextMap;
+      });
+    }
+  };
+
   useEffect(() => {
     if (!isAuthenticated || !(apiToken || licenseToken)) return;
     refreshD1Notifications();
+    refreshTyreMonitorState();
   }, [isAuthenticated, apiToken, licenseToken, vin, snapshot?.vehicle?.vin]);
 
   useEffect(() => {
     if (!(apiToken || licenseToken)) return;
+    if (tab === 'home') {
+      refreshTyreMonitorState();
+    }
     if (tab === 'account') {
       refreshD1Notifications();
     }
@@ -5369,10 +5452,32 @@ export default function App() {
               applyD1ChargingSessions(syncRes.sessions);
             }
           }
+          if (reg.success || apiTokenRef.current || licenseTokenRef.current) {
+            refreshTyreMonitorState(syncVin).catch(() => {});
+          }
         }).catch(() => {});
       }
       await SecureStore.setItemAsync(SNAPSHOT_KEY, JSON.stringify(snap));
-      if (!silent) {
+
+      const syncedReadings = extractTyreReadings(snap?.status);
+      const severeEval = evaluateSevereAirLoss(
+        syncedReadings,
+        (
+          tyreSettingsByVin[(discoveredVin || 'default').trim().toUpperCase()] ??
+          tyreSettingsByVin['default']
+        )?.recommendedPsi
+      );
+      if (severeEval.hasAlert) {
+        showBanner(
+          'err',
+          `⚠️ Air loss in tyres: ${formatLowTyreListSummary(severeEval.lowTyres)} (≥10% below ${severeEval.recommendedPsi} PSI)`
+        );
+        if (!silent) {
+          try {
+            Vibration.vibrate(250);
+          } catch {}
+        }
+      } else if (!silent) {
         showBanner('ok', `Synced ${snap.vehicle.name} (${snap.vehicle.vin})`);
       }
     } catch (err) {
@@ -5596,6 +5701,7 @@ export default function App() {
             setD1ChargingSessions([]);
             setD1Notifications([]);
             setD1NotificationsTotal(null);
+            setMorningTyreCheckByVin({});
             setIsAuthenticated(false);
           },
         },
@@ -5630,6 +5736,8 @@ export default function App() {
               SecureStore.deleteItemAsync(API_TOKEN_KEY),
               SecureStore.deleteItemAsync(WEBHOOK_KEY_STORAGE),
               SecureStore.deleteItemAsync(IS_ADMIN_KEY),
+              SecureStore.deleteItemAsync(TYRE_SETTINGS_KEY),
+              SecureStore.deleteItemAsync(TYRE_MORNING_CACHE_KEY),
             ]);
             setAccessCode('');
             setLicenseToken('');
@@ -5652,6 +5760,8 @@ export default function App() {
             setD1ChargingSessions([]);
             setD1Notifications([]);
             setD1NotificationsTotal(null);
+            setTyreSettingsByVin({});
+            setMorningTyreCheckByVin({});
             setIsAuthenticated(false);
             showBanner('ok', 'Cloud session and vehicle telemetry wiped successfully.');
           },
@@ -7124,6 +7234,131 @@ export default function App() {
     }
   };
 
+  // Morning 6:00 AM Tyre Pressure Monitor & Immediate 10% Air-Loss Alert State
+  const todayIstDateKey = useMemo(() => getIstDateAndTime().dateIst, [serviceTodayKey, lastSyncedAt]);
+  const activeTyreSettings: TyreMonitorSettings =
+    tyreSettingsByVin[activeVariantVinKey] ??
+    tyreSettingsByVin['default'] ??
+    sanitizeTyreMonitorSettings(null);
+  const activeMorningTyreCheck: MorningTyreCheckRecord | null =
+    morningTyreCheckByVin[activeVariantVinKey] ?? null;
+
+  useEffect(() => {
+    setTyreThresholdInputText(String(activeTyreSettings.dropThresholdPct));
+  }, [activeTyreSettings.dropThresholdPct]);
+
+  const liveTyreReadings = useMemo(
+    () => (snapshot?.status ? extractTyreReadings(snapshot.status) : null),
+    [
+      snapshot?.status?.front_left_tyre_psi,
+      snapshot?.status?.front_right_tyre_psi,
+      snapshot?.status?.rear_left_tyre_psi,
+      snapshot?.status?.rear_right_tyre_psi,
+    ]
+  );
+
+  const liveSevereAirLoss = useMemo(
+    () =>
+      liveTyreReadings
+        ? evaluateSevereAirLoss(liveTyreReadings, activeTyreSettings.recommendedPsi)
+        : null,
+    [liveTyreReadings, activeTyreSettings.recommendedPsi]
+  );
+
+  const liveCustomTyreEval = useMemo(
+    () =>
+      liveTyreReadings
+        ? evaluateTyreDrop(
+            liveTyreReadings,
+            activeTyreSettings.dropThresholdPct,
+            activeTyreSettings.recommendedPsi
+          )
+        : null,
+    [liveTyreReadings, activeTyreSettings.dropThresholdPct, activeTyreSettings.recommendedPsi]
+  );
+
+  const handleUpdateTyreSettings = async (partial: Partial<TyreMonitorSettings>) => {
+    const nextSettings = sanitizeTyreMonitorSettings({
+      ...activeTyreSettings,
+      ...partial,
+      updatedAtSec: Math.floor(Date.now() / 1000),
+    });
+
+    setTyreThresholdInputText(String(nextSettings.dropThresholdPct));
+    setTyreSettingsByVin((prev) => {
+      const nextMap = { ...prev, [activeVariantVinKey]: nextSettings };
+      SecureStore.setItemAsync(TYRE_SETTINGS_KEY, JSON.stringify(nextMap)).catch(() => {});
+      return nextMap;
+    });
+
+    if (activeMorningTyreCheck && activeMorningTyreCheck.dateIst === todayIstDateKey) {
+      const locallyUpdated = reevaluateMorningTyreCheck(activeMorningTyreCheck, nextSettings);
+      if (locallyUpdated) {
+        setMorningTyreCheckByVin((prev) => {
+          const nextMap = { ...prev, [activeVariantVinKey]: locallyUpdated };
+          SecureStore.setItemAsync(TYRE_MORNING_CACHE_KEY, JSON.stringify(nextMap)).catch(() => {});
+          return nextMap;
+        });
+      }
+    }
+
+    if (!(apiTokenRef.current || licenseTokenRef.current || apiToken || licenseToken)) {
+      setTyreSettingsSyncNote('Saved on device');
+      return;
+    }
+
+    setIsSavingTyreSettings(true);
+    setTyreSettingsSyncNote('Saving...');
+    try {
+      const res = await saveTyreMonitorSettings(
+        nextSettings,
+        activeVariantVinKey !== 'default' ? activeVariantVinKey : undefined
+      );
+      if (res.ok) {
+        if (res.settings) {
+          setTyreSettingsByVin((prev) => {
+            const nextMap = { ...prev, [activeVariantVinKey]: res.settings! };
+            SecureStore.setItemAsync(TYRE_SETTINGS_KEY, JSON.stringify(nextMap)).catch(() => {});
+            return nextMap;
+          });
+        }
+        if (res.morningCheck !== undefined) {
+          setMorningTyreCheckByVin((prev) => {
+            const nextMap = { ...prev, [activeVariantVinKey]: res.morningCheck ?? null };
+            SecureStore.setItemAsync(TYRE_MORNING_CACHE_KEY, JSON.stringify(nextMap)).catch(() => {});
+            return nextMap;
+          });
+        }
+        setTyreSettingsSyncNote('Synced for 6:00 AM check');
+      } else {
+        setTyreSettingsSyncNote('Saved locally (sync pending)');
+      }
+    } catch {
+      setTyreSettingsSyncNote('Saved locally (sync pending)');
+    } finally {
+      setIsSavingTyreSettings(false);
+    }
+  };
+
+  const handleDismissMorningTyreAlert = async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    triggerHapticFeedback('tap');
+    if (activeMorningTyreCheck) {
+      const updated = { ...activeMorningTyreCheck, dismissedAtSec: nowSec };
+      setMorningTyreCheckByVin((prev) => {
+        const nextMap = { ...prev, [activeVariantVinKey]: updated };
+        SecureStore.setItemAsync(TYRE_MORNING_CACHE_KEY, JSON.stringify(nextMap)).catch(() => {});
+        return nextMap;
+      });
+    }
+    if (apiTokenRef.current || licenseTokenRef.current || apiToken || licenseToken) {
+      await dismissMorningTyreAlert(
+        activeMorningTyreCheck?.dateIst,
+        activeVariantVinKey !== 'default' ? activeVariantVinKey : undefined
+      ).catch(() => {});
+    }
+  };
+
   // Screen Width for Horizontal Tween Animations between Home, Tyres, Location, and Remote Commands
   const screenWidth = Math.max(windowWidth || 420, 500);
 
@@ -8109,6 +8344,16 @@ export default function App() {
                 </View>
               );
             })()}
+
+            {/* 6.4 Tyre Pressure Morning (6 AM) & Immediate Sync Air-Loss Alert Cards */}
+            <HomeTyreAlertCard
+              severeAirLoss={liveSevereAirLoss}
+              morningCheck={activeMorningTyreCheck}
+              todayIst={todayIstDateKey}
+              syncedAtLabel={lastSyncedAt}
+              onPressOpenTyres={handleOpenTyresScreen}
+              onDismissMorningAlert={handleDismissMorningTyreAlert}
+            />
 
             {/* 6.5 Service & Wheel Maintenance Home Alert Banner (only shown inside warning limits or overdue) */}
             <HomeServiceAlertCard
@@ -10220,80 +10465,97 @@ export default function App() {
               </View>
 
               {/* Vehicle Stage with Top-Down View & 4 Floating Cards */}
-              <View style={styles.tyresStageContainer}>
-                {/* Floor Glow behind Car */}
-                <View style={styles.tyresFloorGlow} />
+              {(() => {
+                const urgentKeys = new Set((liveSevereAirLoss?.lowTyres || []).map((t) => t.key));
+                const warnKeys = new Set((liveCustomTyreEval?.lowTyres || []).map((t) => t.key));
+                const cornerCards = [
+                  {
+                    key: 'fl' as const,
+                    label: 'Front left',
+                    posStyle: styles.tyresCardFL,
+                    psiDisplay: status.front_left_tyre_psi ?? '37.8',
+                    doorOpen: status.driver_door_open,
+                    windowOpen: status.driver_window_open,
+                  },
+                  {
+                    key: 'fr' as const,
+                    label: 'Front right',
+                    posStyle: styles.tyresCardFR,
+                    psiDisplay: status.front_right_tyre_psi ?? '37.4',
+                    doorOpen: status.passenger_door_open,
+                    windowOpen: status.passenger_window_open,
+                  },
+                  {
+                    key: 'rl' as const,
+                    label: 'Rear left',
+                    posStyle: styles.tyresCardRL,
+                    psiDisplay: status.rear_left_tyre_psi ?? '37.4',
+                    doorOpen: status.rear_left_door_open,
+                    windowOpen: status.rear_left_window_open,
+                  },
+                  {
+                    key: 'rr' as const,
+                    label: 'Rear right',
+                    posStyle: styles.tyresCardRR,
+                    psiDisplay: status.rear_right_tyre_psi ?? '37.4',
+                    doorOpen: status.rear_right_door_open,
+                    windowOpen: status.rear_right_window_open,
+                  },
+                ];
 
-                {/* Top-Down Car Image */}
-                <View style={styles.tyresCarCenter}>
-                  <Image
-                    source={Platform.OS === 'web' ? { uri: activeWindsorColor.topFallbackUri } : activeWindsorColor.topImage}
-                    defaultSource={activeWindsorColor.topImage}
-                    style={styles.tyresCarImage}
-                    resizeMode="contain"
-                  />
-                </View>
+                return (
+                  <View style={styles.tyresStageContainer}>
+                    {/* Floor Glow behind Car */}
+                    <View style={styles.tyresFloorGlow} />
 
-                {/* Floating Card: Front Left */}
-                <View style={[styles.tyresCardFloat, styles.tyresCardFL]}>
-                  <Text style={styles.tyresCardPos}>Front left</Text>
-                  <View style={styles.tyresCardPsiRow}>
-                    <Text style={styles.tyresCardPsiVal}>{status.front_left_tyre_psi ?? '37.8'}</Text>
-                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
+                    {/* Top-Down Car Image */}
+                    <View style={styles.tyresCarCenter}>
+                      <Image
+                        source={Platform.OS === 'web' ? { uri: activeWindsorColor.topFallbackUri } : activeWindsorColor.topImage}
+                        defaultSource={activeWindsorColor.topImage}
+                        style={styles.tyresCarImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+
+                    {cornerCards.map((corner) => {
+                      const isUrgent = urgentKeys.has(corner.key);
+                      const isWarn = !isUrgent && warnKeys.has(corner.key);
+                      return (
+                        <View
+                          key={corner.key}
+                          style={[
+                            styles.tyresCardFloat,
+                            corner.posStyle,
+                            isUrgent && styles.tyresCardFloatUrgent,
+                            isWarn && styles.tyresCardFloatWarn,
+                          ]}
+                        >
+                          <Text style={styles.tyresCardPos}>{corner.label}</Text>
+                          <View style={styles.tyresCardPsiRow}>
+                            <Text
+                              style={[
+                                styles.tyresCardPsiVal,
+                                isUrgent && { color: '#FCA5A5' },
+                                isWarn && { color: '#FBC765' },
+                              ]}
+                            >
+                              {corner.psiDisplay}
+                            </Text>
+                            <Text style={styles.tyresCardPsiUnit}> PSI</Text>
+                          </View>
+                          <Text style={[styles.tyresCardSubText, corner.doorOpen && styles.tyresCardSubOpen]}>
+                            {corner.doorOpen ? 'Door OPEN' : 'Door shut'}
+                          </Text>
+                          <Text style={[styles.tyresCardSubText, corner.windowOpen && styles.tyresCardSubOpen]}>
+                            {corner.windowOpen ? 'Window OPEN' : 'Window shut'}
+                          </Text>
+                        </View>
+                      );
+                    })}
                   </View>
-                  <Text style={[styles.tyresCardSubText, status.driver_door_open && styles.tyresCardSubOpen]}>
-                    {status.driver_door_open ? 'Door OPEN' : 'Door shut'}
-                  </Text>
-                  <Text style={[styles.tyresCardSubText, status.driver_window_open && styles.tyresCardSubOpen]}>
-                    {status.driver_window_open ? 'Window OPEN' : 'Window shut'}
-                  </Text>
-                </View>
-
-                {/* Floating Card: Front Right */}
-                <View style={[styles.tyresCardFloat, styles.tyresCardFR]}>
-                  <Text style={styles.tyresCardPos}>Front right</Text>
-                  <View style={styles.tyresCardPsiRow}>
-                    <Text style={styles.tyresCardPsiVal}>{status.front_right_tyre_psi ?? '37.4'}</Text>
-                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
-                  </View>
-                  <Text style={[styles.tyresCardSubText, status.passenger_door_open && styles.tyresCardSubOpen]}>
-                    {status.passenger_door_open ? 'Door OPEN' : 'Door shut'}
-                  </Text>
-                  <Text style={[styles.tyresCardSubText, status.passenger_window_open && styles.tyresCardSubOpen]}>
-                    {status.passenger_window_open ? 'Window OPEN' : 'Window shut'}
-                  </Text>
-                </View>
-
-                {/* Floating Card: Rear Left */}
-                <View style={[styles.tyresCardFloat, styles.tyresCardRL]}>
-                  <Text style={styles.tyresCardPos}>Rear left</Text>
-                  <View style={styles.tyresCardPsiRow}>
-                    <Text style={styles.tyresCardPsiVal}>{status.rear_left_tyre_psi ?? '37.4'}</Text>
-                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
-                  </View>
-                  <Text style={[styles.tyresCardSubText, status.rear_left_door_open && styles.tyresCardSubOpen]}>
-                    {status.rear_left_door_open ? 'Door OPEN' : 'Door shut'}
-                  </Text>
-                  <Text style={[styles.tyresCardSubText, status.rear_left_window_open && styles.tyresCardSubOpen]}>
-                    {status.rear_left_window_open ? 'Window OPEN' : 'Window shut'}
-                  </Text>
-                </View>
-
-                {/* Floating Card: Rear Right */}
-                <View style={[styles.tyresCardFloat, styles.tyresCardRR]}>
-                  <Text style={styles.tyresCardPos}>Rear right</Text>
-                  <View style={styles.tyresCardPsiRow}>
-                    <Text style={styles.tyresCardPsiVal}>{status.rear_right_tyre_psi ?? '37.4'}</Text>
-                    <Text style={styles.tyresCardPsiUnit}> PSI</Text>
-                  </View>
-                  <Text style={[styles.tyresCardSubText, status.rear_right_door_open && styles.tyresCardSubOpen]}>
-                    {status.rear_right_door_open ? 'Door OPEN' : 'Door shut'}
-                  </Text>
-                  <Text style={[styles.tyresCardSubText, status.rear_right_window_open && styles.tyresCardSubOpen]}>
-                    {status.rear_right_window_open ? 'Window OPEN' : 'Window shut'}
-                  </Text>
-                </View>
-              </View>
+                );
+              })()}
 
               {/* Bottom Summary Box: Doors & Windows */}
               <View style={styles.tyresSummaryBox}>
@@ -10313,6 +10575,271 @@ export default function App() {
                   </Text>
                 </View>
               </View>
+
+              {/* Morning 6:00 AM Check Status & Customizable Threshold (Shown ONLY inside Tyres & closures) */}
+              {(() => {
+                const parsedDraftNum = Number(tyreThresholdInputText);
+                const draftValid =
+                  tyreThresholdInputText.trim().length > 0 && Number.isFinite(parsedDraftNum);
+                const sanitizedDraftPct = draftValid
+                  ? sanitizeTyreDropThresholdPct(parsedDraftNum)
+                  : activeTyreSettings.dropThresholdPct;
+                const hasPendingDraft =
+                  draftValid && sanitizedDraftPct !== activeTyreSettings.dropThresholdPct;
+                const previewPsi = computeTyreThresholdPsi(
+                  sanitizedDraftPct,
+                  activeTyreSettings.recommendedPsi
+                );
+
+                const isTodayCheck = Boolean(
+                  activeMorningTyreCheck && activeMorningTyreCheck.dateIst === todayIstDateKey
+                );
+                const displayCheck = isTodayCheck ? activeMorningTyreCheck : activeMorningTyreCheck;
+
+                let statusLabel = 'Scheduled 6 AM';
+                let statusTone: 'ok' | 'warn' | 'err' | 'muted' = 'muted';
+                let statusDetail =
+                  'Automatic 6:00 AM IST cold-tyre check is ready and will run tomorrow morning.';
+
+                if (!activeTyreSettings.morningCheckEnabled) {
+                  statusLabel = 'Paused';
+                  statusTone = 'muted';
+                  statusDetail = 'Daily 6:00 AM IST check is turned off for this vehicle.';
+                } else if (displayCheck) {
+                  const dateTag =
+                    displayCheck.dateIst === todayIstDateKey ? 'Today' : displayCheck.dateIst;
+                  if (displayCheck.outcome === 'ok') {
+                    statusLabel = `OK · ${dateTag}`;
+                    statusTone = 'ok';
+                  } else if (displayCheck.outcome === 'alert') {
+                    statusLabel = `Low · ${dateTag}`;
+                    statusTone = 'warn';
+                  } else if (
+                    displayCheck.outcome === 'asleep' ||
+                    displayCheck.outcome === 'session_expired' ||
+                    displayCheck.outcome === 'stale'
+                  ) {
+                    statusLabel =
+                      displayCheck.outcome === 'asleep'
+                        ? `Asleep · ${dateTag}`
+                        : displayCheck.outcome === 'session_expired'
+                        ? `Expired · ${dateTag}`
+                        : `Stale · ${dateTag}`;
+                    statusTone = 'warn';
+                  } else {
+                    statusLabel = `Unavailable · ${dateTag}`;
+                    statusTone = 'err';
+                  }
+                  statusDetail = displayCheck.detailText;
+                }
+
+                const badgeBg =
+                  statusTone === 'ok'
+                    ? 'rgba(16, 185, 129, 0.14)'
+                    : statusTone === 'warn'
+                    ? 'rgba(251, 191, 36, 0.14)'
+                    : statusTone === 'err'
+                    ? 'rgba(248, 113, 113, 0.14)'
+                    : 'rgba(148, 163, 184, 0.12)';
+                const badgeBorder =
+                  statusTone === 'ok'
+                    ? 'rgba(16, 185, 129, 0.34)'
+                    : statusTone === 'warn'
+                    ? 'rgba(251, 191, 36, 0.34)'
+                    : statusTone === 'err'
+                    ? 'rgba(248, 113, 113, 0.34)'
+                    : 'rgba(148, 163, 184, 0.25)';
+                const badgeColor =
+                  statusTone === 'ok'
+                    ? '#34D399'
+                    : statusTone === 'warn'
+                    ? '#FBC765'
+                    : statusTone === 'err'
+                    ? '#FCA5A5'
+                    : '#94A3B8';
+
+                const presets = [
+                  { pct: 3, hint: '<35 PSI' },
+                  { pct: 5, hint: 'Default' },
+                  { pct: 6, hint: '<34 PSI' },
+                ];
+
+                return (
+                  <View style={styles.tyreMonitorCard}>
+                    <View style={styles.tyreMonitorHeaderRow}>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Text style={styles.tyreMonitorTitle}>6:00 AM Cold Tyre Check</Text>
+                        <Text style={styles.tyreMonitorSub}>
+                          Checks before daytime heat raises PSI
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.tyreMonitorStatusPill,
+                          { backgroundColor: badgeBg, borderColor: badgeBorder },
+                        ]}
+                      >
+                        <Text style={[styles.tyreMonitorStatusPillText, { color: badgeColor }]}>
+                          {statusLabel}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.tyreMonitorDetailText}>{statusDetail}</Text>
+
+                    <View style={styles.tyresSummarySep} />
+
+                    <View style={styles.tyreSettingRow}>
+                      <View style={{ flex: 1, paddingRight: 10 }}>
+                        <Text style={styles.tyreSettingLabel}>Daily 6:00 AM IST check</Text>
+                        <Text style={styles.tyreSettingHint}>
+                          Shows Home alert only if pressure drops below limit
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.tyreToggleBtn,
+                          activeTyreSettings.morningCheckEnabled && styles.tyreToggleBtnActive,
+                        ]}
+                        onPress={() =>
+                          handleUpdateTyreSettings({
+                            morningCheckEnabled: !activeTyreSettings.morningCheckEnabled,
+                          })
+                        }
+                        activeOpacity={0.75}
+                        accessibilityRole="switch"
+                        accessibilityState={{ checked: activeTyreSettings.morningCheckEnabled }}
+                        accessibilityLabel="Toggle daily 6 AM tyre pressure check"
+                      >
+                        <Text
+                          style={[
+                            styles.tyreToggleBtnText,
+                            activeTyreSettings.morningCheckEnabled && styles.tyreToggleBtnTextActive,
+                          ]}
+                        >
+                          {activeTyreSettings.morningCheckEnabled ? 'On' : 'Off'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.tyresSummarySep} />
+
+                    <Text style={styles.tyreSettingLabel}>
+                      Drop threshold below {activeTyreSettings.recommendedPsi} PSI
+                    </Text>
+                    <Text style={styles.tyreSettingTargetText}>
+                      {`Alerts at ≤ ${previewPsi.toFixed(1)} PSI (${sanitizedDraftPct}% below ${activeTyreSettings.recommendedPsi} PSI)`}
+                    </Text>
+
+                    <View style={styles.tyreStepperRow}>
+                      <TouchableOpacity
+                        style={styles.tyreStepBtn}
+                        onPress={() =>
+                          handleUpdateTyreSettings({
+                            dropThresholdPct: sanitizeTyreDropThresholdPct(
+                              activeTyreSettings.dropThresholdPct - 0.5
+                            ),
+                          })
+                        }
+                        activeOpacity={0.75}
+                        accessibilityLabel="Decrease threshold percentage"
+                      >
+                        <Text style={styles.tyreStepBtnText}>−</Text>
+                      </TouchableOpacity>
+
+                      <View style={styles.tyrePctInputWrap}>
+                        <TextInput
+                          style={styles.tyrePctInput}
+                          value={tyreThresholdInputText}
+                          onChangeText={(txt) =>
+                            setTyreThresholdInputText(txt.replace(/[^0-9.]/g, ''))
+                          }
+                          onEndEditing={() => {
+                            if (draftValid) {
+                              handleUpdateTyreSettings({ dropThresholdPct: sanitizedDraftPct });
+                            } else {
+                              setTyreThresholdInputText(String(activeTyreSettings.dropThresholdPct));
+                            }
+                          }}
+                          keyboardType="decimal-pad"
+                          maxLength={5}
+                          returnKeyType="done"
+                          accessibilityLabel="Custom tyre pressure drop threshold percentage"
+                        />
+                        <Text style={styles.tyrePctSuffix}>%</Text>
+                      </View>
+
+                      <TouchableOpacity
+                        style={styles.tyreStepBtn}
+                        onPress={() =>
+                          handleUpdateTyreSettings({
+                            dropThresholdPct: sanitizeTyreDropThresholdPct(
+                              activeTyreSettings.dropThresholdPct + 0.5
+                            ),
+                          })
+                        }
+                        activeOpacity={0.75}
+                        accessibilityLabel="Increase threshold percentage"
+                      >
+                        <Text style={styles.tyreStepBtnText}>+</Text>
+                      </TouchableOpacity>
+
+                      {hasPendingDraft && (
+                        <TouchableOpacity
+                          style={styles.tyreSaveDraftBtn}
+                          onPress={() =>
+                            handleUpdateTyreSettings({ dropThresholdPct: sanitizedDraftPct })
+                          }
+                          activeOpacity={0.75}
+                          accessibilityLabel="Save custom tyre threshold percentage"
+                        >
+                          <Text style={styles.tyreSaveDraftBtnText}>Save</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+
+                    <View style={styles.tyrePresetsRow}>
+                      {presets.map((p) => {
+                        const isSelected = activeTyreSettings.dropThresholdPct === p.pct;
+                        const pPsi = computeTyreThresholdPsi(
+                          p.pct,
+                          activeTyreSettings.recommendedPsi
+                        );
+                        return (
+                          <TouchableOpacity
+                            key={p.pct}
+                            style={[
+                              styles.tyrePresetChip,
+                              isSelected && styles.tyrePresetChipActive,
+                            ]}
+                            onPress={() =>
+                              handleUpdateTyreSettings({ dropThresholdPct: p.pct })
+                            }
+                            activeOpacity={0.75}
+                            accessibilityLabel={`Set ${p.pct} percent threshold`}
+                          >
+                            <Text
+                              style={[
+                                styles.tyrePresetChipTitle,
+                                isSelected && styles.tyrePresetChipTitleActive,
+                              ]}
+                            >
+                              {`${p.pct}% · ${p.hint}`}
+                            </Text>
+                            <Text style={styles.tyrePresetChipSub}>{`≤ ${pPsi.toFixed(1)} PSI`}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+
+                    <Text style={styles.tyreMonitorFootnote}>
+                      {isSavingTyreSettings
+                        ? 'Syncing threshold to cloud monitor...'
+                        : `${tyreSettingsSyncNote ? `${tyreSettingsSyncNote} · ` : ''}Live app sync also warns immediately on Home if any tyre drops ≥ 10% (≤ 32.4 PSI) for air loss.`}
+                    </Text>
+                  </View>
+                );
+              })()}
             </ScrollView>
           </SafeAreaView>
         </Animated.View>
@@ -18405,7 +18932,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 44 : 20,
-    paddingBottom: 36,
+    paddingBottom: 60,
   },
   tyresHeader: {
     flexDirection: 'row',
@@ -18582,6 +19109,199 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#1E293B',
     marginVertical: 12,
+  },
+  tyresCardFloatUrgent: {
+    borderColor: 'rgba(248, 113, 113, 0.65)',
+    backgroundColor: 'rgba(127, 29, 29, 0.25)',
+  },
+  tyresCardFloatWarn: {
+    borderColor: 'rgba(251, 191, 36, 0.55)',
+    backgroundColor: 'rgba(120, 68, 12, 0.2)',
+  },
+  tyreMonitorCard: {
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    marginBottom: 24,
+  },
+  tyreMonitorHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  tyreMonitorTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  tyreMonitorSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  tyreMonitorStatusPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    flexShrink: 0,
+  },
+  tyreMonitorStatusPillText: {
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  tyreMonitorDetailText: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 10,
+  },
+  tyreSettingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  tyreSettingLabel: {
+    color: '#E2E8F0',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  tyreSettingHint: {
+    color: '#94A3B8',
+    fontSize: 11.5,
+    marginTop: 2,
+  },
+  tyreSettingTargetText: {
+    color: '#34D399',
+    fontSize: 12.5,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  tyreToggleBtn: {
+    minWidth: 58,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignItems: 'center',
+  },
+  tyreToggleBtnActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    borderColor: 'rgba(52, 211, 153, 0.65)',
+  },
+  tyreToggleBtnText: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  tyreToggleBtnTextActive: {
+    color: '#34D399',
+  },
+  tyreStepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+  },
+  tyreStepBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tyreStepBtnText: {
+    color: '#F8FAFC',
+    fontSize: 19,
+    fontWeight: '700',
+  },
+  tyrePctInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    height: 40,
+    minWidth: 84,
+    justifyContent: 'center',
+  },
+  tyrePctInput: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+    minWidth: 38,
+    textAlign: 'center',
+    paddingVertical: 0,
+  },
+  tyrePctSuffix: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 2,
+  },
+  tyreSaveDraftBtn: {
+    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.65)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tyreSaveDraftBtnText: {
+    color: '#34D399',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  tyrePresetsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  tyrePresetChip: {
+    flex: 1,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  tyrePresetChipActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderColor: 'rgba(52, 211, 153, 0.65)',
+  },
+  tyrePresetChipTitle: {
+    color: '#E2E8F0',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  tyrePresetChipTitleActive: {
+    color: '#34D399',
+  },
+  tyrePresetChipSub: {
+    color: '#94A3B8',
+    fontSize: 10.5,
+    marginTop: 2,
+  },
+  tyreMonitorFootnote: {
+    color: '#64748B',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 12,
   },
 
   // Location Dedicated Screen Styles

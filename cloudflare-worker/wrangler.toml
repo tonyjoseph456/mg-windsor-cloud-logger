@@ -12,3 +12,7 @@ database_id = "mg-windsor-db" # Replace with your D1 database ID from 'wrangler 
 kv_namespaces = [
   { binding = "TRIP_KV", id = "trip_kv_id" }
 ]
+
+# Run scheduled checks every minute (charging sessions + 06:00 IST morning tyre check)
+[triggers]
+crons = ["* * * * *"]

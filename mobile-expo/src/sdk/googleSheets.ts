@@ -10,6 +10,11 @@
 import * as WebBrowser from 'expo-web-browser';
 import { Platform } from 'react-native';
 import { ChargeLogRecord, TripRecord } from './models';
+import {
+  MorningTyreCheckRecord,
+  TyreMonitorSettings,
+  sanitizeTyreMonitorSettings,
+} from './tyreMonitor';
 
 export const DEFAULT_GOOGLE_CLIENT_ID =
   '502353296708-qfj0bj8s52mqchbi9dr3dthss9hr8ugb.apps.googleusercontent.com';
@@ -1477,7 +1482,14 @@ export async function deregisterCarSession(params: { vin?: string; phone?: strin
 export interface AppNotificationRecord {
   id: string;
   vin?: string;
-  type: 'trip_start' | 'trip_stop' | 'trip_idle' | 'charge_start' | 'charge_stop';
+  type:
+    | 'trip_start'
+    | 'trip_stop'
+    | 'trip_idle'
+    | 'charge_start'
+    | 'charge_stop'
+    | 'tyre_morning_alert'
+    | (string & {});
   title: string;
   message: string;
   timestamp: number;
@@ -1528,6 +1540,88 @@ export async function clearD1Notifications(vinOverride?: string): Promise<boolea
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+export async function fetchTyreMonitorState(vinOverride?: string): Promise<{
+  ok: boolean;
+  settings?: TyreMonitorSettings;
+  morningCheck?: MorningTyreCheckRecord | null;
+}> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/tyres/monitor${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      headers: getD1AuthHeaders({ 'Cache-Control': 'no-store' }),
+    });
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    if (!data?.success) return { ok: false };
+    return {
+      ok: true,
+      settings: sanitizeTyreMonitorSettings(data.settings),
+      morningCheck: data.morningCheck ?? null,
+    };
+  } catch (err) {
+    console.warn('fetchTyreMonitorState error:', err);
+    return { ok: false };
+  }
+}
+
+export async function saveTyreMonitorSettings(
+  settings: TyreMonitorSettings,
+  vinOverride?: string
+): Promise<{
+  ok: boolean;
+  settings?: TyreMonitorSettings;
+  morningCheck?: MorningTyreCheckRecord | null;
+}> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const clean = sanitizeTyreMonitorSettings(settings);
+    const res = await fetch(`${BACKEND_URL}/api/tyres/settings${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`, {
+      method: 'POST',
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        vin: vin || undefined,
+        morningCheckEnabled: clean.morningCheckEnabled,
+        dropThresholdPct: clean.dropThresholdPct,
+        recommendedPsi: clean.recommendedPsi,
+      }),
+    });
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    if (!data?.success) return { ok: false };
+    return {
+      ok: true,
+      settings: sanitizeTyreMonitorSettings(data.settings ?? clean),
+      morningCheck: data.morningCheck ?? null,
+    };
+  } catch (err) {
+    console.warn('saveTyreMonitorSettings error:', err);
+    return { ok: false };
+  }
+}
+
+export async function dismissMorningTyreAlert(
+  dateIst?: string,
+  vinOverride?: string
+): Promise<{ ok: boolean; morningCheck?: MorningTyreCheckRecord | null }> {
+  try {
+    const vin = (vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(
+      `${BACKEND_URL}/api/tyres/morning-dismiss${vin ? `?vin=${encodeURIComponent(vin)}` : ''}`,
+      {
+        method: 'POST',
+        headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ vin: vin || undefined, dateIst: dateIst || undefined }),
+      }
+    );
+    if (!res.ok) return { ok: false };
+    const data = await res.json();
+    return { ok: Boolean(data?.success), morningCheck: data?.morningCheck ?? null };
+  } catch (err) {
+    console.warn('dismissMorningTyreAlert error:', err);
+    return { ok: false };
   }
 }
 

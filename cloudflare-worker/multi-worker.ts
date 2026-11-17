@@ -68,6 +68,18 @@ import {
   evaluateChargingToggleDecision,
   resolveChargingToggleStopAction,
 } from './charging-toggle';
+import {
+  MorningTyreCheckRecord,
+  TyreMonitorSettings,
+  buildMorningTyreCheckFailureRecord,
+  buildMorningTyreCheckFromStatus,
+  extractTyreReadings,
+  formatLowTyreListSummary,
+  getIstDateAndTime,
+  reevaluateMorningTyreCheck,
+  sanitizeTyreMonitorSettings,
+  shouldRunMorningTyreCron,
+} from '../mobile-expo/src/sdk/tyreMonitor';
 
 interface Env {
   DB?: any;
@@ -75,6 +87,7 @@ interface Env {
     get(key: string, type?: 'text' | 'json'): Promise<any>;
     put(key: string, value: string): Promise<void>;
     delete(key: string): Promise<void>;
+    list?(options?: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>;
   };
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -2417,6 +2430,193 @@ async function fetchCarTelemetry(client: MgIndiaClient, vin?: string): Promise<P
   if (vin && !client.vin) client.vin = vin;
   const status: any = await client.status(true);
   return parseTelemetryFromStatus(status);
+}
+
+// ---------------------------------------------------------------- Morning 6:00 AM Tyre Pressure Monitor Helpers
+const TYRE_SETTINGS_KEY = (vin: string) => `tyre_settings:${vin}`;
+const TYRE_MORNING_KEY = (vin: string) => `tyre_morning_check:${vin}`;
+const TYRE_MORNING_ATTEMPT_KEY = (vin: string) => `tyre_morning_attempt:${vin}`;
+
+async function getTyreSettingsForVin(env: Env, vin: string): Promise<TyreMonitorSettings> {
+  const v = requireScopedVin(vin);
+  if (!v) return sanitizeTyreMonitorSettings(null);
+  const stored = await d1KvGet(env, TYRE_SETTINGS_KEY(v));
+  return sanitizeTyreMonitorSettings(stored);
+}
+
+async function getMorningTyreCheckForVin(env: Env, vin: string): Promise<MorningTyreCheckRecord | null> {
+  const v = requireScopedVin(vin);
+  if (!v) return null;
+  const stored = await d1KvGet(env, TYRE_MORNING_KEY(v));
+  return stored && typeof stored === 'object' ? (stored as MorningTyreCheckRecord) : null;
+}
+
+async function registerSessionVinIndex(env: Env, vin: string): Promise<void> {
+  const v = requireScopedVin(vin);
+  if (!v) return;
+  const raw = await d1KvGet(env, 'mg_session_vins');
+  const set = new Set<string>(Array.isArray(raw) ? raw.map((x) => normVin(String(x))).filter(Boolean) : []);
+  if (!set.has(v)) {
+    set.add(v);
+    await d1KvPut(env, 'mg_session_vins', Array.from(set));
+  }
+}
+
+async function unregisterSessionVinIndex(env: Env, vin: string): Promise<void> {
+  const v = requireScopedVin(vin);
+  if (!v) return;
+  const raw = await d1KvGet(env, 'mg_session_vins');
+  if (!Array.isArray(raw)) return;
+  const next = raw.map((x) => normVin(String(x))).filter((x) => x && x !== v);
+  await d1KvPut(env, 'mg_session_vins', next);
+}
+
+async function listRegisteredMgSessionVins(env: Env): Promise<string[]> {
+  const vins = new Set<string>();
+  const indexed = await d1KvGet(env, 'mg_session_vins');
+  if (Array.isArray(indexed)) {
+    for (const item of indexed) {
+      const v = requireScopedVin(String(item || ''));
+      if (v) vins.add(v);
+    }
+  }
+  if (env.DB) {
+    await initD1(env.DB);
+    try {
+      const res = await env.DB.prepare("SELECT key FROM kv_store WHERE key LIKE 'mg_session:%'").all();
+      for (const row of res?.results || []) {
+        const key = String(row?.key || '');
+        if (key.startsWith('mg_session:')) {
+          const v = requireScopedVin(key.slice('mg_session:'.length));
+          if (v) vins.add(v);
+        }
+      }
+    } catch (_) {}
+  }
+  if (env.TRIP_KV && typeof env.TRIP_KV.list === 'function') {
+    try {
+      const listed = await env.TRIP_KV.list({ prefix: 'mg_session:' });
+      for (const entry of listed?.keys || []) {
+        const key = String(entry?.name || '');
+        if (key.startsWith('mg_session:')) {
+          const v = requireScopedVin(key.slice('mg_session:'.length));
+          if (v) vins.add(v);
+        }
+      }
+    } catch (_) {}
+  }
+  return Array.from(vins);
+}
+
+function classifyMorningCheckErrorOutcome(err: any): 'session_expired' | 'asleep' | 'error' {
+  const msg = err?.message ? String(err.message) : String(err || '');
+  if (/MG_SESSION_EXPIRED|login|token|session|invalid|expire|rejected|unauthorized|401|403/i.test(msg)) {
+    return 'session_expired';
+  }
+  if (/not ready after polling|sleep|timeout|abort/i.test(msg)) {
+    return 'asleep';
+  }
+  return 'error';
+}
+
+export async function runMorningTyreChecks(
+  env: Env,
+  nowSec = Math.floor(Date.now() / 1000),
+  fetchStatusOverride?: (client: MgIndiaClient, vin: string) => Promise<any>
+): Promise<MorningTyreCheckRecord[]> {
+  if (!env.DB && !env.TRIP_KV) return [];
+  const { db, isMaster } = workerAuthDeps(env);
+  const { isUserAuthorized } = await import('./multi-user-auth');
+  const vins = await listRegisteredMgSessionVins(env);
+  const { dateIst: todayIst } = getIstDateAndTime(nowSec);
+  const results: MorningTyreCheckRecord[] = [];
+
+  for (const v of vins) {
+    try {
+      const settings = await getTyreSettingsForVin(env, v);
+      const attempt = await d1KvGet(env, TYRE_MORNING_ATTEMPT_KEY(v));
+      if (
+        !shouldRunMorningTyreCron({
+          nowSec,
+          lastAttemptDateIst: attempt?.dateIst,
+          morningCheckEnabled: settings.morningCheckEnabled,
+        })
+      ) {
+        continue;
+      }
+
+      const mg = await getMgClientForVin(env, v);
+      if (!mg) continue;
+      if (mg.phone && !(await isUserAuthorized(db, mg.phone, isMaster))) continue;
+
+      // Record today's attempt before polling MG so we never poll more than once per morning.
+      await d1KvPut(env, TYRE_MORNING_ATTEMPT_KEY(v), {
+        dateIst: todayIst,
+        attemptedAtSec: nowSec,
+      });
+
+      // Option A stores no MG password on the server; never attempt an empty-password login if expired.
+      if (!(mg.client as any).password) {
+        (mg.client as any).login = async () => {
+          throw new Error('MG_SESSION_EXPIRED');
+        };
+      }
+
+      let record: MorningTyreCheckRecord;
+      try {
+        const statusObj = fetchStatusOverride
+          ? await fetchStatusOverride(mg.client, v)
+          : await mg.client.status(false);
+        const readings = extractTyreReadings(statusObj);
+        record = buildMorningTyreCheckFromStatus({
+          readings,
+          settings,
+          checkedAtSec: nowSec,
+          statusTimeSec: statusObj?.status_time ?? null,
+          lastCanActivitySec: statusObj?.last_can_activity ?? null,
+        });
+      } catch (err: any) {
+        const outcome = classifyMorningCheckErrorOutcome(err);
+        record = buildMorningTyreCheckFailureRecord({
+          outcome,
+          settings,
+          checkedAtSec: nowSec,
+          reason: outcome === 'error' ? err?.message || String(err || 'Status check failed') : undefined,
+        });
+      }
+
+      await d1KvPut(env, TYRE_MORNING_KEY(v), record);
+      results.push(record);
+
+      if (record.outcome === 'alert' && record.lowTyres.length > 0) {
+        const title = `⚠️ Low Tyre Pressure (6:00 AM)`;
+        const summary = formatLowTyreListSummary(record.lowTyres);
+        const message = `Dropped ${record.dropThresholdPct}%+ below recommended ${record.recommendedPsi} PSI at 6:00 AM: ${summary}. Inspect and inflate before driving.`;
+        await d1InsertNotification(env, {
+          id: `tyre_am_${v}_${todayIst}_${nowSec}`,
+          vin: v,
+          type: 'tyre_morning_alert',
+          title,
+          message,
+          timestamp: nowSec,
+          date: todayIst,
+          is_read: 0,
+          metadata: JSON.stringify({
+            dateIst: todayIst,
+            thresholdPsi: record.thresholdPsi,
+            dropThresholdPct: record.dropThresholdPct,
+            recommendedPsi: record.recommendedPsi,
+            lowTyres: record.lowTyres,
+          }),
+        }).catch(() => {});
+        await dispatchTripNotification(null, title, message, 'warning,car', env, v).catch(() => {});
+      }
+    } catch (_) {
+      // Isolate per-VIN failures so other vehicles still complete.
+    }
+  }
+
+  return results;
 }
 
 // ---------------------------------------------------------------- Charging Session Tracking Helpers (Cloudflare D1)
@@ -4837,6 +5037,53 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     return json({ success: true, dates });
   }
 
+  // ----------------------------------------------------------- Morning 6:00 AM Tyre Pressure Monitor & Settings
+  if (path === '/api/tyres/monitor') {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const [settings, morningCheck] = await Promise.all([
+      getTyreSettingsForVin(env, auth.vin),
+      getMorningTyreCheckForVin(env, auth.vin),
+    ]);
+    return json({ success: true, vin: auth.vin, settings, morningCheck });
+  }
+
+  if (path === '/api/tyres/settings' && request.method === 'POST') {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const settings = sanitizeTyreMonitorSettings({
+      ...(body && typeof body === 'object' ? body : {}),
+      updatedAtSec: nowSec,
+    });
+    await d1KvPut(env, TYRE_SETTINGS_KEY(auth.vin), settings);
+
+    let morningCheck = await getMorningTyreCheckForVin(env, auth.vin);
+    const { dateIst: todayIst } = getIstDateAndTime(nowSec);
+    if (morningCheck && morningCheck.dateIst === todayIst) {
+      const reevaluated = reevaluateMorningTyreCheck(morningCheck, settings);
+      if (reevaluated) {
+        morningCheck = reevaluated;
+        await d1KvPut(env, TYRE_MORNING_KEY(auth.vin), morningCheck);
+      }
+    }
+
+    return json({ success: true, vin: auth.vin, settings, morningCheck });
+  }
+
+  if (path === '/api/tyres/morning-dismiss' && request.method === 'POST') {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const nowSec = Math.floor(Date.now() / 1000);
+    let morningCheck = await getMorningTyreCheckForVin(env, auth.vin);
+    const requestedDate = typeof body?.dateIst === 'string' ? body.dateIst.trim() : '';
+    if (morningCheck && (!requestedDate || morningCheck.dateIst === requestedDate)) {
+      morningCheck = { ...morningCheck, dismissedAtSec: nowSec };
+      await d1KvPut(env, TYRE_MORNING_KEY(auth.vin), morningCheck);
+    }
+    return json({ success: true, vin: auth.vin, morningCheck });
+  }
+
   // Register car credentials & tokens strictly per-VIN and issue per-VIN API token + webhookKey
   if (path === '/api/register-car' || path === '/api/update-token') {
     const { store, db, isMaster } = workerAuthDeps(env);
@@ -4857,6 +5104,7 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
 
     await d1KvPut(env, `mg_session:${cleanVin}`, sessionObj);
     await d1KvPut(env, `mg_session_phone:${cleanPhone}`, sessionObj);
+    await registerSessionVinIndex(env, cleanVin);
 
     const apiToken = await issueOrAdoptApiToken(store, {
       vin: cleanVin,
@@ -4895,6 +5143,10 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     await revokeTokensForVin(store, cleanVin);
     await d1KvDelete(env, `mg_session:${cleanVin}`);
     await d1KvDelete(env, `push_subs:${cleanVin}`);
+    await d1KvDelete(env, TYRE_SETTINGS_KEY(cleanVin));
+    await d1KvDelete(env, TYRE_MORNING_KEY(cleanVin));
+    await d1KvDelete(env, TYRE_MORNING_ATTEMPT_KEY(cleanVin));
+    await unregisterSessionVinIndex(env, cleanVin);
     if (cleanPhone) {
       const phoneSess = await d1KvGet(env, `mg_session_phone:${cleanPhone}`);
       if (!phoneSess || !phoneSess.vin || normVin(phoneSess.vin) === cleanVin) {
@@ -5226,11 +5478,10 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
   return json({ error: 'Unknown API route' }, 404);
 }
 
-async function runCron(env: Env): Promise<void> {
+async function runCron(env: Env, nowSec = Math.floor(Date.now() / 1000)): Promise<void> {
   if (!env.DB && !env.TRIP_KV) return;
-  const now = new Date();
+  const now = new Date(nowSec * 1000);
   const min = now.getUTCMinutes();
-  const nowSec = Math.floor(Date.now() / 1000);
 
   const { db, isMaster } = workerAuthDeps(env);
   const { isUserAuthorized } = await import('./multi-user-auth');
@@ -5299,6 +5550,9 @@ async function runCron(env: Env): Promise<void> {
   } catch (_) {
     // SCENARIO 10: Catch block exits early
   }
+
+  // 3. Once-daily 06:00 AM IST morning tyre pressure check per registered VIN
+  await runMorningTyreChecks(env, nowSec).catch(() => {});
 }
 
 export default {
@@ -5353,7 +5607,11 @@ export default {
   },
 
   async scheduled(event: any, env: Env, ctx?: any): Promise<void> {
-    await runCron(env).catch(() => {});
+    const schedSec =
+      event?.scheduledTime && Number.isFinite(Number(event.scheduledTime))
+        ? Math.floor(Number(event.scheduledTime) / 1000)
+        : Math.floor(Date.now() / 1000);
+    await runCron(env, schedSec).catch(() => {});
     // Legacy single-user poller keeps working if MG_PHONE etc. are still configured.
     if (env.MG_PHONE) await (legacy as any).scheduled(event, env).catch(() => {});
   },
