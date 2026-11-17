@@ -6887,6 +6887,55 @@ export default function App() {
     []
   );
 
+  // Morning 6:00 AM Tyre Pressure Monitor & Immediate 10% Air-Loss Alert Hooks
+  // (Must stay above early `booting` / `!isAuthenticated` returns to preserve hook order)
+  const activeVariantVinKey =
+    (snapshot?.vehicle?.vin || vin || 'default').trim().toUpperCase() || 'default';
+  const todayIstDateKey = useMemo(
+    () => getIstDateAndTime().dateIst,
+    [serviceTodayKey, lastSyncedAt]
+  );
+  const activeTyreSettings: TyreMonitorSettings =
+    tyreSettingsByVin[activeVariantVinKey] ??
+    tyreSettingsByVin['default'] ??
+    sanitizeTyreMonitorSettings(null);
+  const activeMorningTyreCheck: MorningTyreCheckRecord | null =
+    morningTyreCheckByVin[activeVariantVinKey] ?? null;
+
+  useEffect(() => {
+    setTyreThresholdInputText(String(activeTyreSettings.dropThresholdPct));
+  }, [activeTyreSettings.dropThresholdPct]);
+
+  const liveTyreReadings = useMemo(
+    () => (snapshot?.status ? extractTyreReadings(snapshot.status) : null),
+    [
+      snapshot?.status?.front_left_tyre_psi,
+      snapshot?.status?.front_right_tyre_psi,
+      snapshot?.status?.rear_left_tyre_psi,
+      snapshot?.status?.rear_right_tyre_psi,
+    ]
+  );
+
+  const liveSevereAirLoss = useMemo(
+    () =>
+      liveTyreReadings
+        ? evaluateSevereAirLoss(liveTyreReadings, activeTyreSettings.recommendedPsi)
+        : null,
+    [liveTyreReadings, activeTyreSettings.recommendedPsi]
+  );
+
+  const liveCustomTyreEval = useMemo(
+    () =>
+      liveTyreReadings
+        ? evaluateTyreDrop(
+            liveTyreReadings,
+            activeTyreSettings.dropThresholdPct,
+            activeTyreSettings.recommendedPsi
+          )
+        : null,
+    [liveTyreReadings, activeTyreSettings.dropThresholdPct, activeTyreSettings.recommendedPsi]
+  );
+
   // 1. Startup Keychain Check Screen
   if (booting) {
     return (
@@ -7118,8 +7167,6 @@ export default function App() {
     handleCloseColorPicker();
   };
 
-  const activeVariantVinKey =
-    (rawVehicle?.vin || snapshot?.vehicle?.vin || vin || 'default').trim().toUpperCase() || 'default';
   const manualVariantOverrideId =
     variantOverridesByVin[activeVariantVinKey] ?? variantOverridesByVin['default'] ?? null;
   const windsorSunroofState = resolveWindsorSunroofState(snapshot, manualVariantOverrideId);
@@ -7233,49 +7280,6 @@ export default function App() {
       showBanner('ok', `${labelText} marked done at ${formatKmNumber(roundedOdo)} km`);
     }
   };
-
-  // Morning 6:00 AM Tyre Pressure Monitor & Immediate 10% Air-Loss Alert State
-  const todayIstDateKey = useMemo(() => getIstDateAndTime().dateIst, [serviceTodayKey, lastSyncedAt]);
-  const activeTyreSettings: TyreMonitorSettings =
-    tyreSettingsByVin[activeVariantVinKey] ??
-    tyreSettingsByVin['default'] ??
-    sanitizeTyreMonitorSettings(null);
-  const activeMorningTyreCheck: MorningTyreCheckRecord | null =
-    morningTyreCheckByVin[activeVariantVinKey] ?? null;
-
-  useEffect(() => {
-    setTyreThresholdInputText(String(activeTyreSettings.dropThresholdPct));
-  }, [activeTyreSettings.dropThresholdPct]);
-
-  const liveTyreReadings = useMemo(
-    () => (snapshot?.status ? extractTyreReadings(snapshot.status) : null),
-    [
-      snapshot?.status?.front_left_tyre_psi,
-      snapshot?.status?.front_right_tyre_psi,
-      snapshot?.status?.rear_left_tyre_psi,
-      snapshot?.status?.rear_right_tyre_psi,
-    ]
-  );
-
-  const liveSevereAirLoss = useMemo(
-    () =>
-      liveTyreReadings
-        ? evaluateSevereAirLoss(liveTyreReadings, activeTyreSettings.recommendedPsi)
-        : null,
-    [liveTyreReadings, activeTyreSettings.recommendedPsi]
-  );
-
-  const liveCustomTyreEval = useMemo(
-    () =>
-      liveTyreReadings
-        ? evaluateTyreDrop(
-            liveTyreReadings,
-            activeTyreSettings.dropThresholdPct,
-            activeTyreSettings.recommendedPsi
-          )
-        : null,
-    [liveTyreReadings, activeTyreSettings.dropThresholdPct, activeTyreSettings.recommendedPsi]
-  );
 
   const handleUpdateTyreSettings = async (partial: Partial<TyreMonitorSettings>) => {
     const nextSettings = sanitizeTyreMonitorSettings({
