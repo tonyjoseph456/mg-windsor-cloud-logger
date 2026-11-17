@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   addCalendarDaysToIsoDate,
   addCalendarMonthsToIsoDate,
+  buildComingUpTimeline,
   computeMaintenanceForecast,
   computeMilestoneCost,
   computeNextServiceStatus,
@@ -514,4 +515,78 @@ test('computeWheelAlertSummary builds unified progress bar and handles mixed tar
   assert.equal(mixed.allShareSameTarget, false);
   assert.equal(mixed.hasOverdue, true);
   assert.equal(mixed.fraction, 1);
+});
+
+test('buildComingUpTimeline orders tyre care, expected service, and latest date chronologically', () => {
+  const settings = createDefaultServiceReminderSettings();
+  settings.lastServiceDate = '2026-05-25';
+  settings.lastServiceOdoKm = 30207;
+  settings.wheelServices.balancing.lastDoneKm = 35000;
+  settings.wheelServices.alignment.lastDoneKm = 35000;
+  settings.wheelServices.rotation.lastDoneKm = 30000;
+
+  const serviceStatus = computeNextServiceStatus({
+    odometerKm: 39518,
+    settings,
+    todayIsoDate: '2026-11-17',
+  });
+  const wheelStatuses = computeWheelServicesStatus({ odometerKm: 39518, settings });
+
+  // ~532 km/wk across 12 days => 482 km ~6d (23 Nov 2026), 5482 km ~72d (28 Jan 2027), latest 25 May 2027 (189d)
+  const fastForecast = computeMaintenanceForecast({
+    trips: [
+      { id: 'd1', distanceKm: 456, startDateTime: '06 Nov 2026, 09:00 am', status: 'completed' },
+      { id: 'd2', distanceKm: 456, startDateTime: '16 Nov 2026, 09:00 am', status: 'completed' },
+    ],
+    serviceStatus,
+    wheelStatuses,
+    todayIsoDate: '2026-11-17',
+  });
+  assert.equal(fastForecast.runningAverage.windowDays, 12);
+  assert.equal(fastForecast.runningAverage.weeklyKm, 532);
+
+  const timeline = buildComingUpTimeline({
+    serviceStatus,
+    wheelStatuses,
+    forecast: fastForecast,
+  });
+  assert.equal(timeline.nodes.length, 3);
+  assert.equal(timeline.nodes[0].title, 'Tyre care');
+  assert.equal(timeline.nodes[0].subtitle, 'Balancing, alignment and rotation · at 40,000 km');
+  assert.equal(timeline.nodes[0].dateText, '~23 Nov 2026');
+  assert.equal(timeline.nodes[0].etaText, 'In ~6 days');
+
+  assert.equal(timeline.nodes[1].title, '45,000 km service');
+  assert.equal(timeline.nodes[1].dateText, '~28 Jan 2027');
+  assert.equal(timeline.nodes[1].etaText, 'In ~72 days');
+  assert.match(timeline.nodes[1].subtitle, /before the latest date/);
+
+  assert.equal(timeline.nodes[2].title, 'Latest date');
+  assert.equal(timeline.nodes[2].dateText, '25 May 2027');
+  assert.equal(timeline.nodes[2].etaText, 'In 189 days');
+  assert.equal(
+    timeline.calloutTip,
+    'The three tyre jobs fall on the same date, so you can do them in one visit.'
+  );
+
+  // At low pace (70 km/wk), Latest date (189d) comes chronologically BEFORE 45,000 km (~783d)
+  const slowForecast = computeMaintenanceForecast({
+    trips: [
+      { id: 's0', distanceKm: 100, startDateTime: '01 Oct 2026, 09:00 am', status: 'completed' },
+      { id: 's1', distanceKm: 280, startDateTime: '10 Nov 2026, 09:00 am', status: 'completed' },
+    ],
+    serviceStatus,
+    wheelStatuses,
+    todayIsoDate: '2026-11-17',
+  });
+  const slowTimeline = buildComingUpTimeline({
+    serviceStatus,
+    wheelStatuses,
+    forecast: slowForecast,
+  });
+  assert.deepEqual(
+    slowTimeline.nodes.map((n) => n.kind),
+    ['wheel', 'latest', 'service']
+  );
+  assert.match(slowTimeline.nodes[2].subtitle, /after the latest date/);
 });

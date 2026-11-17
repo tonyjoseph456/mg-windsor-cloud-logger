@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import {
+  buildComingUpTimeline,
   ComputedNextServiceStatus,
   ComputedWheelServiceItemStatus,
   computeMilestoneCost,
@@ -77,13 +78,6 @@ function formatSyncTimestamp(iso: string | null): string {
   const min = String(dt.getMinutes()).padStart(2, '0');
   const ampm = h24 >= 12 ? 'pm' : 'am';
   return `${day} ${mon}, ${h12}:${min} ${ampm}`;
-}
-
-function formatForecastEtaSub(days: number | null): string {
-  if (days === null || !Number.isFinite(days)) return '';
-  if (days === 0) return 'Today';
-  if (days === 1) return 'in ~1 day';
-  return `in ~${days} days`;
 }
 
 function BackButton({ onPress, label }: { onPress: () => void; label: string }) {
@@ -499,208 +493,154 @@ export const ServiceReminderScreen: React.FC<ServiceReminderScreenProps> = ({
               <View style={styles.heroDivider} />
 
               {/* 3-Column Metrics */}
-              <View style={styles.heroMetricsRow}>
-                <View style={styles.heroMetricCol}>
-                  <Text style={styles.heroMetricLabel}>Distance left</Text>
-                  <Text
-                    style={[
-                      styles.heroMetricVal,
-                      serviceStatus.isKmWarning && { color: urgencyBadge.color },
-                    ]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                  >
-                    {formatHubDistanceLeft()}
-                  </Text>
-                  <Text style={styles.heroMetricSub} numberOfLines={1}>
-                    Target {formatKmNumber(serviceStatus.nextMilestone.km)} km
-                  </Text>
-                </View>
+              {(() => {
+                const hasExpected = Boolean(
+                  forecast.regularService.recommendedDate && !serviceStatus.isOverdue
+                );
+                const expectedDays = forecast.regularService.recommendedDays;
+                const expectedSub =
+                  expectedDays === null
+                    ? ''
+                    : expectedDays === 0
+                      ? 'Due today'
+                      : expectedDays === 1
+                        ? 'In about 1 day'
+                        : `In about ${expectedDays} days`;
 
-                <View style={styles.heroMetricCol}>
-                  <Text style={styles.heroMetricLabel}>Time left</Text>
-                  <Text
-                    style={[
-                      styles.heroMetricVal,
-                      serviceStatus.isDaysWarning && { color: urgencyBadge.color },
-                      serviceStatus.daysRemaining === null && { color: '#94A3B8' },
-                    ]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                  >
-                    {formatHubTimeLeft()}
-                  </Text>
-                  <Text style={styles.heroMetricSub} numberOfLines={1}>
-                    {serviceStatus.nextDueDate
-                      ? `Due ${formatIsoDateShort(serviceStatus.nextDueDate)}`
-                      : `Every ${serviceStatus.intervalMonths} mo`}
-                  </Text>
-                </View>
+                return (
+                  <>
+                    <View style={styles.heroMetricsRow}>
+                      <View style={styles.heroMetricCol}>
+                        <Text style={styles.heroMetricLabel}>Distance left</Text>
+                        <Text
+                          style={[
+                            styles.heroMetricVal,
+                            serviceStatus.isKmWarning && { color: urgencyBadge.color },
+                          ]}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                        >
+                          {formatHubDistanceLeft()}
+                        </Text>
+                        <Text style={styles.heroMetricSub} numberOfLines={1}>
+                          Target {formatKmNumber(serviceStatus.nextMilestone.km)} km
+                        </Text>
+                      </View>
 
-                <View style={styles.heroMetricCol}>
-                  <Text style={styles.heroMetricLabel}>Approx. cost</Text>
-                  <Text style={[styles.heroMetricVal, { color: '#34D399' }]} numberOfLines={1}>
-                    {formatInrAmount(serviceStatus.cost.totalInr)}
-                  </Text>
-                  <Text style={styles.heroMetricSub} numberOfLines={1}>
-                    {replacementCount > 0
-                      ? `${replacementCount} replacement${replacementCount === 1 ? '' : 's'}`
-                      : 'Inspection only'}
-                  </Text>
-                </View>
-              </View>
+                      <View style={[styles.heroMetricCol, hasExpected && { flex: 1.25 }]}>
+                        <Text style={styles.heroMetricLabel}>
+                          {hasExpected ? 'Expected' : 'Time left'}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.heroMetricVal,
+                            !hasExpected && serviceStatus.isDaysWarning && { color: urgencyBadge.color },
+                            !hasExpected && serviceStatus.daysRemaining === null && { color: '#94A3B8' },
+                          ]}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                        >
+                          {hasExpected
+                            ? `~${formatIsoDateShort(forecast.regularService.recommendedDate)}`
+                            : formatHubTimeLeft()}
+                        </Text>
+                        <Text style={styles.heroMetricSub} numberOfLines={1}>
+                          {hasExpected
+                            ? expectedSub
+                            : serviceStatus.nextDueDate
+                              ? `Due ${formatIsoDateShort(serviceStatus.nextDueDate)}`
+                              : `Every ${serviceStatus.intervalMonths} mo`}
+                        </Text>
+                      </View>
+
+                      <View style={[styles.heroMetricCol, { flex: 0.9 }]}>
+                        <Text style={styles.heroMetricLabel}>Approx. cost</Text>
+                        <Text style={[styles.heroMetricVal, { color: '#34D399' }]} numberOfLines={1}>
+                          {formatInrAmount(serviceStatus.cost.totalInr)}
+                        </Text>
+                        <Text style={styles.heroMetricSub} numberOfLines={1}>
+                          {replacementCount > 0
+                            ? `${replacementCount} replacement${replacementCount === 1 ? '' : 's'}`
+                            : 'Inspection only'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {hasExpected && serviceStatus.nextDueDate && (
+                      <Text style={styles.heroLatestDateText}>
+                        Latest date: {formatIsoDateShort(serviceStatus.nextDueDate)} ·{' '}
+                        {formatServiceDaysCountdownText(serviceStatus.daysRemaining)}
+                      </Text>
+                    )}
+                  </>
+                );
+              })()}
             </View>
 
-            {/* 1.5 Smart Maintenance Forecast Card */}
+            {/* 1.5 Coming Up Timeline Card */}
             {(() => {
               const pace = forecast.runningAverage;
               const hasPace = pace.source === 'trips' && pace.weeklyKm !== null && pace.weeklyKm > 0;
-              const enabledWheelForecasts = forecast.wheelServices.filter((w) => w.enabled);
-              const reg = forecast.regularService;
-
-              let regSub = 'Sync odometer to estimate date';
-              if (reg.likelyTrigger === 'overdue') {
-                regSub = serviceStatus.isOverdue ? 'Already overdue' : 'Due today';
-              } else if (
-                reg.likelyTrigger === 'distance' &&
-                reg.daysEarlierThanDueDate &&
-                reg.daysEarlierThanDueDate > 0 &&
-                serviceStatus.nextDueDate
-              ) {
-                regSub = `Hits ${formatKmNumber(serviceStatus.nextMilestone.km)} km ~${
-                  reg.daysEarlierThanDueDate
-                }d before ${formatIsoDateShort(serviceStatus.nextDueDate)}`;
-              } else if (reg.likelyTrigger === 'time' && serviceStatus.nextDueDate) {
-                regSub = `Calendar due ${formatIsoDateShort(serviceStatus.nextDueDate)} arrives first`;
-              } else if (reg.likelyTrigger === 'both' && serviceStatus.nextDueDate) {
-                regSub = `Matches ${formatIsoDateShort(serviceStatus.nextDueDate)} calendar due date`;
-              } else if (serviceStatus.kmRemaining !== null) {
-                regSub = `${formatKmNumber(serviceStatus.kmRemaining)} km left to ${formatKmNumber(
-                  serviceStatus.nextMilestone.km
-                )} km`;
-              }
+              const timeline = buildComingUpTimeline({
+                serviceStatus,
+                wheelStatuses,
+                forecast,
+              });
 
               return (
                 <View style={styles.card}>
-                  <View style={styles.forecastTopRow}>
-                    <View style={styles.forecastEyebrowWrap}>
-                      <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#38BDF8" strokeWidth={2.2}>
-                        <Path
-                          d="M12 3l1.9 5.2L19 10l-5.1 1.8L12 17l-1.9-5.2L5 10l5.1-1.8L12 3z"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </Svg>
-                      <Text style={styles.forecastEyebrow}>SMART ESTIMATE</Text>
-                    </View>
+                  <View style={styles.comingUpHeaderRow}>
+                    <Text style={styles.comingUpTitle}>Coming up</Text>
                     <View style={[styles.pacePill, !hasPace && styles.pacePillMuted]}>
                       <Text style={[styles.pacePillText, !hasPace && styles.pacePillTextMuted]}>
-                        {hasPace ? `~${formatKmNumber(pace.weeklyKm!)} km/wk` : 'No recent trips'}
+                        {hasPace ? `~${formatKmNumber(Math.round(pace.weeklyKm!))} km/wk` : 'No recent trips'}
                       </Text>
                     </View>
                   </View>
 
-                  {!hasPace ? (
-                    <Text style={styles.mutedLineText}>
-                      Log or sync trips from recent weeks to estimate approximate dates for your regular service, wheel balancing, alignment, and rotation.
-                    </Text>
-                  ) : (
-                    <>
-                      <Text style={styles.forecastIntro}>
-                        Based on {pace.tripCount} trip{pace.tripCount === 1 ? '' : 's'} ({pace.windowLabel} · ~
-                        {formatKmNumber(pace.weeklyKm!)} km/wk), estimated dates:
-                      </Text>
+                  <Text style={styles.comingUpSub}>
+                    {hasPace
+                      ? `Estimated from ${pace.tripCount} trip${pace.tripCount === 1 ? '' : 's'} in the ${pace.windowLabel}.`
+                      : 'Sync or log recent trips to estimate when tyre care and regular service will fall due.'}
+                  </Text>
 
-                      {/* Regular periodic service forecast row */}
-                      <View style={styles.forecastRow}>
-                        <View style={styles.forecastRowLeft}>
-                          <Text style={styles.forecastRowTitle}>
-                            {formatKmNumber(serviceStatus.nextMilestone.km)} km service
-                          </Text>
-                          <Text style={styles.forecastRowSub}>{regSub}</Text>
-                        </View>
-                        <View style={styles.forecastRowRight}>
-                          {reg.likelyTrigger === 'overdue' ? (
-                            <Text style={[styles.forecastDateVal, { color: '#FCA5A5' }]}>Due now</Text>
-                          ) : reg.recommendedDate ? (
-                            <>
-                              <Text style={[styles.forecastDateVal, { color: '#34D399' }]}>
-                                ~{formatIsoDateShort(reg.recommendedDate)}
-                              </Text>
-                              <Text style={styles.forecastEtaSub}>
-                                {formatForecastEtaSub(reg.recommendedDays)}
-                              </Text>
-                            </>
-                          ) : (
-                            <Text style={[styles.forecastDateVal, { color: '#64748B' }]}>Low pace</Text>
-                          )}
-                        </View>
-                      </View>
+                  <View style={styles.timelineList}>
+                    {timeline.nodes.map((node, idx) => {
+                      const isLast = idx === timeline.nodes.length - 1;
+                      const RowWrap: any = node.opensAlertsSubscreen ? TouchableOpacity : View;
+                      const rowProps = node.opensAlertsSubscreen
+                        ? { onPress: () => onOpenSubScreen('alerts'), activeOpacity: 0.75 }
+                        : {};
 
-                      {/* Wheel balancing, alignment & rotation rows */}
-                      {enabledWheelForecasts.map((wf) => {
-                        const wheelItem = wheelStatuses.find((w) => w.key === wf.key);
-                        const isDueSoon = Boolean(wheelItem?.isDueSoon);
-                        let subText = 'Sync odometer to estimate';
-                        if (!wf.isConfigured) {
-                          subText = 'Set last-done km in Alerts & tyre care';
-                        } else if (wf.isDueNow) {
-                          subText =
-                            wf.kmRemaining !== null && wf.kmRemaining < 0
-                              ? `${formatKmNumber(Math.abs(wf.kmRemaining))} km overdue`
-                              : `Due at ${formatKmNumber(wf.nextDueKm ?? 0)} km`;
-                        } else if (wf.kmRemaining !== null) {
-                          subText = `${formatKmNumber(wf.kmRemaining)} km left · at ${formatKmNumber(
-                            wf.nextDueKm ?? 0
-                          )} km`;
-                        }
-
-                        return (
-                          <View key={wf.key} style={[styles.forecastRow, styles.forecastRowBorder]}>
-                            <View style={styles.forecastRowLeft}>
-                              <Text style={styles.forecastRowTitle}>{wf.label}</Text>
-                              <Text style={styles.forecastRowSub}>{subText}</Text>
-                            </View>
-                            <View style={styles.forecastRowRight}>
-                              {!wf.isConfigured ? (
-                                <TouchableOpacity
-                                  onPress={() => onOpenSubScreen('alerts')}
-                                  activeOpacity={0.75}
-                                >
-                                  <Text style={[styles.forecastDateVal, { color: '#38BDF8', fontSize: 13 }]}>
-                                    Set km ›
-                                  </Text>
-                                </TouchableOpacity>
-                              ) : wf.isDueNow ? (
-                                <Text style={[styles.forecastDateVal, { color: '#FCA5A5' }]}>Due now</Text>
-                              ) : wf.estimatedDate ? (
-                                <>
-                                  <Text
-                                    style={[
-                                      styles.forecastDateVal,
-                                      isDueSoon && { color: '#FCD34D' },
-                                    ]}
-                                  >
-                                    ~{formatIsoDateShort(wf.estimatedDate)}
-                                  </Text>
-                                  <Text style={styles.forecastEtaSub}>
-                                    {formatForecastEtaSub(wf.estimatedDays)}
-                                  </Text>
-                                </>
-                              ) : (
-                                <Text style={[styles.forecastDateVal, { color: '#64748B' }]}>Low pace</Text>
-                              )}
-                            </View>
+                      return (
+                        <RowWrap key={node.id} style={styles.timelineRow} {...rowProps}>
+                          <View style={styles.timelineRailCol}>
+                            <View style={[styles.timelineDot, { backgroundColor: node.dotColor }]} />
+                            {!isLast && <View style={styles.timelineLine} />}
                           </View>
-                        );
-                      })}
 
-                      {Boolean(forecast.advisorTip) && (
-                        <View style={styles.advisorTipBox}>
-                          <Text style={styles.advisorTipText}>{forecast.advisorTip}</Text>
-                        </View>
-                      )}
-                    </>
+                          <View style={[styles.timelineBodyCol, !isLast && styles.timelineBodySpacer]}>
+                            <Text style={styles.timelineTitle}>{node.title}</Text>
+                            <Text style={styles.timelineSub}>{node.subtitle}</Text>
+                          </View>
+
+                          <View style={styles.timelineRightCol}>
+                            <Text style={[styles.timelineDateVal, { color: node.dateColor }]}>
+                              {node.dateText}
+                            </Text>
+                            {Boolean(node.etaText) && (
+                              <Text style={styles.timelineEtaSub}>{node.etaText}</Text>
+                            )}
+                          </View>
+                        </RowWrap>
+                      );
+                    })}
+                  </View>
+
+                  {Boolean(timeline.calloutTip) && (
+                    <View style={styles.comingUpTipBox}>
+                      <Text style={styles.comingUpTipText}>{timeline.calloutTip}</Text>
+                    </View>
                   )}
                 </View>
               );
@@ -2298,30 +2238,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  forecastTopRow: {
+  heroLatestDateText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 14,
+  },
+  comingUpHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    marginBottom: 10,
   },
-  forecastEyebrowWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  forecastEyebrow: {
-    color: '#38BDF8',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.0,
+  comingUpTitle: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: -0.2,
   },
   pacePill: {
     backgroundColor: 'rgba(56, 189, 248, 0.14)',
     borderWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.35)',
     borderRadius: 999,
-    paddingHorizontal: 10,
+    paddingHorizontal: 11,
     paddingVertical: 4,
   },
   pacePillMuted: {
@@ -2330,72 +2270,93 @@ const styles = StyleSheet.create({
   },
   pacePillText: {
     color: '#7DD3FC',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
   pacePillTextMuted: {
     color: '#94A3B8',
   },
-  forecastIntro: {
-    color: '#CBD5E1',
+  comingUpSub: {
+    color: '#94A3B8',
     fontSize: 13,
-    lineHeight: 19,
-    marginBottom: 12,
+    lineHeight: 18,
+    marginTop: 4,
+    marginBottom: 16,
   },
-  forecastRow: {
+  timelineList: {
+    width: '100%',
+  },
+  timelineRow: {
     flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  timelineRailCol: {
+    width: 18,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 11,
-    gap: 12,
+    marginRight: 10,
+    paddingTop: 5,
   },
-  forecastRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: '#1E293B',
+  timelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
-  forecastRowLeft: {
+  timelineLine: {
+    flex: 1,
+    width: 2,
+    backgroundColor: '#1E293B',
+    marginTop: 4,
+    minHeight: 18,
+  },
+  timelineBodyCol: {
     flex: 1,
     minWidth: 0,
   },
-  forecastRowTitle: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '700',
+  timelineBodySpacer: {
+    paddingBottom: 18,
   },
-  forecastRowSub: {
+  timelineTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  timelineSub: {
     color: '#94A3B8',
     fontSize: 12,
     lineHeight: 17,
     marginTop: 2,
   },
-  forecastRowRight: {
+  timelineRightCol: {
     alignItems: 'flex-end',
     flexShrink: 0,
+    paddingLeft: 12,
   },
-  forecastDateVal: {
+  timelineDateVal: {
     color: '#F8FAFC',
     fontSize: 14,
     fontWeight: '800',
+    lineHeight: 20,
   },
-  forecastEtaSub: {
+  timelineEtaSub: {
     color: '#94A3B8',
     fontSize: 11,
     fontWeight: '500',
     marginTop: 2,
   },
-  advisorTipBox: {
-    marginTop: 10,
-    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+  comingUpTipBox: {
+    marginTop: 16,
+    backgroundColor: 'rgba(30, 58, 95, 0.28)',
     borderWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.22)',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
-  advisorTipText: {
-    color: '#BAE6FD',
-    fontSize: 12,
-    lineHeight: 18,
+  comingUpTipText: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    lineHeight: 19,
     fontWeight: '500',
   },
 });

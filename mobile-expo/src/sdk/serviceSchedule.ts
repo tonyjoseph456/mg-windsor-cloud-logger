@@ -1502,3 +1502,277 @@ export function computeWheelAlertSummary(
     hasOverdue: activeWheelAlerts.some((w) => w.isDueNow),
   };
 }
+
+export interface ComingUpTimelineNode {
+  id: string;
+  kind: 'wheel' | 'service' | 'latest' | 'setup';
+  title: string;
+  subtitle: string;
+  dateText: string;
+  etaText: string;
+  dotColor: string;
+  dateColor: string;
+  sortOrderDays: number;
+  opensAlertsSubscreen?: boolean;
+}
+
+export interface ComingUpTimeline {
+  nodes: ComingUpTimelineNode[];
+  calloutTip: string | null;
+}
+
+function joinShortLabelsLowerWithAnd(labels: string[]): string {
+  if (labels.length === 0) return '';
+  const formatted = labels.map((l, idx) => (idx === 0 ? l : l.toLowerCase()));
+  if (formatted.length === 1) return formatted[0];
+  if (formatted.length === 2) return `${formatted[0]} and ${formatted[1]}`;
+  return `${formatted.slice(0, -1).join(', ')} and ${formatted[formatted.length - 1]}`;
+}
+
+function formatInDaysText(days: number | null): string {
+  if (days === null || !Number.isFinite(days)) return '';
+  const rounded = Math.round(days);
+  if (rounded < 0) {
+    const abs = Math.abs(rounded);
+    return `${abs} day${abs === 1 ? '' : 's'} overdue`;
+  }
+  if (rounded === 0) return 'Today';
+  return `In ~${rounded} day${rounded === 1 ? '' : 's'}`;
+}
+
+/**
+ * Builds chronological "Coming up" timeline rows and grouping insight tip
+ * for the Service Reminder screen.
+ */
+export function buildComingUpTimeline(params: {
+  serviceStatus: ComputedNextServiceStatus;
+  wheelStatuses: ReadonlyArray<ComputedWheelServiceItemStatus>;
+  forecast: MaintenanceForecast;
+}): ComingUpTimeline {
+  const { serviceStatus, wheelStatuses, forecast } = params;
+  const pace = forecast.runningAverage;
+  const hasPace = pace.source === 'trips' && pace.weeklyKm !== null && pace.weeklyKm > 0;
+  const nodes: ComingUpTimelineNode[] = [];
+
+  // 1. Wheel care items grouped by due milestone + projected date
+  const enabledWheels = wheelStatuses.filter((w) => w.enabled);
+  const configuredWheels = enabledWheels.filter((w) => w.isConfigured);
+  const unconfiguredWheels = enabledWheels.filter((w) => !w.isConfigured);
+
+  const groupsMap = new Map<string, ComputedWheelServiceItemStatus[]>();
+  for (const w of configuredWheels) {
+    const wf = forecast.wheelServices.find((f) => f.key === w.key);
+    const groupKey = w.isDueNow
+      ? `due:${w.nextDueKm ?? 'now'}`
+      : `${wf?.estimatedDate ?? 'none'}@${w.nextDueKm ?? 'none'}`;
+    const list = groupsMap.get(groupKey) || [];
+    list.push(w);
+    groupsMap.set(groupKey, list);
+  }
+
+  const wheelGroups = Array.from(groupsMap.values());
+  let largestWheelGroup: ComputedWheelServiceItemStatus[] = [];
+  let largestWheelGroupDays: number | null = null;
+
+  for (const group of wheelGroups) {
+    if (group.length > largestWheelGroup.length) {
+      largestWheelGroup = group;
+      const f0 = forecast.wheelServices.find((f) => f.key === group[0].key);
+      largestWheelGroupDays = group[0].isDueNow ? 0 : f0?.estimatedDays ?? null;
+    }
+
+    const first = group[0];
+    const wf = forecast.wheelServices.find((f) => f.key === first.key);
+    const anyOverdue = group.some((g) => g.isDueNow);
+    const anyWarning = !anyOverdue && group.some((g) => g.isDueSoon);
+    const targetKm = first.nextDueKm ?? 0;
+
+    const title =
+      group.length >= 2 && wheelGroups.length === 1
+        ? 'Tyre care'
+        : group.length >= 2
+          ? formatNaturalList(group.map((g) => g.shortLabel))
+          : first.label;
+
+    const subtitle =
+      group.length >= 2 && wheelGroups.length === 1
+        ? `${joinShortLabelsLowerWithAnd(group.map((g) => g.shortLabel))} · at ${formatKmNumber(
+            targetKm
+          )} km`
+        : first.kmRemaining !== null && first.kmRemaining < 0
+          ? `${formatKmNumber(Math.abs(first.kmRemaining))} km overdue · target ${formatKmNumber(
+              targetKm
+            )} km`
+          : `At ${formatKmNumber(targetKm)} km`;
+
+    let dateText = '--';
+    let etaText = '';
+    let sortOrderDays = 90000;
+
+    if (anyOverdue) {
+      dateText = 'Due now';
+      etaText =
+        first.kmRemaining !== null && first.kmRemaining < 0
+          ? `${formatKmNumber(Math.abs(first.kmRemaining))} km over`
+          : `At ${formatKmNumber(targetKm)} km`;
+      sortOrderDays = -1000;
+    } else if (wf?.estimatedDate) {
+      dateText = `~${formatIsoDateShort(wf.estimatedDate)}`;
+      etaText = formatInDaysText(wf.estimatedDays);
+      sortOrderDays = wf.estimatedDays ?? 90000;
+    } else if (hasPace) {
+      dateText = 'Low pace';
+      etaText = first.kmRemaining !== null ? `${formatKmNumber(first.kmRemaining)} km left` : '';
+    } else if (first.kmRemaining !== null) {
+      dateText = `${formatKmNumber(first.kmRemaining)} km`;
+      etaText = 'left';
+    }
+
+    const dotColor = anyOverdue ? '#F87171' : anyWarning ? '#FBBF24' : '#34D399';
+    const dateColor = anyOverdue ? '#FCA5A5' : anyWarning ? '#FBC765' : '#F8FAFC';
+
+    nodes.push({
+      id: `wheel:${group.map((g) => g.key).join('+')}`,
+      kind: 'wheel',
+      title,
+      subtitle,
+      dateText,
+      etaText,
+      dotColor,
+      dateColor,
+      sortOrderDays,
+    });
+  }
+
+  // 2. Periodic service node
+  const reg = forecast.regularService;
+  const milestoneTitle = `${formatKmNumber(serviceStatus.nextMilestone.km)} km service`;
+  const svcDotColor = serviceStatus.isOverdue
+    ? '#F87171'
+    : serviceStatus.isAlertActive
+      ? '#FBBF24'
+      : '#34D399';
+
+  let svcSubtitle =
+    serviceStatus.kmRemaining !== null
+      ? `${formatKmNumber(serviceStatus.kmRemaining)} km remaining`
+      : 'Sync odometer to estimate';
+  let svcDateText = '--';
+  let svcEtaText = '';
+  let svcSortDays = 95000;
+  let svcDateColor = '#34D399';
+
+  if (serviceStatus.isOverdue || reg.likelyTrigger === 'overdue') {
+    svcSubtitle = serviceStatus.isOverdue ? 'Service overdue' : 'Due today';
+    svcDateText = 'Due now';
+    svcEtaText =
+      serviceStatus.kmOverdueBy !== null
+        ? `${formatKmNumber(serviceStatus.kmOverdueBy)} km over`
+        : '';
+    svcSortDays = -500;
+    svcDateColor = '#FCA5A5';
+  } else if (reg.distanceEstimatedDate) {
+    svcDateText = `~${formatIsoDateShort(reg.distanceEstimatedDate)}`;
+    svcEtaText = formatInDaysText(reg.distanceEstimatedDays);
+    svcSortDays = reg.distanceEstimatedDays ?? 95000;
+    if (serviceStatus.isAlertActive) svcDateColor = '#FBC765';
+
+    if (reg.daysEarlierThanDueDate !== null && reg.daysEarlierThanDueDate > 0) {
+      svcSubtitle = `Reached about ${reg.daysEarlierThanDueDate} day${
+        reg.daysEarlierThanDueDate === 1 ? '' : 's'
+      } before the latest date`;
+    } else if (reg.daysEarlierThanDueDate !== null && reg.daysEarlierThanDueDate < 0) {
+      const afterDays = Math.abs(reg.daysEarlierThanDueDate);
+      svcSubtitle = `Reached about ${afterDays} day${
+        afterDays === 1 ? '' : 's'
+      } after the latest date`;
+    } else if (serviceStatus.nextDueDate) {
+      svcSubtitle = 'Matches the latest service date';
+    }
+  } else if (serviceStatus.kmRemaining !== null) {
+    svcDateText = `${formatKmNumber(serviceStatus.kmRemaining)} km`;
+    svcEtaText = 'remaining';
+    svcDateColor = '#F8FAFC';
+  }
+
+  nodes.push({
+    id: 'service:next',
+    kind: 'service',
+    title: milestoneTitle,
+    subtitle: svcSubtitle,
+    dateText: svcDateText,
+    etaText: svcEtaText,
+    dotColor: svcDotColor,
+    dateColor: svcDateColor,
+    sortOrderDays: svcSortDays,
+  });
+
+  // 3. Latest calendar date node (when last service date is set)
+  if (serviceStatus.nextDueDate && serviceStatus.daysRemaining !== null) {
+    const daysLeft = Math.round(serviceStatus.daysRemaining);
+    const latestEta =
+      daysLeft < 0
+        ? `${Math.abs(daysLeft)} day${Math.abs(daysLeft) === 1 ? '' : 's'} overdue`
+        : daysLeft === 0
+          ? 'Today'
+          : `In ${daysLeft} day${daysLeft === 1 ? '' : 's'}`;
+
+    nodes.push({
+      id: 'service:latest',
+      kind: 'latest',
+      title: 'Latest date',
+      subtitle: 'Service by this date at the latest',
+      dateText: formatIsoDateShort(serviceStatus.nextDueDate),
+      etaText: latestEta,
+      dotColor: daysLeft < 0 ? '#F87171' : '#64748B',
+      dateColor: daysLeft < 0 ? '#FCA5A5' : '#F8FAFC',
+      sortOrderDays: daysLeft + 0.5, // places after distance node on exact ties
+    });
+  }
+
+  // Sort main nodes chronologically
+  nodes.sort((a, b) => a.sortOrderDays - b.sortOrderDays);
+
+  // 4. Unconfigured enabled wheel items (if any) at the end
+  if (unconfiguredWheels.length > 0) {
+    nodes.push({
+      id: 'wheel:setup',
+      kind: 'setup',
+      title:
+        unconfiguredWheels.length === 1
+          ? unconfiguredWheels[0].label
+          : 'Unconfigured tyre care',
+      subtitle: `Set last-done km for ${joinShortLabelsLowerWithAnd(
+        unconfiguredWheels.map((w) => w.shortLabel)
+      )}`,
+      dateText: 'Set km ›',
+      etaText: '',
+      dotColor: '#475569',
+      dateColor: '#38BDF8',
+      sortOrderDays: 999999,
+      opensAlertsSubscreen: true,
+    });
+  }
+
+  // 5. Crisp bundling / timing callout tip
+  let calloutTip: string | null = null;
+  if (hasPace) {
+    const svcDays = reg.distanceEstimatedDays;
+    if (largestWheelGroup.length >= 2) {
+      const countWord = largestWheelGroup.length === 3 ? 'three' : 'two';
+      if (
+        largestWheelGroupDays !== null &&
+        svcDays !== null &&
+        Math.abs(largestWheelGroupDays - svcDays) <= 14
+      ) {
+        calloutTip = `The ${countWord} tyre jobs and your ${milestoneTitle} fall around the same date, so you can do them in one visit.`;
+      } else {
+        calloutTip = `The ${countWord} tyre jobs fall on the same date, so you can do them in one visit.`;
+      }
+    } else if (forecast.advisorTip) {
+      calloutTip = forecast.advisorTip;
+    }
+  }
+
+  return { nodes, calloutTip };
+}
