@@ -1,7 +1,22 @@
-import type { ChargeLogRecord } from './models';
+import type { ChargeLogRecord, TripRecord } from './models';
 
 export const WINDSOR_PACK_NOMINAL_KWH = 38.0;
 export const DEFAULT_AC_EFFICIENCY = 0.88;
+
+export const ANALYTICS_MONTHS_LIST = [
+  { num: '01', short: 'Jan', full: 'January' },
+  { num: '02', short: 'Feb', full: 'February' },
+  { num: '03', short: 'Mar', full: 'March' },
+  { num: '04', short: 'Apr', full: 'April' },
+  { num: '05', short: 'May', full: 'May' },
+  { num: '06', short: 'Jun', full: 'June' },
+  { num: '07', short: 'Jul', full: 'July' },
+  { num: '08', short: 'Aug', full: 'August' },
+  { num: '09', short: 'Sep', full: 'September' },
+  { num: '10', short: 'Oct', full: 'October' },
+  { num: '11', short: 'Nov', full: 'November' },
+  { num: '12', short: 'Dec', full: 'December' },
+] as const;
 
 /**
  * Validates external AC meter energy input in kWh.
@@ -81,6 +96,132 @@ export function summarizeChargeMeterAnalytics(charges: ChargeLogRecord[]): Charg
     meterRealLossKwh: realLossKwh,
     meterRealLossPct: realLossPct,
     meterDiffVsEstKwh: diffVsEstKwh,
+  };
+}
+
+export interface AnalyticsPeriodStats extends ChargeMeterAnalyticsSummary {
+  tripCount: number;
+  totalDistKm: number;
+  totalDriveEnergyKwh: number;
+  totalDriveDurSec: number;
+  avgDriveEff: number;
+  totalChargeCount: number;
+  totalPackKwh: number;
+  totalWallKwh: number;
+  totalLossKwh: number;
+  count33: number;
+  packKwh33: number;
+  wallKwh33: number;
+  count74: number;
+  packKwh74: number;
+  wallKwh74: number;
+  countDc: number;
+  packKwhDc: number;
+  wallKwhDc: number;
+}
+
+function classifyAnalyticsChargerSpeed(c: ChargeLogRecord): '3.3' | '7.4' | 'dc' {
+  const kw = Number(c.maxChargingSpeedKw) || 0;
+  const cat = (c.chargerCategory || '').toUpperCase();
+  if (kw > 11) return 'dc';
+  if (kw > 4.0 && kw <= 11) return '7.4';
+  if (kw > 0 && kw <= 4.0) return '3.3';
+  if (cat.includes('DC')) return 'dc';
+  if (cat.includes('7.4') || cat.includes('7.2')) return '7.4';
+  return '3.3';
+}
+
+/**
+ * Computes combined driving & charging analytics (including external meter energy)
+ * for any YYYY- or YYYY-MM prefix shared across both Analytics views.
+ */
+export function computePeriodAnalyticsStats(params: {
+  trips: TripRecord[];
+  chargeLogs: ChargeLogRecord[];
+  getTripDateKey: (t: TripRecord) => string;
+  getChargeDateKey: (c: ChargeLogRecord) => string;
+  prefix: string;
+  usableBatteryKwh?: number;
+}): AnalyticsPeriodStats {
+  const { trips, chargeLogs, getTripDateKey, getChargeDateKey, prefix, usableBatteryKwh = 37.3 } = params;
+  const mTrips = trips.filter((t) => getTripDateKey(t).startsWith(prefix));
+  const mCharges = chargeLogs.filter((c) => getChargeDateKey(c).startsWith(prefix));
+
+  const totalDistKm = Number(
+    mTrips.reduce((s, t) => s + (Number(t.distanceKm) || 0), 0).toFixed(1)
+  );
+  const totalDriveEnergyKwh = Number(
+    mTrips
+      .reduce((s, t) => {
+        const energy =
+          Number(t.energyUsedKwh) > 0
+            ? Number(t.energyUsedKwh)
+            : Math.max(0, ((Number(t.startSoc) - Number(t.endSoc)) / 100) * usableBatteryKwh);
+        return s + energy;
+      }, 0)
+      .toFixed(2)
+  );
+  const totalDriveDurSec = mTrips.reduce((s, t) => s + (Number(t.durationSeconds) || 0), 0);
+  const avgDriveEff =
+    totalDistKm > 0 && totalDriveEnergyKwh > 0
+      ? Number((totalDistKm / totalDriveEnergyKwh).toFixed(2))
+      : 0;
+
+  let count33 = 0;
+  let packKwh33 = 0;
+  let wallKwh33 = 0;
+  let count74 = 0;
+  let packKwh74 = 0;
+  let wallKwh74 = 0;
+  let countDc = 0;
+  let packKwhDc = 0;
+  let wallKwhDc = 0;
+
+  for (const c of mCharges) {
+    const sp = classifyAnalyticsChargerSpeed(c);
+    const pk = getChargePackAddedKwh(c);
+    const wl = getChargeEstimatedWallKwh(c);
+    if (sp === 'dc') {
+      countDc += 1;
+      packKwhDc += pk;
+      wallKwhDc += wl;
+    } else if (sp === '7.4') {
+      count74 += 1;
+      packKwh74 += pk;
+      wallKwh74 += wl;
+    } else {
+      count33 += 1;
+      packKwh33 += pk;
+      wallKwh33 += wl;
+    }
+  }
+
+  const totalChargeCount = mCharges.length;
+  const totalPackKwh = Number((packKwh33 + packKwh74 + packKwhDc).toFixed(2));
+  const totalWallKwh = Number((wallKwh33 + wallKwh74 + wallKwhDc).toFixed(2));
+  const totalLossKwh = Math.max(0, Number((totalWallKwh - totalPackKwh).toFixed(2)));
+  const meterAnalytics = summarizeChargeMeterAnalytics(mCharges);
+
+  return {
+    tripCount: mTrips.length,
+    totalDistKm,
+    totalDriveEnergyKwh,
+    totalDriveDurSec,
+    avgDriveEff,
+    totalChargeCount,
+    totalPackKwh,
+    totalWallKwh,
+    totalLossKwh,
+    ...meterAnalytics,
+    count33,
+    packKwh33: Number(packKwh33.toFixed(2)),
+    wallKwh33: Number(wallKwh33.toFixed(2)),
+    count74,
+    packKwh74: Number(packKwh74.toFixed(2)),
+    wallKwh74: Number(wallKwh74.toFixed(2)),
+    countDc,
+    packKwhDc: Number(packKwhDc.toFixed(2)),
+    wallKwhDc: Number(wallKwhDc.toFixed(2)),
   };
 }
 

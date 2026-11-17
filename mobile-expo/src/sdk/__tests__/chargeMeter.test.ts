@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  computePeriodAnalyticsStats,
   deduplicateChargeList,
   mapD1ChargeToRecord,
   mergePendingMeterOverrides,
   sanitizeMeterEnergyInput,
   summarizeChargeMeterAnalytics,
 } from '../chargeMeter';
-import type { ChargeLogRecord } from '../models';
+import type { ChargeLogRecord, TripRecord } from '../models';
 
 function makeSession(overrides: Partial<ChargeLogRecord> = {}): ChargeLogRecord {
   return {
@@ -115,5 +116,53 @@ describe('Charge Meter Analytics & Sync Helpers', () => {
     const deduped = deduplicateChargeList([dupWithoutMeter, mapped]);
     assert.equal(deduped.length, 1);
     assert.equal(deduped[0].meterEnergyKwh, 39.4);
+  });
+
+  it('computePeriodAnalyticsStats populates From meter energy and real loss across filtered months/years', () => {
+    const nov14 = makeSession({
+      id: 'chg_nov14',
+      startDateTime: '14 Nov 2026, 10:51 pm',
+      energyAddedToPackKwh: 31.92,
+      energyConsumedKwh: 36.7,
+      meterEnergyKwh: 39.4,
+    });
+    const oct10 = makeSession({
+      id: 'chg_oct10',
+      startTimestampSec: 1791600000,
+      endTimestampSec: 1791620000,
+      startDateTime: '10 Oct 2026, 11:00 am',
+      energyAddedToPackKwh: 20.0,
+      energyConsumedKwh: 22.73,
+      meterEnergyKwh: 24.5,
+    });
+    const fakeTrips: TripRecord[] = [];
+    const getTripDateKey = () => '2026-11-14';
+    const getChargeDateKey = (c: ChargeLogRecord) =>
+      c.id === 'chg_nov14' ? '2026-11-14' : '2026-10-10';
+
+    const novStats = computePeriodAnalyticsStats({
+      trips: fakeTrips,
+      chargeLogs: [nov14, oct10],
+      getTripDateKey,
+      getChargeDateKey,
+      prefix: '2026-11',
+    });
+    assert.equal(novStats.totalChargeCount, 1);
+    assert.equal(novStats.totalPackKwh, 31.92);
+    assert.equal(novStats.totalWallKwh, 36.7);
+    assert.equal(novStats.totalMeterKwh, 39.4);
+    assert.equal(novStats.meterLoggedCount, 1);
+    assert.equal(novStats.meterRealLossPct, 19);
+
+    const yearStats = computePeriodAnalyticsStats({
+      trips: fakeTrips,
+      chargeLogs: [nov14, oct10],
+      getTripDateKey,
+      getChargeDateKey,
+      prefix: '2026-',
+    });
+    assert.equal(yearStats.totalChargeCount, 2);
+    assert.equal(yearStats.totalMeterKwh, 63.9);
+    assert.equal(yearStats.meterLoggedCount, 2);
   });
 });

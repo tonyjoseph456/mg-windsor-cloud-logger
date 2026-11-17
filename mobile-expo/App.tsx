@@ -158,6 +158,8 @@ import {
   mergePendingMeterOverrides,
   sanitizeMeterEnergyInput,
   summarizeChargeMeterAnalytics,
+  ANALYTICS_MONTHS_LIST,
+  computePeriodAnalyticsStats,
 } from './src/sdk';
 import { TripPlannerCard } from './src/TripPlannerCard';
 import { SwipeableDeleteRow } from './src/SwipeableDeleteRow';
@@ -3810,18 +3812,6 @@ export default function App() {
       }
     }).catch(() => {});
 
-    SecureStore.getItemAsync(CHARGE_METER_OVERRIDES_KEY).then((rawMap) => {
-      if (!rawMap) return;
-      try {
-        const parsed = JSON.parse(rawMap);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          pendingChargeMeterOverridesRef.current = parsed;
-        }
-      } catch {
-        // ignore invalid stored charge meter overrides
-      }
-    }).catch(() => {});
-
     // Hydrate cached service cost catalog immediately, then fetch fresh costs on launch
     SecureStore.getItemAsync(SERVICE_CATALOG_CACHE_KEY)
       .then((rawCatalog) => {
@@ -4820,6 +4810,7 @@ export default function App() {
           rawActiveTrip,
           rawParkedBase,
           rawLogs,
+          rawMeterOverrides,
           rawActive,
           rawBaseline,
           rawCloudUrl,
@@ -4840,6 +4831,7 @@ export default function App() {
           SecureStore.getItemAsync(ACTIVE_TRIP_KEY),
           SecureStore.getItemAsync(PARKED_BASELINE_KEY),
           SecureStore.getItemAsync(CHARGE_LOGS_KEY),
+          SecureStore.getItemAsync(CHARGE_METER_OVERRIDES_KEY),
           SecureStore.getItemAsync(ACTIVE_CHARGE_KEY),
           SecureStore.getItemAsync(PRE_CHARGE_BASELINE_KEY),
           SecureStore.getItemAsync(CLOUD_SYNC_URL_KEY),
@@ -4854,6 +4846,17 @@ export default function App() {
           SecureStore.getItemAsync(WEBHOOK_KEY_STORAGE),
           SecureStore.getItemAsync(IS_ADMIN_KEY),
         ]);
+
+        if (rawMeterOverrides) {
+          try {
+            const parsedOverrides = JSON.parse(rawMeterOverrides);
+            if (parsedOverrides && typeof parsedOverrides === 'object' && !Array.isArray(parsedOverrides)) {
+              pendingChargeMeterOverridesRef.current = parsedOverrides;
+            }
+          } catch {
+            // ignore invalid stored charge meter overrides
+          }
+        }
 
         if (rawAccessCode) {
           setAccessCode(rawAccessCode);
@@ -4960,9 +4963,7 @@ export default function App() {
                   ? Math.round((l.endSoc / 100) * 320)
                   : 320,
             }));
-            setChargeLogs(sanitized);
-            chargeLogsRef.current = sanitized;
-            await SecureStore.setItemAsync(CHARGE_LOGS_KEY, JSON.stringify(sanitized));
+            commitNormalizedChargeLogs(sanitized, true);
           } catch {
             // ignore
           }
@@ -9909,141 +9910,26 @@ export default function App() {
 
           {/* CARD 2: MONTHLY DRIVING & CHARGING ANALYTICS */}
           {activeProfileModal === 'analytics' && (() => {
-              const MONTHS_LIST = [
-                { num: '01', short: 'Jan', full: 'January' },
-                { num: '02', short: 'Feb', full: 'February' },
-                { num: '03', short: 'Mar', full: 'March' },
-                { num: '04', short: 'Apr', full: 'April' },
-                { num: '05', short: 'May', full: 'May' },
-                { num: '06', short: 'Jun', full: 'June' },
-                { num: '07', short: 'Jul', full: 'July' },
-                { num: '08', short: 'Aug', full: 'August' },
-                { num: '09', short: 'Sep', full: 'September' },
-                { num: '10', short: 'Oct', full: 'October' },
-                { num: '11', short: 'Nov', full: 'November' },
-                { num: '12', short: 'Dec', full: 'December' },
-              ];
-
-              const classifySessionSpeed = (c: ChargeLogRecord): '3.3' | '7.4' | 'dc' => {
-                const kw = Number(c.maxChargingSpeedKw) || 0;
-                const cat = (c.chargerCategory || '').toUpperCase();
-                if (kw > 11) return 'dc';
-                if (kw > 4.0 && kw <= 11) return '7.4';
-                if (kw > 0 && kw <= 4.0) return '3.3';
-                if (cat.includes('DC')) return 'dc';
-                if (cat.includes('7.4') || cat.includes('7.2')) return '7.4';
-                return '3.3';
-              };
-
-              const getSessionPackKwh = (c: ChargeLogRecord): number =>
-                Number(c.energyAddedToPackKwh) > 0
-                  ? Number(c.energyAddedToPackKwh)
-                  : Math.max(0, ((Number(c.endSoc) - Number(c.startSoc)) / 100) * 38.0);
-
-              const getSessionWallKwh = (c: ChargeLogRecord): number => {
-                const added = getSessionPackKwh(c);
-                return Number(c.energyConsumedKwh) > 0
-                  ? Number(c.energyConsumedKwh)
-                  : Number((added / 0.88).toFixed(2));
-              };
-
-              const getTripEnergyKwh = (t: TripRecord): number =>
-                Number(t.energyUsedKwh) > 0
-                  ? Number(t.energyUsedKwh)
-                  : Math.max(
-                      0,
-                      ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH
-                    );
-
-              const computeStatsForFilter = (prefix: string) => {
-                const mTrips = trips.filter((t) => getTripDateKey(t).startsWith(prefix));
-                const mCharges = chargeLogs.filter((c) => getChargeDateKey(c).startsWith(prefix));
-
-                const totalDistKm = Number(
-                  mTrips.reduce((s, t) => s + (Number(t.distanceKm) || 0), 0).toFixed(1)
-                );
-                const totalDriveEnergyKwh = Number(
-                  mTrips.reduce((s, t) => s + getTripEnergyKwh(t), 0).toFixed(2)
-                );
-                const totalDriveDurSec = mTrips.reduce(
-                  (s, t) => s + (Number(t.durationSeconds) || 0),
-                  0
-                );
-                const avgDriveEff =
-                  totalDistKm > 0 && totalDriveEnergyKwh > 0
-                    ? Number((totalDistKm / totalDriveEnergyKwh).toFixed(2))
-                    : 0;
-
-                let count33 = 0;
-                let packKwh33 = 0;
-                let wallKwh33 = 0;
-
-                let count74 = 0;
-                let packKwh74 = 0;
-                let wallKwh74 = 0;
-
-                let countDc = 0;
-                let packKwhDc = 0;
-                let wallKwhDc = 0;
-
-                for (const c of mCharges) {
-                  const sp = classifySessionSpeed(c);
-                  const pk = getSessionPackKwh(c);
-                  const wl = getSessionWallKwh(c);
-                  if (sp === 'dc') {
-                    countDc += 1;
-                    packKwhDc += pk;
-                    wallKwhDc += wl;
-                  } else if (sp === '7.4') {
-                    count74 += 1;
-                    packKwh74 += pk;
-                    wallKwh74 += wl;
-                  } else {
-                    count33 += 1;
-                    packKwh33 += pk;
-                    wallKwh33 += wl;
-                  }
-                }
-
-                const totalChargeCount = mCharges.length;
-                const totalPackKwh = Number((packKwh33 + packKwh74 + packKwhDc).toFixed(2));
-                const totalWallKwh = Number((wallKwh33 + wallKwh74 + wallKwhDc).toFixed(2));
-                const totalLossKwh = Math.max(0, Number((totalWallKwh - totalPackKwh).toFixed(2)));
-                const meterAnalytics = summarizeChargeMeterAnalytics(mCharges);
-
-                return {
-                  tripCount: mTrips.length,
-                  totalDistKm,
-                  totalDriveEnergyKwh,
-                  totalDriveDurSec,
-                  avgDriveEff,
-                  totalChargeCount,
-                  totalPackKwh,
-                  totalWallKwh,
-                  totalLossKwh,
-                  ...meterAnalytics,
-                  count33,
-                  packKwh33: Number(packKwh33.toFixed(2)),
-                  wallKwh33: Number(wallKwh33.toFixed(2)),
-                  count74,
-                  packKwh74: Number(packKwh74.toFixed(2)),
-                  wallKwh74: Number(wallKwh74.toFixed(2)),
-                  countDc,
-                  packKwhDc: Number(packKwhDc.toFixed(2)),
-                  wallKwhDc: Number(wallKwhDc.toFixed(2)),
-                };
-              };
+              const computeStatsForFilter = (prefix: string) =>
+                computePeriodAnalyticsStats({
+                  trips,
+                  chargeLogs,
+                  getTripDateKey,
+                  getChargeDateKey,
+                  prefix,
+                  usableBatteryKwh: WINDSOR_FACTORY_USABLE_KWH,
+                });
 
               const selectedPrefix =
                 analyticsMonth === 'all' ? `${analyticsYear}-` : `${analyticsYear}-${analyticsMonth}`;
-              const selectedMonthObj = MONTHS_LIST.find((m) => m.num === analyticsMonth);
+              const selectedMonthObj = ANALYTICS_MONTHS_LIST.find((m) => m.num === analyticsMonth);
               const periodLabel =
                 analyticsMonth === 'all'
                   ? `Full Year ${analyticsYear}`
                   : `${selectedMonthObj?.full || ''} ${analyticsYear}`;
 
               const stats = computeStatsForFilter(selectedPrefix);
-              const monthlyBreakdown = MONTHS_LIST.map((m) => ({
+              const monthlyBreakdown = ANALYTICS_MONTHS_LIST.map((m) => ({
                 ...m,
                 data: computeStatsForFilter(`${analyticsYear}-${m.num}`),
               }));
@@ -13734,132 +13620,19 @@ export default function App() {
 
       {/* Analytics Fullscreen Tween Screen */}
       {isAnalyticsScreenVisible && (() => {
-        const MONTHS_LIST = [
-          { num: '01', short: 'Jan', full: 'January' },
-          { num: '02', short: 'Feb', full: 'February' },
-          { num: '03', short: 'Mar', full: 'March' },
-          { num: '04', short: 'Apr', full: 'April' },
-          { num: '05', short: 'May', full: 'May' },
-          { num: '06', short: 'Jun', full: 'June' },
-          { num: '07', short: 'Jul', full: 'July' },
-          { num: '08', short: 'Aug', full: 'August' },
-          { num: '09', short: 'Sep', full: 'September' },
-          { num: '10', short: 'Oct', full: 'October' },
-          { num: '11', short: 'Nov', full: 'November' },
-          { num: '12', short: 'Dec', full: 'December' },
-        ];
-
-        const classifySessionSpeed = (c: ChargeLogRecord): '3.3' | '7.4' | 'dc' => {
-          const kw = Number(c.maxChargingSpeedKw) || 0;
-          const cat = (c.chargerCategory || '').toUpperCase();
-          if (kw > 11) return 'dc';
-          if (kw > 4.0 && kw <= 11) return '7.4';
-          if (kw > 0 && kw <= 4.0) return '3.3';
-          if (cat.includes('DC')) return 'dc';
-          if (cat.includes('7.4') || cat.includes('7.2')) return '7.4';
-          return '3.3';
-        };
-
-        const getSessionPackKwh = (c: ChargeLogRecord): number =>
-          Number(c.energyAddedToPackKwh) > 0
-            ? Number(c.energyAddedToPackKwh)
-            : Math.max(0, ((Number(c.endSoc) - Number(c.startSoc)) / 100) * 38.0);
-
-        const getSessionWallKwh = (c: ChargeLogRecord): number => {
-          const added = getSessionPackKwh(c);
-          return Number(c.energyConsumedKwh) > 0
-            ? Number(c.energyConsumedKwh)
-            : Number((added / 0.88).toFixed(2));
-        };
-
-        const getTripEnergyKwh = (t: TripRecord): number =>
-          Number(t.energyUsedKwh) > 0
-            ? Number(t.energyUsedKwh)
-            : Math.max(
-                0,
-                ((Number(t.startSoc) - Number(t.endSoc)) / 100) * WINDSOR_FACTORY_USABLE_KWH
-              );
-
-        const computeStatsForFilter = (prefix: string) => {
-          const mTrips = trips.filter((t) => getTripDateKey(t).startsWith(prefix));
-          const mCharges = chargeLogs.filter((c) => getChargeDateKey(c).startsWith(prefix));
-
-          const totalDistKm = Number(
-            mTrips.reduce((s, t) => s + (Number(t.distanceKm) || 0), 0).toFixed(1)
-          );
-          const totalDriveEnergyKwh = Number(
-            mTrips.reduce((s, t) => s + getTripEnergyKwh(t), 0).toFixed(2)
-          );
-          const totalDriveDurSec = mTrips.reduce(
-            (s, t) => s + (Number(t.durationSeconds) || 0),
-            0
-          );
-          const avgDriveEff =
-            totalDistKm > 0 && totalDriveEnergyKwh > 0
-              ? Number((totalDistKm / totalDriveEnergyKwh).toFixed(2))
-              : 0;
-
-          let count33 = 0;
-          let packKwh33 = 0;
-          let wallKwh33 = 0;
-
-          let count74 = 0;
-          let packKwh74 = 0;
-          let wallKwh74 = 0;
-
-          let countDc = 0;
-          let packKwhDc = 0;
-          let wallKwhDc = 0;
-
-          for (const c of mCharges) {
-            const sp = classifySessionSpeed(c);
-            const pk = getSessionPackKwh(c);
-            const wl = getSessionWallKwh(c);
-            if (sp === 'dc') {
-              countDc += 1;
-              packKwhDc += pk;
-              wallKwhDc += wl;
-            } else if (sp === '7.4') {
-              count74 += 1;
-              packKwh74 += pk;
-              wallKwh74 += wl;
-            } else {
-              count33 += 1;
-              packKwh33 += pk;
-              wallKwh33 += wl;
-            }
-          }
-
-          const totalChargeCount = mCharges.length;
-          const totalPackKwh = Number((packKwh33 + packKwh74 + packKwhDc).toFixed(2));
-          const totalWallKwh = Number((wallKwh33 + wallKwh74 + wallKwhDc).toFixed(2));
-          const totalLossKwh = Math.max(0, Number((totalWallKwh - totalPackKwh).toFixed(2)));
-
-          return {
-            tripCount: mTrips.length,
-            totalDistKm,
-            totalDriveEnergyKwh,
-            totalDriveDurSec,
-            avgDriveEff,
-            totalChargeCount,
-            totalPackKwh,
-            totalWallKwh,
-            totalLossKwh,
-            count33,
-            packKwh33: Number(packKwh33.toFixed(2)),
-            wallKwh33: Number(wallKwh33.toFixed(2)),
-            count74,
-            packKwh74: Number(packKwh74.toFixed(2)),
-            wallKwh74: Number(wallKwh74.toFixed(2)),
-            countDc,
-            packKwhDc: Number(packKwhDc.toFixed(2)),
-            wallKwhDc: Number(wallKwhDc.toFixed(2)),
-          };
-        };
+        const computeStatsForFilter = (prefix: string) =>
+          computePeriodAnalyticsStats({
+            trips,
+            chargeLogs,
+            getTripDateKey,
+            getChargeDateKey,
+            prefix,
+            usableBatteryKwh: WINDSOR_FACTORY_USABLE_KWH,
+          });
 
         const selectedPrefix =
           analyticsMonth === 'all' ? `${analyticsYear}-` : `${analyticsYear}-${analyticsMonth}`;
-        const selectedMonthObj = MONTHS_LIST.find((m) => m.num === analyticsMonth);
+        const selectedMonthObj = ANALYTICS_MONTHS_LIST.find((m) => m.num === analyticsMonth);
         const periodLabel =
           analyticsMonth === 'all'
             ? `Full Year ${analyticsYear}`
@@ -13877,12 +13650,15 @@ export default function App() {
         const displayPackKwh = rawStats.totalPackKwh;
         const displayWallKwh = rawStats.totalWallKwh;
         const displayLossKwh = rawStats.totalLossKwh;
+        const displayMeterKwh = rawStats.totalMeterKwh;
+        const displayMeterCount = rawStats.meterLoggedCount;
+        const displayMeterLossPct = rawStats.meterRealLossPct;
 
         const displayCount33 = rawStats.count33;
         const displayCount74 = rawStats.count74;
         const displayCountDc = rawStats.countDc;
 
-        const monthlyBreakdown = MONTHS_LIST.map((m) => ({
+        const monthlyBreakdown = ANALYTICS_MONTHS_LIST.map((m) => ({
           ...m,
           data: computeStatsForFilter(`${analyticsYear}-${m.num}`),
         }));
@@ -14087,7 +13863,25 @@ export default function App() {
                         {displayLossKwh.toFixed(2)} kWh
                       </Text>
                     </View>
-                    <View style={styles.analyticsCol} />
+                    <View style={styles.analyticsCol}>
+                      <Text style={styles.analyticsMetricLabel}>From meter</Text>
+                      <Text
+                        style={[
+                          styles.analyticsMetricVal,
+                          { color: displayMeterCount > 0 ? '#38BDF8' : '#64748B' },
+                        ]}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.75}
+                      >
+                        {displayMeterCount > 0 ? `${displayMeterKwh.toFixed(2)} kWh` : '-- kWh'}
+                      </Text>
+                      <Text style={styles.analyticsMetricSub}>
+                        {displayMeterCount > 0
+                          ? `${displayMeterCount}/${displayChargeCount} · loss ${displayMeterLossPct.toFixed(1)}%`
+                          : 'not entered'}
+                      </Text>
+                    </View>
                   </View>
                 </View>
 
