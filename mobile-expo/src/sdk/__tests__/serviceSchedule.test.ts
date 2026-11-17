@@ -9,6 +9,7 @@ import {
   computeNextServiceStatus,
   computeServiceIntervalProgress,
   computeWeeklyRunningAverageFromTrips,
+  computeWheelAlertSummary,
   computeWheelServicesStatus,
   createDefaultServiceReminderSettings,
   diffIsoDateDays,
@@ -474,4 +475,43 @@ test('computeMaintenanceForecast projects regular service and wheel care dates a
     }),
     null
   );
+});
+
+test('computeWheelAlertSummary builds unified progress bar and handles mixed targets', () => {
+  assert.equal(computeWheelAlertSummary([]), null);
+
+  const settings = createDefaultServiceReminderSettings();
+  settings.wheelServices.balancing.lastDoneKm = 35000;
+  settings.wheelServices.alignment.lastDoneKm = 35000;
+  settings.wheelServices.rotation.lastDoneKm = 30000;
+
+  const sharedStatuses = computeWheelServicesStatus({ odometerKm: 39518, settings }).filter(
+    (w) => w.isAlertActive
+  );
+  const shared = computeWheelAlertSummary(sharedStatuses)!;
+  assert.ok(shared);
+  assert.equal(shared.primary.kmRemaining, 482);
+  assert.equal(shared.startKm, 35000);
+  assert.equal(shared.targetKm, 40000);
+  assert.equal(shared.startLabel, '35,000 last done');
+  assert.equal(shared.targetLabel, '40,000 km');
+  assert.equal(shared.allShareSameTarget, true);
+  assert.equal(shared.hasOverdue, false);
+  assert.ok(Math.abs(shared.fraction - 4518 / 5000) < 1e-6);
+
+  // When one item is overdue at 39,000 and another is due soon at 40,000, primary picks the most urgent
+  const mixedSettings = createDefaultServiceReminderSettings();
+  mixedSettings.wheelServices.balancing.lastDoneKm = 34000; // due at 39,000 (-518 km)
+  mixedSettings.wheelServices.alignment.lastDoneKm = 35000; // due at 40,000 (+482 km)
+  mixedSettings.wheelServices.rotation.enabled = false;
+  const mixedStatuses = computeWheelServicesStatus({
+    odometerKm: 39518,
+    settings: mixedSettings,
+  }).filter((w) => w.isAlertActive);
+  const mixed = computeWheelAlertSummary(mixedStatuses)!;
+  assert.equal(mixed.primary.key, 'balancing');
+  assert.equal(mixed.primary.kmRemaining, -518);
+  assert.equal(mixed.allShareSameTarget, false);
+  assert.equal(mixed.hasOverdue, true);
+  assert.equal(mixed.fraction, 1);
 });

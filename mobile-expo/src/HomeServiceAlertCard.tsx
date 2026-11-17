@@ -1,37 +1,180 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 import {
   ComputedNextServiceStatus,
   ComputedWheelServiceItemStatus,
+  computeServiceIntervalProgress,
+  computeWheelAlertSummary,
   formatInrAmount,
   formatIsoDateShort,
   formatKmNumber,
   formatServiceDaysCountdownText,
   MaintenanceForecast,
+  ServiceIntervalProgress,
   WheelServiceKey,
 } from './sdk';
 
 interface HomeServiceAlertCardProps {
   serviceStatus: ComputedNextServiceStatus;
   wheelStatuses: ComputedWheelServiceItemStatus[];
+  serviceProgress?: ServiceIntervalProgress;
   forecast?: MaintenanceForecast;
   onPressManage: () => void;
-  onMarkWheelDone: (key: WheelServiceKey) => void;
+  onMarkWheelDone: (keys: WheelServiceKey[]) => void;
 }
 
-function formatKmCountdown(kmRemaining: number | null): string {
-  if (kmRemaining === null) return 'Sync odometer';
-  if (kmRemaining < 0) {
-    return `${formatKmNumber(Math.abs(kmRemaining))} km overdue`;
-  }
-  if (kmRemaining === 0) return 'Due now';
-  return `${formatKmNumber(kmRemaining)} km left`;
+interface PillItem {
+  key: string;
+  label: string;
+  isOverdue: boolean;
 }
+
+interface MaintenanceAlertFrameProps {
+  title: string;
+  isOverdue: boolean;
+  heroValue: string;
+  heroUnit?: string;
+  subtitle: string;
+  progress: {
+    fraction: number;
+    startLabel: string;
+    targetLabel: string;
+  };
+  pills: PillItem[];
+  footerLeftTop: string;
+  footerLeftBottom?: string;
+  actionLabel: string;
+  actionAccessibilityLabel: string;
+  onPressCard: () => void;
+  onPressAction: () => void;
+}
+
+const MaintenanceAlertFrame: React.FC<MaintenanceAlertFrameProps> = ({
+  title,
+  isOverdue,
+  heroValue,
+  heroUnit,
+  subtitle,
+  progress,
+  pills,
+  footerLeftTop,
+  footerLeftBottom,
+  actionLabel,
+  actionAccessibilityLabel,
+  onPressCard,
+  onPressAction,
+}) => {
+  const accentColor = isOverdue ? '#FCA5A5' : '#FBC765';
+  const fillColor = isOverdue ? '#F87171' : '#FBC765';
+  const cardBg = isOverdue ? 'rgba(127, 29, 29, 0.18)' : 'rgba(120, 68, 12, 0.16)';
+  const cardBorder = isOverdue ? 'rgba(248, 113, 113, 0.42)' : 'rgba(251, 191, 36, 0.34)';
+  const iconBg = isOverdue ? 'rgba(248, 113, 113, 0.14)' : 'rgba(251, 191, 36, 0.12)';
+  const trackBg = isOverdue ? 'rgba(248, 113, 113, 0.16)' : 'rgba(251, 191, 36, 0.16)';
+  const pillBg = isOverdue ? 'rgba(248, 113, 113, 0.10)' : 'rgba(251, 191, 36, 0.10)';
+  const pillBorder = isOverdue ? 'rgba(248, 113, 113, 0.28)' : 'rgba(251, 191, 36, 0.26)';
+  const fillPct = Math.round(Math.max(0, Math.min(1, progress.fraction)) * 100);
+
+  return (
+    <TouchableOpacity
+      style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}
+      onPress={onPressCard}
+      activeOpacity={0.84}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}. Tap to manage reminders.`}
+    >
+      {/* Header */}
+      <View style={styles.headerRow}>
+        <View style={styles.headerLeft}>
+          <View style={[styles.iconCircle, { backgroundColor: iconBg }]}>
+            <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={accentColor} strokeWidth={2.1}>
+              <Path
+                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </Svg>
+          </View>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {title}
+          </Text>
+        </View>
+        <Text style={styles.manageLink}>Manage ›</Text>
+      </View>
+
+      {/* Hero Countdown */}
+      <View style={styles.heroRow}>
+        <Text style={[styles.heroValue, { color: accentColor }]}>{heroValue}</Text>
+        {Boolean(heroUnit) && <Text style={styles.heroUnit}>{heroUnit}</Text>}
+      </View>
+      <Text style={styles.subtitleText}>{subtitle}</Text>
+
+      {/* Progress Bar & Endpoints */}
+      <View style={[styles.progressTrack, { backgroundColor: trackBg }]}>
+        <View style={[styles.progressFill, { width: `${fillPct}%`, backgroundColor: fillColor }]} />
+      </View>
+      <View style={styles.progressLabelsRow}>
+        <Text style={styles.progressLabelText}>{progress.startLabel}</Text>
+        <Text style={styles.progressLabelText}>{progress.targetLabel}</Text>
+      </View>
+
+      {/* Affected Items / Cost Pills */}
+      {pills.length > 0 && (
+        <View style={styles.pillsRow}>
+          {pills.map((pill) => (
+            <View
+              key={pill.key}
+              style={[
+                styles.pill,
+                {
+                  backgroundColor: pill.isOverdue ? 'rgba(248, 113, 113, 0.12)' : pillBg,
+                  borderColor: pill.isOverdue ? 'rgba(248, 113, 113, 0.34)' : pillBorder,
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.pillDot,
+                  { backgroundColor: pill.isOverdue ? '#F87171' : '#FBC765' },
+                ]}
+              />
+              <Text style={styles.pillText}>{pill.label}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Divider + Footer */}
+      <View style={styles.divider} />
+      <View style={styles.footerRow}>
+        <View style={styles.footerLeft}>
+          <Text style={styles.footerText}>{footerLeftTop}</Text>
+          {Boolean(footerLeftBottom) && (
+            <Text style={styles.footerSubText}>{footerLeftBottom}</Text>
+          )}
+        </View>
+
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={(e) => {
+            e?.stopPropagation?.();
+            onPressAction();
+          }}
+          activeOpacity={0.75}
+          accessibilityRole="button"
+          accessibilityLabel={actionAccessibilityLabel}
+        >
+          <Text style={styles.actionBtnText}>{actionLabel}</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  );
+};
 
 export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
   serviceStatus,
   wheelStatuses,
+  serviceProgress,
   forecast,
   onPressManage,
   onMarkWheelDone,
@@ -43,351 +186,358 @@ export const HomeServiceAlertCard: React.FC<HomeServiceAlertCardProps> = ({
     return null;
   }
 
-  const hasOverdue =
-    (showServiceAlert && serviceStatus.isOverdue) ||
-    activeWheelAlerts.some((w) => w.isDueNow);
+  const pace = forecast?.runningAverage;
+  const hasPace = Boolean(pace && pace.source === 'trips' && pace.weeklyKm && pace.weeklyKm > 0);
+  const paceTop = hasPace
+    ? `At about ${formatKmNumber(Math.round(pace!.weeklyKm!))} km a week`
+    : 'Sync recent trips';
+  const paceBottom = hasPace ? `(${pace!.windowLabel})` : 'for date estimate';
 
-  const badgeBg = hasOverdue ? 'rgba(239, 68, 68, 0.16)' : 'rgba(245, 158, 11, 0.16)';
-  const badgeBorder = hasOverdue ? 'rgba(248, 113, 113, 0.45)' : 'rgba(251, 191, 36, 0.45)';
-  const badgeTextColor = hasOverdue ? '#FCA5A5' : '#FCD34D';
-  const accentColor = hasOverdue ? '#F87171' : '#FBBF24';
+  const wheelSummary = computeWheelAlertSummary(activeWheelAlerts);
 
-  const partsText =
-    serviceStatus.cost.lineItems.length > 0
-      ? serviceStatus.cost.lineItems
-          .map((item) => `${item.name} ${formatInrAmount(item.amountInr)}`)
-          .join(' · ')
-      : 'Inspection / check items only';
+  const renderPeriodicServiceCard = () => {
+    const isOverdue = serviceStatus.isOverdue;
+    const kmRem = serviceStatus.kmRemaining;
+    const daysRem = serviceStatus.daysRemaining;
+    const showKmHero = serviceStatus.isKmWarning || daysRem === null;
+
+    let heroValue = 'Due';
+    let heroUnit = 'soon';
+    if (showKmHero && kmRem !== null) {
+      if (kmRem < 0) {
+        heroValue = `${formatKmNumber(Math.abs(kmRem))} km`;
+        heroUnit = 'overdue';
+      } else if (kmRem === 0) {
+        heroValue = 'Due';
+        heroUnit = 'now';
+      } else {
+        heroValue = `${formatKmNumber(kmRem)} km`;
+        heroUnit = 'left';
+      }
+    } else if (daysRem !== null) {
+      const absDays = Math.abs(Math.round(daysRem));
+      const dayWord = absDays === 1 ? 'day' : 'days';
+      if (daysRem < 0) {
+        heroValue = `${absDays} ${dayWord}`;
+        heroUnit = 'overdue';
+      } else if (daysRem === 0) {
+        heroValue = 'Due';
+        heroUnit = 'today';
+      } else {
+        heroValue = `${absDays} ${dayWord}`;
+        heroUnit = 'left';
+      }
+    }
+
+    const subParts: string[] = [];
+    if (!isOverdue && forecast?.regularService.recommendedDate) {
+      if (
+        forecast.regularService.likelyTrigger === 'distance' &&
+        serviceStatus.nextDueDate &&
+        forecast.regularService.recommendedDate !== serviceStatus.nextDueDate
+      ) {
+        subParts.push(`About ${formatIsoDateShort(forecast.regularService.recommendedDate)}`);
+        subParts.push(`due ${formatIsoDateShort(serviceStatus.nextDueDate)}`);
+      } else {
+        subParts.push(`About ${formatIsoDateShort(forecast.regularService.recommendedDate)}`);
+      }
+    } else if (serviceStatus.nextDueDate) {
+      subParts.push(`due ${formatIsoDateShort(serviceStatus.nextDueDate)}`);
+    } else {
+      subParts.push(`at ${formatKmNumber(serviceStatus.nextMilestone.km)} km`);
+    }
+    subParts.push(`approx. ${formatInrAmount(serviceStatus.cost.totalInr)}`);
+
+    const resolvedProgress =
+      serviceProgress ||
+      computeServiceIntervalProgress({
+        odometerKm: serviceStatus.currentOdometerKm,
+        lastServiceOdoKm: null,
+        previousMilestoneKm: serviceStatus.previousMilestone?.km ?? null,
+        nextMilestoneKm: serviceStatus.nextMilestone.km,
+      });
+
+    const servicePills: PillItem[] =
+      serviceStatus.cost.lineItems.length > 0
+        ? serviceStatus.cost.lineItems.map((li) => ({
+            key: li.name,
+            label: `${li.kind === 'labour' ? 'Paid service' : li.name} ${formatInrAmount(li.amountInr)}`,
+            isOverdue,
+          }))
+        : [{ key: 'inspection', label: 'Inspection only', isOverdue }];
+
+    return (
+      <MaintenanceAlertFrame
+        title={`${formatKmNumber(serviceStatus.nextMilestone.km)} km service ${
+          isOverdue ? 'overdue' : 'due soon'
+        }`}
+        isOverdue={isOverdue}
+        heroValue={heroValue}
+        heroUnit={heroUnit}
+        subtitle={subParts.join(' · ')}
+        progress={{
+          fraction: resolvedProgress.fraction,
+          startLabel: resolvedProgress.startLabel,
+          targetLabel: resolvedProgress.targetLabel,
+        }}
+        pills={servicePills}
+        footerLeftTop={
+          hasPace
+            ? paceTop
+            : daysRem !== null
+              ? formatServiceDaysCountdownText(daysRem)
+              : paceTop
+        }
+        footerLeftBottom={
+          hasPace
+            ? paceBottom
+            : serviceStatus.nextDueDate
+              ? `Due ${formatIsoDateShort(serviceStatus.nextDueDate)}`
+              : undefined
+        }
+        actionLabel="View details"
+        actionAccessibilityLabel="Open service reminder details"
+        onPressCard={onPressManage}
+        onPressAction={onPressManage}
+      />
+    );
+  };
+
+  const renderTyreCareCard = () => {
+    if (!wheelSummary) return null;
+    const { primary, hasOverdue, allShareSameTarget } = wheelSummary;
+    const kmRem = primary.kmRemaining;
+
+    let heroValue = 'Due';
+    let heroUnit = 'now';
+    if (kmRem !== null) {
+      if (kmRem < 0) {
+        heroValue = `${formatKmNumber(Math.abs(kmRem))} km`;
+        heroUnit = 'overdue';
+      } else if (kmRem === 0) {
+        heroValue = 'Due';
+        heroUnit = 'now';
+      } else {
+        heroValue = `${formatKmNumber(kmRem)} km`;
+        heroUnit = 'left';
+      }
+    }
+
+    const primaryForecast = forecast?.wheelServices.find((w) => w.key === primary.key);
+    const dueTargetText = `due at ${formatKmNumber(primary.nextDueKm ?? 0)} km`;
+    const subtitle =
+      !primary.isDueNow && primaryForecast?.estimatedDate
+        ? `About ${formatIsoDateShort(primaryForecast.estimatedDate)} · ${dueTargetText}`
+        : dueTargetText;
+
+    const wheelPills: PillItem[] = activeWheelAlerts.map((w) => {
+      if (allShareSameTarget) {
+        return { key: w.key, label: w.shortLabel, isOverdue: w.isDueNow };
+      }
+      const suffix =
+        w.kmRemaining === null
+          ? ''
+          : w.kmRemaining < 0
+            ? ` · ${formatKmNumber(Math.abs(w.kmRemaining))} over`
+            : w.kmRemaining === 0
+              ? ' · now'
+              : ` · ${formatKmNumber(w.kmRemaining)} km`;
+      return {
+        key: w.key,
+        label: `${w.shortLabel}${suffix}`,
+        isOverdue: w.isDueNow,
+      };
+    });
+
+    const isMultiple = activeWheelAlerts.length > 1;
+    return (
+      <MaintenanceAlertFrame
+        title={hasOverdue ? 'Tyre care overdue' : 'Tyre care due soon'}
+        isOverdue={hasOverdue}
+        heroValue={heroValue}
+        heroUnit={heroUnit}
+        subtitle={subtitle}
+        progress={{
+          fraction: wheelSummary.fraction,
+          startLabel: wheelSummary.startLabel,
+          targetLabel: wheelSummary.targetLabel,
+        }}
+        pills={wheelPills}
+        footerLeftTop={paceTop}
+        footerLeftBottom={paceBottom}
+        actionLabel={isMultiple ? 'Mark all done' : 'Mark done'}
+        actionAccessibilityLabel={
+          isMultiple
+            ? 'Mark all due wheel maintenance items done at current odometer'
+            : `Mark ${primary.label} done at current odometer`
+        }
+        onPressCard={onPressManage}
+        onPressAction={() => onMarkWheelDone(activeWheelAlerts.map((w) => w.key))}
+      />
+    );
+  };
 
   return (
-    <TouchableOpacity
-      style={[
-        styles.card,
-        {
-          borderColor: badgeBorder,
-          backgroundColor: hasOverdue ? 'rgba(127, 29, 29, 0.18)' : 'rgba(120, 53, 15, 0.18)',
-        },
-      ]}
-      onPress={onPressManage}
-      activeOpacity={0.82}
-      accessibilityRole="button"
-      accessibilityLabel="Service and wheel maintenance reminder. Tap to open details."
-    >
-      {/* Top Status Strip */}
-      <View style={styles.topRow}>
-        <View style={[styles.badge, { backgroundColor: badgeBg, borderColor: badgeBorder }]}>
-          <Svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke={accentColor} strokeWidth={2.2}>
-            <Path
-              d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </Svg>
-          <Text style={[styles.badgeText, { color: badgeTextColor }]}>
-            {hasOverdue ? 'MAINTENANCE OVERDUE' : 'MAINTENANCE DUE SOON'}
-          </Text>
-        </View>
-        <Text style={styles.manageLink}>Manage ›</Text>
-      </View>
-
-      {/* Scheduled Periodic Service Block */}
-      {showServiceAlert && (
-        <View style={styles.serviceBlock}>
-          <View style={styles.serviceHeaderRow}>
-            <View style={{ flex: 1, paddingRight: 8 }}>
-              <Text style={styles.serviceTitle}>
-                {formatKmNumber(serviceStatus.nextMilestone.km)} km Service ·{' '}
-                {serviceStatus.nextMilestone.timeLabel}
-              </Text>
-              <Text style={styles.serviceSub} numberOfLines={2}>
-                {partsText}
-              </Text>
-            </View>
-            <View style={styles.costPill}>
-              <Text style={styles.costPillLabel}>Approx.</Text>
-              <Text style={styles.costPillVal}>{formatInrAmount(serviceStatus.cost.totalInr)}</Text>
-            </View>
-          </View>
-
-          <View style={styles.countdownRow}>
-            <View
-              style={[
-                styles.countdownBox,
-                serviceStatus.isDaysWarning && {
-                  borderColor: badgeBorder,
-                  backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                },
-              ]}
-            >
-              <Text style={styles.countdownLabel}>Time Countdown</Text>
-              <Text
-                style={[
-                  styles.countdownValue,
-                  serviceStatus.isDaysWarning && { color: badgeTextColor },
-                ]}
-              >
-                {formatServiceDaysCountdownText(serviceStatus.daysRemaining, 'Add service date')}
-              </Text>
-              {serviceStatus.nextDueDate && (
-                <Text style={styles.countdownSub}>Due {formatIsoDateShort(serviceStatus.nextDueDate)}</Text>
-              )}
-            </View>
-
-            <View
-              style={[
-                styles.countdownBox,
-                serviceStatus.isKmWarning && {
-                  borderColor: badgeBorder,
-                  backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                },
-              ]}
-            >
-              <Text style={styles.countdownLabel}>Distance Countdown</Text>
-              <Text
-                style={[
-                  styles.countdownValue,
-                  serviceStatus.isKmWarning && { color: badgeTextColor },
-                ]}
-              >
-                {formatKmCountdown(serviceStatus.kmRemaining)}
-              </Text>
-              <Text style={styles.countdownSub}>
-                At {formatKmNumber(serviceStatus.nextMilestone.km)} km
-              </Text>
-              {Boolean(
-                forecast?.regularService.distanceEstimatedDate && !serviceStatus.isOverdue
-              ) && (
-                <Text style={styles.countdownEst}>
-                  Est. ~{formatIsoDateShort(forecast?.regularService.distanceEstimatedDate)}
-                </Text>
-              )}
-            </View>
-          </View>
-        </View>
-      )}
-
-      {/* Wheel Balancing, Alignment & Tire Rotation Alerts */}
-      {activeWheelAlerts.length > 0 && (
-        <View style={[styles.wheelWrap, showServiceAlert && styles.wheelWrapDivider]}>
-          {activeWheelAlerts.map((item) => {
-            const isOverdue = item.isDueNow;
-            const dotColor = isOverdue ? '#F87171' : '#FBBF24';
-            const wheelForecast = forecast?.wheelServices.find((w) => w.key === item.key);
-            const estPart =
-              wheelForecast?.estimatedDate && !isOverdue
-                ? ` · ~${formatIsoDateShort(wheelForecast.estimatedDate)}`
-                : '';
-            return (
-              <View key={item.key} style={styles.wheelRow}>
-                <View style={styles.wheelIconWrap}>
-                  <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={dotColor} strokeWidth={2}>
-                    <Circle cx="12" cy="12" r="9" />
-                    <Circle cx="12" cy="12" r="3" />
-                  </Svg>
-                </View>
-                <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-                  <Text style={styles.wheelTitle} numberOfLines={1}>
-                    {item.label}
-                  </Text>
-                  <Text style={[styles.wheelSub, { color: isOverdue ? '#FCA5A5' : '#FCD34D' }]}>
-                    {item.kmRemaining !== null && item.kmRemaining <= 0
-                      ? item.kmRemaining === 0
-                        ? `Due now at ${formatKmNumber(item.nextDueKm ?? 0)} km`
-                        : `${formatKmNumber(Math.abs(item.kmRemaining))} km overdue`
-                      : `${formatKmNumber(item.kmRemaining ?? 0)} km left${estPart} · due at ${formatKmNumber(
-                          item.nextDueKm ?? 0
-                        )} km`}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.doneBtn}
-                  onPress={(e) => {
-                    e?.stopPropagation?.();
-                    onMarkWheelDone(item.key);
-                  }}
-                  activeOpacity={0.7}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Mark ${item.label} done at current odometer`}
-                >
-                  <Text style={styles.doneBtnText}>Mark done</Text>
-                </TouchableOpacity>
-              </View>
-            );
-          })}
-        </View>
-      )}
-
-      {Boolean(
-        forecast?.runningAverage.weeklyKm &&
-          ((showServiceAlert &&
-            forecast?.regularService.distanceEstimatedDate &&
-            !serviceStatus.isOverdue) ||
-            activeWheelAlerts.some(
-              (item) =>
-                !item.isDueNow &&
-                Boolean(forecast?.wheelServices.find((w) => w.key === item.key)?.estimatedDate)
-            ))
-      ) && (
-        <Text style={styles.paceFooter}>
-          Est. at ~{formatKmNumber(forecast!.runningAverage.weeklyKm!)} km/wk (
-          {forecast!.runningAverage.windowLabel})
-        </Text>
-      )}
-    </TouchableOpacity>
+    <View style={styles.stackWrap}>
+      {renderTyreCareCard()}
+      {showServiceAlert && renderPeriodicServiceCard()}
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  card: {
-    borderRadius: 18,
-    borderWidth: 1,
-    padding: 14,
+  stackWrap: {
+    gap: 12,
     marginBottom: 18,
   },
-  topRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 999,
+  card: {
+    borderRadius: 22,
     borderWidth: 1,
+    padding: 18,
   },
-  badgeText: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.7,
-  },
-  manageLink: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#94A3B8',
-  },
-  serviceBlock: {
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 10,
   },
-  serviceHeaderRow: {
+  headerLeft: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 11,
+    flex: 1,
+    minWidth: 0,
   },
-  serviceTitle: {
+  iconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  headerTitle: {
     color: '#F8FAFC',
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: '700',
     letterSpacing: -0.2,
-  },
-  serviceSub: {
-    color: '#CBD5E1',
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 3,
-  },
-  costPill: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.35)',
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    alignItems: 'flex-end',
-  },
-  costPillLabel: {
-    color: '#94A3B8',
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  costPillVal: {
-    color: '#34D399',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  countdownRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  countdownBox: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.55)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
   },
-  countdownLabel: {
+  manageLink: {
     color: '#94A3B8',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '600',
+    flexShrink: 0,
   },
-  countdownValue: {
-    color: '#F8FAFC',
-    fontSize: 15,
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+    marginTop: 14,
+  },
+  heroValue: {
+    fontSize: 32,
     fontWeight: '800',
-    marginTop: 2,
+    letterSpacing: -0.6,
   },
-  countdownSub: {
+  heroUnit: {
+    color: '#CBD5E1',
+    fontSize: 17,
+    fontWeight: '500',
+  },
+  subtitleText: {
     color: '#94A3B8',
-    fontSize: 11,
-    marginTop: 2,
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 4,
+    lineHeight: 18,
   },
-  countdownEst: {
-    color: '#7DD3FC',
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 2,
+  progressTrack: {
+    height: 7,
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginTop: 14,
   },
-  wheelWrap: {
+  progressFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  progressLabelsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  progressLabelText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  pillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
+    marginTop: 14,
   },
-  wheelWrapDivider: {
-    marginTop: 12,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  wheelRow: {
+  pill: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 13,
+    paddingVertical: 7,
   },
-  wheelIconWrap: {
-    width: 24,
-    alignItems: 'flex-start',
-    justifyContent: 'center',
+  pillDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
-  wheelTitle: {
+  pillText: {
     color: '#F8FAFC',
     fontSize: 13,
-    fontWeight: '700',
-  },
-  wheelSub: {
-    fontSize: 12,
     fontWeight: '600',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.09)',
+    marginTop: 16,
+    marginBottom: 14,
+  },
+  footerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  footerLeft: {
+    flex: 1,
+    minWidth: 0,
+  },
+  footerText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    lineHeight: 18,
+  },
+  footerSubText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '500',
     marginTop: 1,
   },
-  doneBtn: {
-    backgroundColor: 'rgba(16, 185, 129, 0.16)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.4)',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  actionBtn: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1.2,
+    borderColor: 'rgba(52, 211, 153, 0.72)',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    flexShrink: 0,
   },
-  doneBtnText: {
+  actionBtnText: {
     color: '#34D399',
-    fontSize: 11,
+    fontSize: 15,
     fontWeight: '700',
-  },
-  paceFooter: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '500',
-    marginTop: 10,
   },
 });

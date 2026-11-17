@@ -1433,3 +1433,72 @@ export function computeMaintenanceForecast(params: {
     advisorTip,
   };
 }
+
+export interface WheelAlertSummary {
+  primary: ComputedWheelServiceItemStatus;
+  startKm: number;
+  targetKm: number;
+  fraction: number;
+  startLabel: string;
+  targetLabel: string;
+  allShareSameTarget: boolean;
+  hasOverdue: boolean;
+}
+
+/**
+ * Summarizes active wheel care alerts into a single hero countdown, interval progress bar,
+ * and shared-target check for the Home Tyre Care alert card.
+ */
+export function computeWheelAlertSummary(
+  activeWheelAlerts: ReadonlyArray<ComputedWheelServiceItemStatus>
+): WheelAlertSummary | null {
+  if (!activeWheelAlerts || activeWheelAlerts.length === 0) return null;
+
+  const sorted = [...activeWheelAlerts].sort(
+    (a, b) => (a.kmRemaining ?? Number.POSITIVE_INFINITY) - (b.kmRemaining ?? Number.POSITIVE_INFINITY)
+  );
+  const primary = sorted[0];
+  const targetKm = primary.nextDueKm !== null ? Math.round(primary.nextDueKm) : 0;
+
+  const sameTargetLastDones = activeWheelAlerts
+    .filter((w) => w.nextDueKm === primary.nextDueKm && w.lastDoneKm !== null)
+    .map((w) => Math.round(w.lastDoneKm!));
+  const startKm =
+    sameTargetLastDones.length > 0
+      ? Math.max(...sameTargetLastDones)
+      : primary.lastDoneKm !== null
+        ? Math.round(primary.lastDoneKm)
+        : 0;
+
+  const currentKm =
+    primary.nextDueKm !== null && primary.kmRemaining !== null
+      ? primary.nextDueKm - primary.kmRemaining
+      : null;
+
+  let fraction = 0;
+  if (currentKm !== null) {
+    const span = targetKm - startKm;
+    if (span <= 0) {
+      fraction = currentKm >= targetKm ? 1 : 0;
+    } else {
+      fraction = Math.max(0, Math.min(1, (currentKm - startKm) / span));
+    }
+  } else if (primary.isDueNow) {
+    fraction = 1;
+  }
+
+  const allShareSameTarget = activeWheelAlerts.every(
+    (w) => w.nextDueKm === primary.nextDueKm && w.kmRemaining === primary.kmRemaining
+  );
+
+  return {
+    primary,
+    startKm,
+    targetKm,
+    fraction,
+    startLabel: `${formatKmNumber(startKm)} last done`,
+    targetLabel: `${formatKmNumber(targetKm)} km`,
+    allShareSameTarget,
+    hasOverdue: activeWheelAlerts.some((w) => w.isDueNow),
+  };
+}

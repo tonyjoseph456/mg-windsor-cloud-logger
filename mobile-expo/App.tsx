@@ -7085,7 +7085,9 @@ export default function App() {
     });
   };
 
-  const handleMarkWheelServiceDoneNow = async (key: WheelServiceKey) => {
+  const handleMarkWheelServicesDoneNow = async (keys: WheelServiceKey[]) => {
+    const uniqueKeys = Array.from(new Set(keys));
+    if (uniqueKeys.length === 0) return;
     if (liveServiceOdometerKm === null || !Number.isFinite(liveServiceOdometerKm)) {
       showBanner('err', 'Sync live odometer first before marking done.');
       return;
@@ -7093,20 +7095,33 @@ export default function App() {
     triggerHapticFeedback('tap');
     const roundedOdo = Math.round(liveServiceOdometerKm);
     const todayIso = getTodayLocalIsoDate();
+    const updatedWheelServices = { ...activeServiceSettings.wheelServices };
+    for (const key of uniqueKeys) {
+      updatedWheelServices[key] = {
+        ...updatedWheelServices[key],
+        enabled: true,
+        lastDoneKm: roundedOdo,
+        lastDoneDate: todayIso,
+      };
+    }
     const next: ServiceReminderSettings = {
       ...activeServiceSettings,
-      wheelServices: {
-        ...activeServiceSettings.wheelServices,
-        [key]: {
-          ...activeServiceSettings.wheelServices[key],
-          enabled: true,
-          lastDoneKm: roundedOdo,
-          lastDoneDate: todayIso,
-        },
-      },
+      wheelServices: updatedWheelServices,
     };
     await handleUpdateServiceReminderSettings(next);
-    showBanner('ok', `${WHEEL_SERVICE_META[key].label} marked done at ${formatKmNumber(roundedOdo)} km`);
+    if (uniqueKeys.length === 1) {
+      showBanner(
+        'ok',
+        `${WHEEL_SERVICE_META[uniqueKeys[0]].label} marked done at ${formatKmNumber(roundedOdo)} km`
+      );
+    } else {
+      const names = uniqueKeys.map((k) => WHEEL_SERVICE_META[k].shortLabel);
+      const labelText =
+        names.length === 2
+          ? `${names[0]} & ${names[1]}`
+          : `${names.slice(0, -1).join(', ')} & ${names[names.length - 1]}`;
+      showBanner('ok', `${labelText} marked done at ${formatKmNumber(roundedOdo)} km`);
+    }
   };
 
   // Screen Width for Horizontal Tween Animations between Home, Tyres, Location, and Remote Commands
@@ -8099,9 +8114,10 @@ export default function App() {
             <HomeServiceAlertCard
               serviceStatus={serviceStatus}
               wheelStatuses={wheelStatuses}
+              serviceProgress={serviceIntervalProgress}
               forecast={maintenanceForecast}
               onPressManage={handleOpenServiceReminderScreen}
-              onMarkWheelDone={handleMarkWheelServiceDoneNow}
+              onMarkWheelDone={handleMarkWheelServicesDoneNow}
             />
 
             {/* 7. Three Navigation / Detail List Rows with Chevrons */}
