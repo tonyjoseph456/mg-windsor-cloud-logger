@@ -10,3 +10,4 @@ export * from './windsorVariants';
 export * from './serviceSchedule';
 export * from './tyreMonitor';
 export * from './chargeMeter';
+export * from './midPhotoTrip';

@@ -20,6 +20,7 @@ import {
   TyreMonitorSettings,
   sanitizeTyreMonitorSettings,
 } from './tyreMonitor';
+import { MidExtractedReading } from './midPhotoTrip';
 
 export { deduplicateChargeList, isValidChargeRecord, mapD1ChargeToRecord };
 
@@ -937,6 +938,52 @@ export async function syncTripsToD1(trips: TripRecord[], vinOverride?: string): 
   } catch (err) {
     console.warn('syncTripsToD1 error:', err);
     return false;
+  }
+}
+
+export interface MidPhotoParseResponse {
+  ok: boolean;
+  code?: string;
+  error?: string;
+  extracted?: MidExtractedReading;
+  locationLabel?: string;
+  modelUsed?: string;
+  remainingDailyQuota?: number;
+}
+
+export async function parseMidPhotoViaWorker(params: {
+  imageDataUrl: string;
+  lat?: number | null;
+  lng?: number | null;
+  vinOverride?: string;
+}): Promise<MidPhotoParseResponse> {
+  try {
+    const vin = (params.vinOverride || _activeD1Vin || '').trim();
+    const res = await fetch(`${BACKEND_URL}/api/trips/parse-mid-photo`, {
+      method: 'POST',
+      headers: getD1AuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        vin: vin || undefined,
+        imageDataUrl: params.imageDataUrl,
+        lat: params.lat ?? null,
+        lng: params.lng ?? null,
+      }),
+    });
+    const data: any = await res.json().catch(() => null);
+    if (!data || typeof data !== 'object') {
+      return { ok: false, error: `Server returned HTTP ${res.status}` };
+    }
+    return {
+      ok: Boolean(data.ok),
+      code: data.code,
+      error: data.error,
+      extracted: data.extracted,
+      locationLabel: data.locationLabel,
+      modelUsed: data.modelUsed,
+      remainingDailyQuota: data.remainingDailyQuota,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Network unavailable' };
   }
 }
 

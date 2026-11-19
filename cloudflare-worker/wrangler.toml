@@ -16,3 +16,7 @@ kv_namespaces = [
 # Run scheduled checks every minute (charging sessions + 06:00 IST morning tyre check)
 [triggers]
 crons = ["* * * * *"]
+
+# Workers AI binding (free 10,000 Neurons/day) for Offline MID Photo Trip OCR
+[ai]
+binding = "AI"

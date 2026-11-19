@@ -167,6 +167,11 @@ import { HomeServiceAlertCard } from './src/HomeServiceAlertCard';
 import { HomeTyreAlertCard } from './src/HomeTyreAlertCard';
 import { ServiceReminderScreen, ServiceSubScreenKey } from './src/ServiceReminderScreen';
 import {
+  OfflineTripScreen,
+  OfflineMidTripDraft,
+  createEmptyMidDraft,
+} from './src/OfflineTripScreen';
+import {
   applyScreenOrientationPolicy,
   detectRuntimeIsTablet,
   resolveDesiredOrientationPolicy,
@@ -183,6 +188,8 @@ type TabId = 'home' | 'charge' | 'trips' | 'account';
 const SESSION_KEY = 'mg_ismart_live_session_v2';
 const SNAPSHOT_KEY = 'mg_ismart_cached_snapshot_v2';
 const TRIPS_KEY = 'mg_ismart_saved_trips_v3';
+const OFFLINE_MID_DRAFT_KEY = 'mg_windsor_offline_mid_draft_v1';
+const PENDING_OFFLINE_TRIPS_KEY = 'mg_windsor_pending_offline_trips_v1';
 const ACTIVE_TRIP_KEY = 'mg_ismart_active_trip_v3';
 const PARKED_BASELINE_KEY = 'mg_ismart_parked_baseline_v3';
 const CHARGE_LOGS_KEY = 'mg_ismart_charge_logs_v2';
@@ -2740,6 +2747,14 @@ export default function App() {
   // Search Chargers Dedicated Screen State & Animation
   const searchChargersSlideAnim = useRef(new Animated.Value(0)).current;
   const [isSearchChargersVisible, setIsSearchChargersVisible] = useState<boolean>(false);
+
+  // Offline MID Photo Trip Logger State & Animation
+  const offlineTripSlideAnim = useRef(new Animated.Value(0)).current;
+  const [isOfflineTripVisible, setIsOfflineTripVisible] = useState<boolean>(false);
+  const [offlineMidDraftByVin, setOfflineMidDraftByVin] = useState<Record<string, OfflineMidTripDraft>>({});
+  const [pendingOfflineTripsByVin, setPendingOfflineTripsByVin] = useState<Record<string, TripRecord[]>>({});
+  const pendingOfflineTripsRef = useRef<Record<string, TripRecord[]>>({});
+  pendingOfflineTripsRef.current = pendingOfflineTripsByVin;
   const [searchUseCarLocation, setSearchUseCarLocation] = useState<boolean>(true);
   const [searchRadiusKm, setSearchRadiusKm] = useState<number>(25);
   const [searchCustomLocationText, setSearchCustomLocationText] = useState<string>('');
@@ -3773,6 +3788,30 @@ export default function App() {
         }
       } catch {
         // ignore invalid stored service reminder map
+      }
+    }).catch(() => {});
+
+    SecureStore.getItemAsync(OFFLINE_MID_DRAFT_KEY).then((rawMap) => {
+      if (!rawMap) return;
+      try {
+        const parsed = JSON.parse(rawMap);
+        if (parsed && typeof parsed === 'object') {
+          setOfflineMidDraftByVin(parsed);
+        }
+      } catch {
+        // ignore invalid stored offline draft map
+      }
+    }).catch(() => {});
+
+    SecureStore.getItemAsync(PENDING_OFFLINE_TRIPS_KEY).then((rawMap) => {
+      if (!rawMap) return;
+      try {
+        const parsed = JSON.parse(rawMap);
+        if (parsed && typeof parsed === 'object') {
+          setPendingOfflineTripsByVin(parsed);
+        }
+      } catch {
+        // ignore invalid pending offline trips map
       }
     }).catch(() => {});
 
@@ -5163,6 +5202,18 @@ export default function App() {
       const dates = await fetchD1TripDates();
       if (dates && dates.length > 0) setD1TripDates(dates);
       if (ok) {
+        const vKey = activeVariantVinKeyRef.current;
+        setPendingOfflineTripsByVin((prev) => {
+          if (!prev[vKey]) return prev;
+          const next = { ...prev };
+          delete next[vKey];
+          if (Object.keys(next).length > 0) {
+            SecureStore.setItemAsync(PENDING_OFFLINE_TRIPS_KEY, JSON.stringify(next)).catch(() => {});
+          } else {
+            SecureStore.deleteItemAsync(PENDING_OFFLINE_TRIPS_KEY).catch(() => {});
+          }
+          return next;
+        });
         Alert.alert('Cloudflare D1 Synced ☁️', `Successfully synced ${cleaned.length} trip(s) to Cloudflare D1 database.`);
         showBanner('ok', `Synced ${cleaned.length} trip(s) to D1`);
       } else {
@@ -6613,6 +6664,32 @@ export default function App() {
     });
   };
 
+  const handleOpenOfflineTripScreen = () => {
+    setIsOfflineTripVisible(true);
+    offlineTripSlideAnim.stopAnimation();
+    offlineTripSlideAnim.setValue(0);
+    Animated.timing(offlineTripSlideAnim, {
+      toValue: 1,
+      duration: 320,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  };
+
+  const handleCloseOfflineTripScreen = () => {
+    offlineTripSlideAnim.stopAnimation();
+    Animated.timing(offlineTripSlideAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start(({ finished }) => {
+      if (finished) {
+        setIsOfflineTripVisible(false);
+      }
+    });
+  };
+
   // Global PWA Interactive Back-Button Swipe Gesture & System History Integration
   const isModalOverlayOpen =
     Boolean(pinPrompt?.visible) ||
@@ -6635,6 +6712,8 @@ export default function App() {
     ? { key: 'tripDetail', anim: tripDetailSlideAnim, close: handleCloseTripDetail }
     : isSearchChargersVisible
     ? { key: 'searchChargers', anim: searchChargersSlideAnim, close: handleCloseSearchChargers }
+    : isOfflineTripVisible
+    ? { key: 'offlineTrip', anim: offlineTripSlideAnim, close: handleCloseOfflineTripScreen }
     : isChargeDetailVisible
     ? { key: 'chargeDetail', anim: chargeDetailSlideAnim, close: handleCloseChargeDetail }
     : isTyresScreenVisible
@@ -6936,6 +7015,7 @@ export default function App() {
         [isTripDetailVisible, setIsTripDetailVisible, tripDetailSlideAnim],
         [isChargeDetailVisible, setIsChargeDetailVisible, chargeDetailSlideAnim],
         [isSearchChargersVisible, setIsSearchChargersVisible, searchChargersSlideAnim],
+        [isOfflineTripVisible, setIsOfflineTripVisible, offlineTripSlideAnim],
         [isAccountScreenVisible, setIsAccountScreenVisible, accountScreenSlideAnim],
         [isAnalyticsScreenVisible, setIsAnalyticsScreenVisible, analyticsSlideAnim],
         [isTextSizeScreenVisible, setIsTextSizeScreenVisible, textSizeSlideAnim],
@@ -6970,6 +7050,7 @@ export default function App() {
       isTripDetailVisible,
       isChargeDetailVisible,
       isSearchChargersVisible,
+      isOfflineTripVisible,
       isAccountScreenVisible,
       isAnalyticsScreenVisible,
       isTextSizeScreenVisible,
@@ -7121,6 +7202,34 @@ export default function App() {
         : null,
     [liveTyreReadings, activeTyreSettings.dropThresholdPct, activeTyreSettings.recommendedPsi]
   );
+
+  const activeVariantVinKeyRef = useRef<string>(activeVariantVinKey);
+  activeVariantVinKeyRef.current = activeVariantVinKey;
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const flushPending = async () => {
+      const vKey = activeVariantVinKeyRef.current;
+      const queued = pendingOfflineTripsRef.current[vKey] || [];
+      if (queued.length === 0) return;
+      const ok = await syncTripsToD1(queued).catch(() => false);
+      if (ok) {
+        setPendingOfflineTripsByVin((prev) => {
+          const next = { ...prev };
+          delete next[vKey];
+          SecureStore.setItemAsync(PENDING_OFFLINE_TRIPS_KEY, JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+        showBanner('ok', `Synced ${queued.length} queued offline trip${queued.length === 1 ? '' : 's'} to D1`);
+      }
+    };
+    flushPending();
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.addEventListener('online', flushPending);
+      return () => window.removeEventListener('online', flushPending);
+    }
+    return undefined;
+  }, [isAuthenticated, activeVariantVinKey]);
 
   // 1. Startup Keychain Check Screen
   if (booting) {
@@ -7378,6 +7487,67 @@ export default function App() {
     }
   };
 
+  const activeOfflineMidDraft: OfflineMidTripDraft =
+    offlineMidDraftByVin[activeVariantVinKey] ?? createEmptyMidDraft();
+
+  const offlineTripUsableKwh =
+    windsorSunroofState.activeVariant?.batteryKwh === 52.9
+      ? 52.9
+      : nominalCapacityKwh;
+
+  const handleChangeOfflineMidDraft = (nextDraft: OfflineMidTripDraft) => {
+    setOfflineMidDraftByVin((prev) => {
+      const nextMap = { ...prev, [activeVariantVinKey]: nextDraft };
+      SecureStore.setItemAsync(OFFLINE_MID_DRAFT_KEY, JSON.stringify(nextMap)).catch(() => {});
+      return nextMap;
+    });
+  };
+
+  const handleClearOfflineMidDraft = () => {
+    setOfflineMidDraftByVin((prev) => {
+      const nextMap = { ...prev };
+      delete nextMap[activeVariantVinKey];
+      if (Object.keys(nextMap).length > 0) {
+        SecureStore.setItemAsync(OFFLINE_MID_DRAFT_KEY, JSON.stringify(nextMap)).catch(() => {});
+      } else {
+        SecureStore.deleteItemAsync(OFFLINE_MID_DRAFT_KEY).catch(() => {});
+      }
+      return nextMap;
+    });
+  };
+
+  const handleSaveOfflinePhotoTrip = async (trip: TripRecord): Promise<{ d1Synced: boolean }> => {
+    const nextTrips = deduplicateTripList([trip, ...tripsRef.current]);
+    setTrips(nextTrips);
+    tripsRef.current = nextTrips;
+    const dateKey = getTripDateKey(trip);
+    if (dateKey) {
+      setSelectedTripDate(dateKey);
+    }
+    await SecureStore.setItemAsync(TRIPS_KEY, JSON.stringify(nextTrips)).catch(() => {});
+    handleClearOfflineMidDraft();
+
+    const d1Synced = await syncTripsToD1([trip]).catch(() => false);
+    if (d1Synced) {
+      const dates = await fetchD1TripDates().catch(() => null);
+      if (Array.isArray(dates) && dates.length > 0) {
+        setD1TripDates(dates);
+      }
+      if (googleConfigRef.current?.accessToken && googleConfigRef.current?.spreadsheetId && googleConfigRef.current?.autoSync) {
+        syncTripsToGoogleSheet(googleConfigRef.current.accessToken, googleConfigRef.current.spreadsheetId, [trip]).catch(() => {});
+      }
+    } else {
+      setPendingOfflineTripsByVin((prev) => {
+        const cur = prev[activeVariantVinKey] || [];
+        const nextList = [trip, ...cur.filter((t) => t.id !== trip.id)];
+        const nextMap = { ...prev, [activeVariantVinKey]: nextList };
+        SecureStore.setItemAsync(PENDING_OFFLINE_TRIPS_KEY, JSON.stringify(nextMap)).catch(() => {});
+        return nextMap;
+      });
+    }
+    return { d1Synced };
+  };
+
   const liveServiceOdometerKm =
     typeof charge?.odometer_km === 'number' && Number.isFinite(charge.odometer_km)
       ? charge.odometer_km
@@ -7578,10 +7748,10 @@ export default function App() {
     outputRange: [screenWidth, 0],
   });
 
-  // Trips subscreen slide animations (Plan a trip, Route Results, Trip detail & Search chargers)
+  // Trips subscreen slide animations (Plan a trip, Route Results, Trip detail, Search chargers & Offline photo trip)
   const tripsSubscreenAnim = Animated.add(
     Animated.add(planSlideAnim, tripDetailSlideAnim),
-    searchChargersSlideAnim
+    Animated.add(searchChargersSlideAnim, offlineTripSlideAnim)
   );
   const tripsTranslateX = tripsSubscreenAnim.interpolate({
     inputRange: [0, 1],
@@ -7613,6 +7783,11 @@ export default function App() {
   });
 
   const searchChargersTranslateX = searchChargersSlideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [screenWidth, 0],
+  });
+
+  const offlineTripTranslateX = offlineTripSlideAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [screenWidth, 0],
   });
@@ -7861,15 +8036,30 @@ export default function App() {
               {/* 2. Section Header: Title "Trips" and Overflow "•••" Button */}
               <View style={[styles.tripsHeader, { marginTop: 8, marginBottom: 16 }]}>
                 <Text style={styles.tripsTitle}>Trips</Text>
-                <TouchableOpacity
-                  style={styles.tripsOverflowBtn}
-                  onPress={() => setShowTripsOptionsMenu(true)}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Trips Options"
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.tripsOverflowBtnText}>•••</Text>
-                </TouchableOpacity>
+                <View style={styles.tripsHeaderActions}>
+                  <TouchableOpacity
+                    style={styles.tripsPhotoPillBtn}
+                    onPress={handleOpenOfflineTripScreen}
+                    activeOpacity={0.75}
+                    accessibilityLabel="Log trip from MID photos"
+                    accessibilityRole="button"
+                  >
+                    <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#34D399" strokeWidth={2.2}>
+                      <Path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" strokeLinecap="round" strokeLinejoin="round" />
+                      <Circle cx="12" cy="13" r="4" strokeLinecap="round" strokeLinejoin="round" />
+                    </Svg>
+                    <Text style={styles.tripsPhotoPillBtnText}>Photo trip</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.tripsOverflowBtn}
+                    onPress={() => setShowTripsOptionsMenu(true)}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Trips Options"
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.tripsOverflowBtnText}>•••</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               {/* 3. Row with 3 Action Buttons: [ ▶ Start trip ], [ Plan a trip ], and [ ⚡ Search chargers ] */}
@@ -7967,6 +8157,36 @@ export default function App() {
                   <Text style={styles.tripsDarkCardBtnText}>Search chargers</Text>
                 </TouchableOpacity>
               </View>
+
+              {(activeOfflineMidDraft.before.photoDataUrl ||
+                activeOfflineMidDraft.before.odoKmText ||
+                activeOfflineMidDraft.before.tripKmText) && (
+                <TouchableOpacity
+                  style={styles.offlineDraftBanner}
+                  onPress={handleOpenOfflineTripScreen}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Resume offline MID photo trip draft"
+                  accessibilityRole="button"
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.offlineDraftBannerText} numberOfLines={1}>
+                      {activeOfflineMidDraft.before.odoKmText
+                        ? `Photo trip draft · Before ODO ${activeOfflineMidDraft.before.odoKmText} km${
+                            activeOfflineMidDraft.before.socPctText
+                              ? ` · ${activeOfflineMidDraft.before.socPctText}%`
+                              : ''
+                          }`
+                        : 'Photo trip draft in progress'}
+                    </Text>
+                    <Text style={{ color: '#94A3B8', fontSize: 11, fontWeight: '600', marginTop: 2 }} numberOfLines={1}>
+                      {activeOfflineMidDraft.after.photoDataUrl || activeOfflineMidDraft.after.odoKmText
+                        ? 'Tap to review Before & After MID readings and sync'
+                        : 'Tap to add After MID photo and sync to D1'}
+                    </Text>
+                  </View>
+                  <Text style={{ color: '#34D399', fontSize: 13, fontWeight: '700' }}>Resume →</Text>
+                </TouchableOpacity>
+              )}
 
               {/* 4. Date Selector Pill & Trip Count Row */}
               {(() => {
@@ -8116,6 +8336,13 @@ export default function App() {
               subtitle: 'Save the current telemetry as a trip',
               icon: 'add_circle',
               onPress: handleManualLogTrip,
+            },
+            {
+              key: 'offline_photo',
+              title: 'Log trip from MID photos',
+              subtitle: 'Scan Before & After cluster photos (works offline from MG)',
+              icon: 'add_circle',
+              onPress: handleOpenOfflineTripScreen,
             },
             ...(googleConfig?.accessToken && googleConfig?.spreadsheetId
               ? [
@@ -13297,6 +13524,22 @@ export default function App() {
             </ScrollView>
           </SafeAreaView>
         </Animated.View>
+      )}
+
+      {/* Offline MID Photo Trip Logger Fullscreen Screen */}
+      {isOfflineTripVisible && (
+        <OfflineTripScreen
+          translateX={offlineTripTranslateX}
+          vin={vin || snapshot?.vehicle?.vin || null}
+          usableCapacityKwh={offlineTripUsableKwh}
+          draft={activeOfflineMidDraft}
+          onChangeDraft={handleChangeOfflineMidDraft}
+          onClearDraft={handleClearOfflineMidDraft}
+          onSaveTrip={handleSaveOfflinePhotoTrip}
+          onResolveLocationLabel={resolveLocationLabel}
+          onClose={handleCloseOfflineTripScreen}
+          onShowBanner={showBanner}
+        />
       )}
 
       {/* Account Fullscreen Tween Screen */}
@@ -20078,6 +20321,44 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '800',
     letterSpacing: -0.5,
+  },
+  tripsHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  tripsPhotoPillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 36,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+  },
+  tripsPhotoPillBtnText: {
+    color: '#34D399',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  offlineDraftBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: 'rgba(16, 185, 129, 0.09)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.28)',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    marginBottom: 18,
+  },
+  offlineDraftBannerText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '700',
   },
   tripsOverflowBtn: {
     width: 44,

@@ -11793,6 +11793,218 @@ function reevaluateMorningTyreCheck(existing, nextSettings) {
   };
 }
 
+// mobile-expo/src/sdk/midPhotoTrip.ts
+var MID_PHOTO_VISION_PROMPT = 'Read ONLY the bottom-left telemetry numbers of this MG Windsor EV instrument cluster (MID) photo. Look specifically for: 1) "Trip" distance in km (decimal like 168.1), 2) "ODO" total odometer in km (integer like 39599), 3) Battery state-of-charge percentage shown inside the small green/gray battery bar (% like 41), and 4) Remaining driving range DTE in km right beside the battery bar (like 130). Ignore Power kW and Speed km/h. Respond ONLY with raw JSON and no extra text using keys: {"tripKm": number|null, "odoKm": number|null, "socPct": number|null, "dteKm": number|null}.';
+function parseNumericToken(val) {
+  if (typeof val === "number") {
+    return Number.isFinite(val) ? val : null;
+  }
+  if (typeof val === "string") {
+    const m = val.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+    if (!m) return null;
+    const n = Number(m[0]);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+function clampField(raw, min, max, decimals = 1) {
+  if (raw === null || !Number.isFinite(raw)) return null;
+  if (raw < min || raw > max) return null;
+  const factor = Math.pow(10, decimals);
+  return Math.round(raw * factor) / factor;
+}
+function sanitizeMidExtractedReading(raw) {
+  if (!raw || typeof raw !== "object") {
+    return { tripKm: null, odoKm: null, socPct: null, dteKm: null };
+  }
+  const obj = raw;
+  const rawTrip = obj.tripKm ?? obj.trip_km ?? obj.tripDistanceKm ?? obj.trip_distance ?? obj.trip;
+  const rawOdo = obj.odoKm ?? obj.odo_km ?? obj.odometerKm ?? obj.odometer_km ?? obj.odometer ?? obj.odo;
+  const rawSoc = obj.socPct ?? obj.soc_pct ?? obj.soc ?? obj.batteryPct ?? obj.battery_pct ?? obj.battery;
+  const rawDte = obj.dteKm ?? obj.dte_km ?? obj.rangeKm ?? obj.range_km ?? obj.dte ?? obj.range;
+  return {
+    tripKm: clampField(parseNumericToken(rawTrip), 0, 9999.9, 1),
+    odoKm: clampField(parseNumericToken(rawOdo), 0, 1e6, 1),
+    socPct: clampField(parseNumericToken(rawSoc), 0, 100, 1),
+    dteKm: clampField(parseNumericToken(rawDte), 0, 1e3, 0)
+  };
+}
+function parseMidAiJsonResponse(rawText) {
+  const empty = { tripKm: null, odoKm: null, socPct: null, dteKm: null };
+  if (typeof rawText !== "string" || !rawText.trim()) return empty;
+  const cleaned = rawText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const tryParse = (candidate) => {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return sanitizeMidExtractedReading(parsed);
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+  const direct = tryParse(cleaned);
+  if (direct) return direct;
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const sliced = tryParse(cleaned.slice(firstBrace, lastBrace + 1));
+    if (sliced) return sliced;
+  }
+  const tripMatch = cleaned.match(/trip\D{0,12}(\d+(?:\.\d+)?)/i);
+  const odoMatch = cleaned.match(/odo(?:meter)?\D{0,12}(\d[\d,]*(?:\.\d+)?)/i);
+  const socMatch = cleaned.match(/(?:soc|battery|%)\D{0,12}(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*%/i);
+  const dteMatch = cleaned.match(/(?:dte|range)\D{0,12}(\d+(?:\.\d+)?)/i);
+  return sanitizeMidExtractedReading({
+    tripKm: tripMatch?.[1] ?? null,
+    odoKm: odoMatch?.[1] ?? null,
+    socPct: socMatch?.[1] ?? socMatch?.[2] ?? null,
+    dteKm: dteMatch?.[1] ?? null
+  });
+}
+
+// cloudflare-worker/mid-photo-vision.ts
+var MID_VISION_PRIMARY_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct";
+var MID_VISION_FALLBACK_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
+var MAX_DAILY_MID_AI_PARSES_PER_VIN = 30;
+var MAX_IMAGE_DATA_URI_CHARS = 35e5;
+function extractAiResponseText(aiResult) {
+  if (typeof aiResult === "string") return aiResult;
+  if (!aiResult || typeof aiResult !== "object") return "";
+  const res = aiResult;
+  if (typeof res.response === "string") return res.response;
+  if (res.response && typeof res.response === "object") {
+    return JSON.stringify(res.response);
+  }
+  const choiceContent = res.choices?.[0]?.message?.content;
+  if (typeof choiceContent === "string") return choiceContent;
+  if (Array.isArray(choiceContent)) {
+    return choiceContent.map((part) => typeof part?.text === "string" ? part.text : "").join("\n").trim();
+  }
+  return "";
+}
+function isMetaLicenseAgreementError(err) {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /\b5016\b|agree|license|acceptable\s*use/i.test(msg);
+}
+function hasAnyExtractedNumber(reading) {
+  return reading.tripKm !== null || reading.odoKm !== null || reading.socPct !== null || reading.dteKm !== null;
+}
+async function runSingleVisionModel(ai, model, imageDataUrl) {
+  const messages = [
+    {
+      role: "system",
+      content: "You extract exact numbers from EV dashboard photos and reply strictly in JSON."
+    },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: MID_PHOTO_VISION_PROMPT },
+        { type: "image_url", image_url: { url: imageDataUrl } }
+      ]
+    }
+  ];
+  let aiResp;
+  try {
+    aiResp = await ai.run(model, { messages, max_tokens: 180, temperature: 0 });
+  } catch (err) {
+    if (model === MID_VISION_PRIMARY_MODEL && isMetaLicenseAgreementError(err)) {
+      await ai.run(model, { prompt: "agree" });
+      aiResp = await ai.run(model, { messages, max_tokens: 180, temperature: 0 });
+    } else {
+      throw err;
+    }
+  }
+  const rawText = extractAiResponseText(aiResp);
+  return parseMidAiJsonResponse(rawText);
+}
+async function parseMidPhotoWithWorkersAi(params) {
+  const { ai, kv, vin, dateKey, imageDataUrl } = params;
+  if (!ai || typeof ai.run !== "function") {
+    return {
+      status: 503,
+      ok: false,
+      code: "AI_BINDING_MISSING",
+      error: "Cloudflare Workers AI binding (AI) is not enabled on this Worker yet."
+    };
+  }
+  if (typeof imageDataUrl !== "string" || !/^data:image\/(?:jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(imageDataUrl.trim())) {
+    return {
+      status: 400,
+      ok: false,
+      code: "INVALID_IMAGE",
+      error: "Valid base64 JPEG/PNG/WebP image data URI is required."
+    };
+  }
+  if (imageDataUrl.length > MAX_IMAGE_DATA_URI_CHARS) {
+    return {
+      status: 400,
+      ok: false,
+      code: "IMAGE_TOO_LARGE",
+      error: "Image payload exceeds 2.5 MB limit after compression."
+    };
+  }
+  let usedCount = 0;
+  const quotaKey = `mid_ai_quota:${vin}:${dateKey}`;
+  if (kv) {
+    try {
+      const rawCount = await kv.get(quotaKey);
+      usedCount = Math.max(0, Math.floor(Number(rawCount) || 0));
+    } catch {
+      usedCount = 0;
+    }
+    if (usedCount >= MAX_DAILY_MID_AI_PARSES_PER_VIN) {
+      return {
+        status: 429,
+        ok: false,
+        code: "DAILY_QUOTA_REACHED",
+        error: `Daily AI scan limit (${MAX_DAILY_MID_AI_PARSES_PER_VIN}/day) reached for this vehicle. Enter numbers manually.`,
+        remainingDailyQuota: 0
+      };
+    }
+  }
+  const trimmedImage = imageDataUrl.trim();
+  const models = [MID_VISION_PRIMARY_MODEL, MID_VISION_FALLBACK_MODEL];
+  let lastErrorMsg = "";
+  let bestReading = null;
+  let bestModel = MID_VISION_PRIMARY_MODEL;
+  for (const model of models) {
+    try {
+      const parsed = await runSingleVisionModel(ai, model, trimmedImage);
+      bestReading = parsed;
+      bestModel = model;
+      if (hasAnyExtractedNumber(parsed)) {
+        break;
+      }
+    } catch (err) {
+      lastErrorMsg = err instanceof Error ? err.message : String(err);
+    }
+  }
+  if (!bestReading) {
+    return {
+      status: 502,
+      ok: false,
+      code: "AI_INFERENCE_FAILED",
+      error: lastErrorMsg || "Workers AI could not read this MID photo."
+    };
+  }
+  const nextUsed = usedCount + 1;
+  if (kv) {
+    try {
+      await kv.put(quotaKey, String(nextUsed));
+    } catch {
+    }
+  }
+  return {
+    status: 200,
+    ok: true,
+    extracted: bestReading,
+    modelUsed: bestModel,
+    remainingDailyQuota: Math.max(0, MAX_DAILY_MID_AI_PARSES_PER_VIN - nextUsed)
+  };
+}
+
 // cloudflare-worker/multi-worker.ts
 var CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -16107,6 +16319,37 @@ ${emptyMsg}`,
     const rawTrips = body?.trips || [];
     const count = await d1BatchSyncTrips(env, rawTrips, auth.vin);
     return json({ success: true, count, message: `Synced ${count} trip(s) to Cloudflare D1` });
+  }
+  if (path === "/api/trips/parse-mid-photo") {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const rawLat = body?.lat !== void 0 && body?.lat !== null ? Number(body.lat) : null;
+    const rawLng = body?.lng !== void 0 && body?.lng !== null ? Number(body.lng) : null;
+    const hasCoords = rawLat !== null && rawLng !== null && hasValidGpsCoords(rawLat, rawLng);
+    const todayIst = istDateString(Math.floor(Date.now() / 1e3));
+    const [aiRes, locationLabel] = await Promise.all([
+      parseMidPhotoWithWorkersAi({
+        ai: env.AI,
+        kv: {
+          get: async (k) => {
+            const v = await d1KvGet(env, k);
+            return v === null || v === void 0 ? null : String(v);
+          },
+          put: (k, v) => d1KvPut(env, k, v)
+        },
+        vin: auth.vin,
+        dateKey: todayIst,
+        imageDataUrl: typeof body?.imageDataUrl === "string" ? body.imageDataUrl : ""
+      }),
+      hasCoords ? resolveLocation(rawLat, rawLng) : Promise.resolve(null)
+    ]);
+    return json(
+      {
+        ...aiRes,
+        ...locationLabel ? { locationLabel } : {}
+      },
+      aiRes.status
+    );
   }
   if (path === "/api/trips/dedup" || path === "/api/trips/clean") {
     const auth = await requireAppVin(env, request, url, body);

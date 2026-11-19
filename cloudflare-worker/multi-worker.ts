@@ -81,9 +81,14 @@ import {
   sanitizeTyreMonitorSettings,
   shouldRunMorningTyreCron,
 } from '../mobile-expo/src/sdk/tyreMonitor';
+import {
+  parseMidPhotoWithWorkersAi,
+  WorkersAiBinding,
+} from './mid-photo-vision';
 
 interface Env {
   DB?: any;
+  AI?: WorkersAiBinding;
   TRIP_KV?: {
     get(key: string, type?: 'text' | 'json'): Promise<any>;
     put(key: string, value: string): Promise<void>;
@@ -4862,6 +4867,41 @@ async function handleApi(env: Env, request: Request, url: URL): Promise<Response
     const rawTrips = body?.trips || [];
     const count = await d1BatchSyncTrips(env, rawTrips, auth.vin);
     return json({ success: true, count, message: `Synced ${count} trip(s) to Cloudflare D1` });
+  }
+
+  // Parse MID Cluster Photo with Workers AI (strictly authenticated per VIN)
+  if (path === '/api/trips/parse-mid-photo') {
+    const auth = await requireAppVin(env, request, url, body);
+    if (auth instanceof Response) return auth;
+    const rawLat = body?.lat !== undefined && body?.lat !== null ? Number(body.lat) : null;
+    const rawLng = body?.lng !== undefined && body?.lng !== null ? Number(body.lng) : null;
+    const hasCoords = rawLat !== null && rawLng !== null && hasValidGpsCoords(rawLat, rawLng);
+    const todayIst = istDateString(Math.floor(Date.now() / 1000));
+
+    const [aiRes, locationLabel] = await Promise.all([
+      parseMidPhotoWithWorkersAi({
+        ai: env.AI,
+        kv: {
+          get: async (k) => {
+            const v = await d1KvGet(env, k);
+            return v === null || v === undefined ? null : String(v);
+          },
+          put: (k, v) => d1KvPut(env, k, v),
+        },
+        vin: auth.vin,
+        dateKey: todayIst,
+        imageDataUrl: typeof body?.imageDataUrl === 'string' ? body.imageDataUrl : '',
+      }),
+      hasCoords ? resolveLocation(rawLat, rawLng) : Promise.resolve(null),
+    ]);
+
+    return json(
+      {
+        ...aiRes,
+        ...(locationLabel ? { locationLabel } : {}),
+      },
+      aiRes.status
+    );
   }
 
   // Deduplicate and permanently prune duplicate Trips in D1 database
